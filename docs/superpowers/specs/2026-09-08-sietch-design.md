@@ -1,0 +1,400 @@
+# sietch — a lightweight developer portal for small teams
+
+**Status:** approved design, pre-implementation
+**Date:** 2026-09-08
+**Scope:** v1 only. Deferred sub-projects are listed in §2.
+
+---
+
+## 1. Summary
+
+`sietch` is a single Go binary that reads service metadata colocated with code,
+validates it, scores it against a team standard, and renders a static portal.
+
+It answers the questions Backstage answers — who owns this, where are its docs,
+runbook, dashboards and alerts, what depends on it — for a team of 5–15
+engineers with one monorepo or a handful of repos, without a platform team and
+without a framework to maintain.
+
+The metadata is the *source* for CODEOWNERS and alert routing, never a copy, so
+letting it rot breaks something visible.
+
+---
+
+## 2. Scope
+
+The originating design doc described eight separable sub-projects. This spec
+covers four; the rest get their own specs.
+
+| | Sub-project | In v1 |
+|---|---|---|
+| A | Catalog core — schema, loader, validation, dep graph, multi-repo merge | yes |
+| B | Generated artifacts — CODEOWNERS, alert routing, Slack map | yes |
+| C | Scorecard — checks, tier severity, scoring, history | yes |
+| D | Portal renderer — static site | yes |
+| E | Runtime agent — `runtime.json` producer | no |
+| F | Golden path — templates, `task new-service` | no |
+| G | Mode runner — declarative cheap agents | no |
+| H | Claude Code plugin — skills, routing hook | no |
+
+A is the spine; B, C and D hang off it. G and H share nothing with A–F but a
+catalog read, and have a different runtime and risk profile (provider keys, MCP
+servers, token metering). They belong in a separate repo.
+
+---
+
+## 3. Decisions and rationale
+
+Recorded because the *why* is the part that gets lost.
+
+| # | Decision | Rationale |
+|---|---|---|
+| D1 | Go-native rendering (goldmark), not MkDocs | Portal pages are a generated app, not docs pages. Rendering them through MkDocs means Go *and* a pinned Python toolchain in every CI run and on every contributor's machine. `go install` beats `pip install mkdocs-material` for adoption. Backstage-migration risk is low: TechDocs needs `mkdocs.yml` + Markdown in `docs/`, our docs are already plain Markdown, and the yml is a generated file. |
+| D2 | GFM + admonitions dialect | goldmark GFM (tables, footnotes, task lists) + Chroma + Mermaid + one custom extension for MkDocs-style `!!! note`. Runbooks genuinely use callouts, and it stays paste-compatible with docs written for MkDocs. Tabs and snippet-includes are excluded: they break GitHub rendering, and these files are read in the repo too. |
+| D3 | Hermetic checks in-binary, expensive checks ingested | `sietch score` must run offline in under a second with no Docker daemon and no network egress. Checks needing a build, a scanner or an HTTP probe are *reported into* the tool via `.sietch/checks/*.yaml` written by the CI jobs that already know the answer. The extension point is YAML, not a plugin API — consistent with the non-goal of a plugin system. |
+| D4 | Go checks + YAML severity matrix | Checks are Go funcs with stable ids; `standards.yaml` holds only the tier→severity matrix and thresholds. Type-safe, precise messages, nothing to debug in YAML. A CEL expression language was rejected as an API surface with no demonstrated demand. |
+| D5 | GitHub + GitLab host API adapters | User decision, taken over a recommendation for a host-agnostic fetcher. Consequence accepted and recorded as a non-goal (§15): Gitea, Forgejo, Bitbucket and self-hosted git are unsupported in v1. Fetching sits behind a Go interface so a generic fetcher is additive later. |
+| D6 | Flat global entity names | `metadata.name` unique across the merged catalog; refs are `kind:name`. Repos, not teams, are the namespacing axis, and at a handful of repos collisions are a two-minute rename, not a migration. Decisive factor: flat → namespaced is a non-breaking additive change later (Backstage's default namespace is literally `default`), while namespaced → flat is breaking. On a one-way door, take the door that stays open. |
+| D7 | Strict schema (`additionalProperties: false`) | Unknown fields are rejected, not ignored. Prevents a half-working `namespace:` field existing in the wild before v2 defines one. |
+| D8 | Everything starts in `internal/` | `internal → pkg` is additive; `pkg → internal` is breaking. Catalog types get promoted when someone actually asks to import them. |
+| D9 | Dune naming on user-facing surfaces only | Project, binary and deployed components carry Dune names; Go packages are literal (`catalog`, `scorecard`, `render`). Themed package names tax every future contributor with a glossary. |
+
+---
+
+## 4. Naming
+
+| Component | Name | In v1 |
+|---|---|---|
+| Project and binary | **sietch** | yes |
+| Validator | Truthsayer | yes |
+| Scorecard engine | Mentat | yes |
+| Multi-repo fetcher | Heighliner | yes |
+| Dependency resolver | Navigator | yes |
+| CI gate | Sardaukar | yes |
+| Templates | Missionaria | deferred (F) |
+| Runtime agent | Suk | deferred (E) |
+| Mode runner | Erasmus | deferred (G) |
+
+Names appear in docs, subcommand help, and deployed component names. They do
+not appear in package or type names.
+
+**Unverified:** GitHub org, domain, and pkg.go.dev collisions for `sietch` have
+not been checked. The module path is a one-way door — verify before `go.mod`.
+
+---
+
+## 5. Catalog schema
+
+One `service.yaml` per deployable unit and per shared resource, colocated with
+the code it describes.
+
+```yaml
+apiVersion: sietch.dev/v1
+kind: Service            # Service | Worker | Cron | Library | Topic | Database | API
+metadata:
+  name: payments-worker  # unique across the merged catalog
+  description: Consumes payment events and settles them.
+  owner: team-payments   # must exist in teams.yaml
+  tier: 1                # 1 critical, 2 important, 3 best-effort
+  lifecycle: production  # experimental | production | deprecated
+  tags: [go, kafka]
+spec:
+  language: go
+  path: services/payments-worker
+  docs: services/payments-worker/docs
+  runbook: services/payments-worker/docs/runbook.md
+  oncall: https://pagerduty/schedules/PAY
+  repoUrl: https://github.com/org/monorepo/tree/main/services/payments-worker
+  links:
+    - { title: Dashboard, url: https://grafana/d/pay-worker, type: dashboard }
+  dependsOn: [topic:payments.events, database:payments-pg, service:ledger-api]
+  providesApis: []
+  slo:
+    - { name: settle-latency-p99, target: "500ms", window: 30d }
+  alerts: services/payments-worker/alerts.yaml
+  runtime:
+    selector: { app.kubernetes.io/name: payments-worker }
+```
+
+`kind`, `metadata`, `spec.owner`, `spec.lifecycle`, `dependsOn` and
+`providesApis` keep Backstage-compatible names so a converter to
+`catalog-info.yaml` stays a small script.
+
+**Provenance** — `SourceRepo` and `SourcePath` are attached at parse time, not
+present in the file. They exist so collision and dangling-ref errors can name
+both sides.
+
+`schema/service.schema.json` is `go:embed`ed for validation and published via
+`sietch schema` for editor autocomplete (yaml-language-server).
+
+---
+
+## 6. Supporting config
+
+**`teams.yaml`** — team → members, Slack channel, PagerDuty service. The source
+for CODEOWNERS and alert routing.
+
+**`repos.yaml`** — which repos and paths make up the catalog.
+
+```yaml
+repos:
+  - url: https://github.com/org/monorepo
+    paths: [services/*, workers/*, libs/*]
+  - url: https://github.com/org/edge-gateway
+    paths: [.]
+```
+
+**`standards.yaml`** — the tier×severity matrix, the only scoring knob.
+
+```yaml
+apiVersion: sietch.dev/v1
+kind: Standards
+spec:
+  staleAfterDays: 14
+  checks:
+    owner-set:       { tiers: {1: required, 2: required, 3: required} }
+    runbook-present: { tiers: {1: required, 2: required, 3: warn} }
+    alerts-parse:    { tiers: {1: required, 2: required, 3: info} }
+    slo-defined:     { tiers: {1: required, 2: warn, 3: info} }
+    docs-fresh:      { params: {maxAgeDays: 180},
+                       tiers: {1: warn, 2: warn, 3: info} }
+    dashboard-resolves: { source: external, tiers: {1: required, 2: warn, 3: warn} }
+    image-scanned:      { source: external, tiers: {1: required, 2: required, 3: warn} }
+    otel-present:       { source: external, tiers: {1: required, 2: warn, 3: info} }
+    deps-declared:      { source: external, tiers: {1: required, 2: required, 3: warn} }
+```
+
+Severities: `required` | `warn` | `info` | `skip`.
+
+**`.sietch/checks/*.yaml`** — results reported in by CI for `source: external`
+checks.
+
+```yaml
+apiVersion: sietch.dev/v1
+kind: CheckResults
+producer: ci/image-scan
+generatedAt: 2026-09-08T14:00:00Z
+results:
+  - { service: payments-worker, check: image-scanned, status: pass,
+      detail: "0 critical, 2 medium (trivy 0.55)", url: "https://ci/run/1234" }
+```
+
+`status` is `pass` | `fail` | `error`. A result older than `staleAfterDays`
+renders as **stale**, not pass — an image scan from March is not evidence about
+today.
+
+Two distinct staleness clocks, deliberately: `spec.staleAfterDays` (days) ages
+out *ingested check results*; `docs-fresh.params.maxAgeDays` ages out *service
+documentation*. They answer different questions and are tuned independently.
+
+---
+
+## 7. Pipeline
+
+```
+1 DISCOVER  glob service.yaml from repos.yaml paths           → []FileRef
+2 FETCH     pull remote repo trees (GitHub/GitLab adapter)    → local cache
+3 PARSE     YAML → Entity, strict schema, line numbers kept   → []Entity + diags
+4 MERGE     one Catalog; detect name collisions               → Catalog
+5 RESOLVE   resolve kind:name refs, build graph, find cycles  → Graph
+6 INGEST    read .sietch/checks/*.yaml, apply staleness       → []ExternalResult
+7 SCORE     hermetic checks + ingested, apply standards.yaml  → Scorecard
+8 EMIT      site / CODEOWNERS / routing / history.csv         → dist/
+```
+
+Stages are pure functions where practical, each independently testable.
+
+### 7.1 The two entry points
+
+| Command | Stages | Network | Run by |
+|---|---|---|---|
+| `sietch validate` | 1, 3, 4, 5*, 6 | none | every service repo's PR CI |
+| `sietch build` | 1–8 | yes | platform repo, on merge to main |
+
+`*` — refs pointing outside the current repo are **recorded, not resolved**.
+Cross-repo references resolve at merge time only. A service repo's CI therefore
+needs no tokens and no network, and cannot be broken by an unrelated team's
+repo. Under `build`, dangling refs and dependency cycles are hard failures.
+
+---
+
+## 8. Commands
+
+```
+sietch validate [--format]            local, hermetic, no network, no tokens
+sietch build [-o dist] [--allow-partial]
+sietch score  [--format] [--fail-on required|warn]
+sietch gen    [--check]               CODEOWNERS, alert routing, Slack map
+sietch serve  [--watch]               local preview
+sietch schema                         print JSON Schema for editor setup
+sietch version
+```
+
+`score --fail-on` defaults to `required`: only checks marked `required` for
+that service's tier gate the build. `--fail-on warn` additionally gates on
+`warn`, for a team that wants to ratchet.
+
+`gen --check` regenerates to a temp dir and diffs against what is committed,
+exiting non-zero when stale. This is the mechanism that makes metadata rot
+break something visible.
+
+Build, test, lint and release are driven by `Taskfile.yml` (go-task).
+
+---
+
+## 9. Scorecard
+
+Score = passed / applicable, per service, per team, and appended weekly to
+`scorecard-history.csv` by the CI job.
+
+**Hermetic checks (computed in-binary):** `owner-set`, `runbook-present`,
+`alerts-parse`, `slo-defined`, `docs-fresh`.
+
+**External checks (ingested):** `dashboard-resolves`, `image-scanned`,
+`otel-present`, `deps-declared`.
+
+An external check with no reported result renders as **not reported**, which is
+distinct from both pass and fail.
+
+**Known cost of D5:** `docs-fresh` needs a last-edit date. In the local repo
+that is `git log`, free. For repos fetched over a host API there is no git
+history, so it costs one `GET /commits?path=…&per_page=1` per service. Tolerable
+at a dozen services; documented in the call budget rather than silently dropped
+for remote repos.
+
+---
+
+## 10. Portal
+
+Static HTML generated at build time. No JS framework. Dense, left-aligned,
+monospace reserved for versions.
+
+- **Catalog** — all entities, filterable by kind/team/tier/tag, sortable by score
+- **Service** — header, links, runtime badge, Mermaid dependency graph, scorecard, then rendered `docs/`
+- **Team** — members, on-call, owned services, aggregate score
+- **Scorecard** — the standards table with weekly trend
+- **Dependency map** — whole-system Mermaid graph from `dependsOn`
+
+**Search** — a build-time `search-index.json` over titles, headings and body
+text, queried by a small vanilla-JS client. No server component.
+
+**Runtime** — the page fetches `runtime.json` client-side and degrades to
+"runtime unknown" when it is absent. v1 does not produce this file; building
+the producer (E) later requires no portal change.
+
+---
+
+## 11. Generated artifacts
+
+Derived from the catalog, never hand-edited, verified by `sietch gen --check`:
+
+- `CODEOWNERS`
+- Alertmanager / PagerDuty routing, via `owner` → `teams.yaml`
+- Slack channel map for deploy notifications
+
+---
+
+## 12. Error handling
+
+**Accumulate, never fail fast.** Validating twelve services reports twelve
+problems in one run.
+
+```go
+type Diagnostic struct {
+    Severity      Severity // error | warn | info
+    Repo, File    string
+    Line          int      // from yaml.v3 Node
+    Entity, Check string
+    Message, Hint string
+}
+```
+
+Every diagnostic carries a file and a line, and says what to do:
+
+```
+error: duplicate entity name "api"
+  monorepo      services/api/service.yaml:4
+  edge-gateway  service.yaml:4
+  names must be unique across the merged catalog
+```
+
+**Exit codes**
+
+| Code | Meaning | Who fixes it |
+|---|---|---|
+| 0 | clean | — |
+| 1 | usage or config error | whoever ran it |
+| 2 | validation error — schema, collision, cycle, dangling ref | the YAML's author |
+| 3 | scorecard gate — a tier-required check failed | the service owner |
+
+2 and 3 are distinct because "your metadata is broken" and "your service does
+not meet the standard" are different problems for different people.
+
+**Output** — `--format text|json`, plus auto-detected CI annotations:
+`::error file=…,line=…::` under `GITHUB_ACTIONS`, Code Quality JSON under
+`GITLAB_CI`.
+
+**No silent fallbacks.** A fetch failure is a hard failure; rendering a portal
+quietly missing three services is worse than rendering nothing. `--allow-partial`
+exists but stamps a visible banner into the generated site naming every repo
+that failed. Degraded mode must be visible in the artifact, not only in a log.
+
+---
+
+## 13. Package layout
+
+```
+cmd/sietch/            cobra commands
+internal/catalog/      Entity types, parse, merge, refs, graph
+internal/schema/       go:embed'd JSON Schema, strict validation
+internal/fetch/        Fetcher interface; github/, gitlab/ adapters
+internal/scorecard/    checks, ingest, scoring, history
+internal/render/       site generation, goldmark pipeline, search index
+internal/render/md/    admonition extension
+internal/generate/     CODEOWNERS, alert routing, Slack map
+internal/config/       repos / teams / standards loading
+web/                   go:embed templates, CSS, search JS
+schema/                service.schema.json
+testdata/              fixture repos
+```
+
+---
+
+## 14. Testing
+
+Test-first.
+
+- **Table-driven per check** — one table entry per pass/fail/edge case.
+- **Fixture repos in `testdata/`**: `monorepo-ok/`, `monorepo-broken/` (one
+  fixture per diagnostic: collision, cycle, dangling ref, empty runbook,
+  unknown owner), `multirepo/`.
+- **Golden-file tests** for the renderer, with `-update` to regenerate.
+- **Fetchers against `httptest`** with recorded responses. **Zero network in
+  the test suite** — it must pass offline.
+- **Every diagnostic type asserts its exact message string.** Error message
+  quality is the product; a wording regression fails a test.
+
+---
+
+## 15. Non-goals for v1
+
+- Producing `runtime.json` (the portal consumes it; the agent is sub-project E)
+- Templates and `task new-service` (F)
+- `mode-runner`, the Claude Code plugin, skills and modes catalog pages (G, H)
+- **Git hosts other than GitHub and GitLab** — a consequence of D5, accepted
+- Portal authentication, RBAC or SSO — whatever hosts the static site owns that
+- Server-side search
+- Provisioning infrastructure or running deployments
+- Re-hosting anything Grafana, PagerDuty or Dynatrace already shows; the portal
+  links out
+
+---
+
+## 16. Open items
+
+1. **`sietch` name availability** — GitHub org, domain, pkg.go.dev. Blocks the
+   module path, which is a one-way door. Verify before `go.mod`.
+2. **`apiVersion` value** — `sietch.dev/v1` follows k8s and Backstage
+   convention but presumes a domain. Settled by item 1.
+3. **Tier-2 SLO severity at launch** — `warn` in the matrix above. Confirm with
+   the first adopting team rather than by argument.
