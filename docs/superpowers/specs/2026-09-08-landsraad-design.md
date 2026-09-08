@@ -1,4 +1,4 @@
-# sietch — a lightweight developer portal for small teams
+# landsraad — a lightweight developer portal for small teams
 
 **Status:** approved design, pre-implementation
 **Date:** 2026-09-08
@@ -8,7 +8,7 @@
 
 ## 1. Summary
 
-`sietch` is a single Go binary that reads service metadata colocated with code,
+`landsraad` is a single Go binary that reads service metadata colocated with code,
 validates it, scores it against a team standard, and renders a static portal.
 
 It answers the questions Backstage answers — who owns this, where are its docs,
@@ -51,13 +51,14 @@ Recorded because the *why* is the part that gets lost.
 |---|---|---|
 | D1 | Go-native rendering (goldmark), not MkDocs | Portal pages are a generated app, not docs pages. Rendering them through MkDocs means Go *and* a pinned Python toolchain in every CI run and on every contributor's machine. `go install` beats `pip install mkdocs-material` for adoption. Backstage-migration risk is low: TechDocs needs `mkdocs.yml` + Markdown in `docs/`, our docs are already plain Markdown, and the yml is a generated file. |
 | D2 | GFM + admonitions dialect | goldmark GFM (tables, footnotes, task lists) + Chroma + Mermaid + one custom extension for MkDocs-style `!!! note`. Runbooks genuinely use callouts, and it stays paste-compatible with docs written for MkDocs. Tabs and snippet-includes are excluded: they break GitHub rendering, and these files are read in the repo too. |
-| D3 | Hermetic checks in-binary, expensive checks ingested | `sietch score` must run offline in under a second with no Docker daemon and no network egress. Checks needing a build, a scanner or an HTTP probe are *reported into* the tool via `.sietch/checks/*.yaml` written by the CI jobs that already know the answer. The extension point is YAML, not a plugin API — consistent with the non-goal of a plugin system. |
+| D3 | Hermetic checks in-binary, expensive checks ingested | `landsraad score` must run offline in under a second with no Docker daemon and no network egress. Checks needing a build, a scanner or an HTTP probe are *reported into* the tool via `.landsraad/checks/*.yaml` written by the CI jobs that already know the answer. The extension point is YAML, not a plugin API — consistent with the non-goal of a plugin system. |
 | D4 | Go checks + YAML severity matrix | Checks are Go funcs with stable ids; `standards.yaml` holds only the tier→severity matrix and thresholds. Type-safe, precise messages, nothing to debug in YAML. A CEL expression language was rejected as an API surface with no demonstrated demand. |
 | D5 | GitHub + GitLab host API adapters | User decision, taken over a recommendation for a host-agnostic fetcher. Consequence accepted and recorded as a non-goal (§15): Gitea, Forgejo, Bitbucket and self-hosted git are unsupported in v1. Fetching sits behind a Go interface so a generic fetcher is additive later. |
 | D6 | Flat global entity names | `metadata.name` unique across the merged catalog; refs are `kind:name`. Repos, not teams, are the namespacing axis, and at a handful of repos collisions are a two-minute rename, not a migration. Decisive factor: flat → namespaced is a non-breaking additive change later (Backstage's default namespace is literally `default`), while namespaced → flat is breaking. On a one-way door, take the door that stays open. |
 | D7 | Strict schema (`additionalProperties: false`) | Unknown fields are rejected, not ignored. Prevents a half-working `namespace:` field existing in the wild before v2 defines one. |
 | D8 | Everything starts in `internal/` | `internal → pkg` is additive; `pkg → internal` is breaking. Catalog types get promoted when someone actually asks to import them. |
 | D9 | Dune naming on user-facing surfaces only | Project, binary and deployed components carry Dune names; Go packages are literal (`catalog`, `scorecard`, `render`). Themed package names tax every future contributor with a glossary. |
+| D10 | Named `landsraad`, not `sietch` | `sietch` was the first choice and failed an availability check on 2026-09-08: `danprince/sietch` is an existing **Go Markdown static site generator** — same language, same niche — alongside a 141-star storage project, three Go modules, and sietch.dev/.io/.sh/.org all registered. `landsraad` has zero Go modules and no namesake above one star, and is semantically closer: the assembly of the Great Houses is a federated register of who owns what. `apiVersion` needs no domain (k8s uses `apps/v1`), so no domain sits on the critical path. |
 
 ---
 
@@ -65,10 +66,10 @@ Recorded because the *why* is the part that gets lost.
 
 | Component | Name | In v1 |
 |---|---|---|
-| Project and binary | **sietch** | yes |
+| Project and binary | **landsraad** (alias `lsr`) | yes |
 | Validator | Truthsayer | yes |
 | Scorecard engine | Mentat | yes |
-| Multi-repo fetcher | Heighliner | yes |
+| Multi-repo fetcher | Carryall | yes |
 | Dependency resolver | Navigator | yes |
 | CI gate | Sardaukar | yes |
 | Templates | Missionaria | deferred (F) |
@@ -78,8 +79,14 @@ Recorded because the *why* is the part that gets lost.
 Names appear in docs, subcommand help, and deployed component names. They do
 not appear in package or type names.
 
-**Unverified:** GitHub org, domain, and pkg.go.dev collisions for `sietch` have
-not been checked. The module path is a one-way door — verify before `go.mod`.
+**Verified 2026-09-08.** `landsraad`: zero Go modules on pkg.go.dev, 14 GitHub
+repos of which none exceeds one star. Module path `github.com/<org>/landsraad`.
+The nine-letter name carries an `lsr` alias for daily use.
+
+`Heighliner` was rejected as the fetcher name: `manifoldco/heighliner` is a
+281-star "continuous delivery to Kubernetes" tool with 18 Go modules — actively
+confusing in a k8s-adjacent project. `Carryall` is the Dune aircraft that hauls
+harvesters in and out: same metaphor, no collision.
 
 ---
 
@@ -89,7 +96,7 @@ One `service.yaml` per deployable unit and per shared resource, colocated with
 the code it describes.
 
 ```yaml
-apiVersion: sietch.dev/v1
+apiVersion: landsraad/v1
 kind: Service            # Service | Worker | Cron | Library | Topic | Database | API
 metadata:
   name: payments-worker  # unique across the merged catalog
@@ -125,7 +132,7 @@ present in the file. They exist so collision and dangling-ref errors can name
 both sides.
 
 `schema/service.schema.json` is `go:embed`ed for validation and published via
-`sietch schema` for editor autocomplete (yaml-language-server).
+`landsraad schema` for editor autocomplete (yaml-language-server).
 
 ---
 
@@ -147,7 +154,7 @@ repos:
 **`standards.yaml`** — the tier×severity matrix, the only scoring knob.
 
 ```yaml
-apiVersion: sietch.dev/v1
+apiVersion: landsraad/v1
 kind: Standards
 spec:
   staleAfterDays: 14
@@ -166,11 +173,11 @@ spec:
 
 Severities: `required` | `warn` | `info` | `skip`.
 
-**`.sietch/checks/*.yaml`** — results reported in by CI for `source: external`
+**`.landsraad/checks/*.yaml`** — results reported in by CI for `source: external`
 checks.
 
 ```yaml
-apiVersion: sietch.dev/v1
+apiVersion: landsraad/v1
 kind: CheckResults
 producer: ci/image-scan
 generatedAt: 2026-09-08T14:00:00Z
@@ -197,7 +204,7 @@ documentation*. They answer different questions and are tuned independently.
 3 PARSE     YAML → Entity, strict schema, line numbers kept   → []Entity + diags
 4 MERGE     one Catalog; detect name collisions               → Catalog
 5 RESOLVE   resolve kind:name refs, build graph, find cycles  → Graph
-6 INGEST    read .sietch/checks/*.yaml, apply staleness       → []ExternalResult
+6 INGEST    read .landsraad/checks/*.yaml, apply staleness       → []ExternalResult
 7 SCORE     hermetic checks + ingested, apply standards.yaml  → Scorecard
 8 EMIT      site / CODEOWNERS / routing / history.csv         → dist/
 ```
@@ -208,8 +215,8 @@ Stages are pure functions where practical, each independently testable.
 
 | Command | Stages | Network | Run by |
 |---|---|---|---|
-| `sietch validate` | 1, 3, 4, 5*, 6 | none | every service repo's PR CI |
-| `sietch build` | 1–8 | yes | platform repo, on merge to main |
+| `landsraad validate` | 1, 3, 4, 5*, 6 | none | every service repo's PR CI |
+| `landsraad build` | 1–8 | yes | platform repo, on merge to main |
 
 `*` — refs pointing outside the current repo are **recorded, not resolved**.
 Cross-repo references resolve at merge time only. A service repo's CI therefore
@@ -221,13 +228,13 @@ repo. Under `build`, dangling refs and dependency cycles are hard failures.
 ## 8. Commands
 
 ```
-sietch validate [--format]            local, hermetic, no network, no tokens
-sietch build [-o dist] [--allow-partial]
-sietch score  [--format] [--fail-on required|warn]
-sietch gen    [--check]               CODEOWNERS, alert routing, Slack map
-sietch serve  [--watch]               local preview
-sietch schema                         print JSON Schema for editor setup
-sietch version
+landsraad validate [--format]            local, hermetic, no network, no tokens
+landsraad build [-o dist] [--allow-partial]
+landsraad score  [--format] [--fail-on required|warn]
+landsraad gen    [--check]               CODEOWNERS, alert routing, Slack map
+landsraad serve  [--watch]               local preview
+landsraad schema                         print JSON Schema for editor setup
+landsraad version
 ```
 
 `score --fail-on` defaults to `required`: only checks marked `required` for
@@ -286,7 +293,7 @@ the producer (E) later requires no portal change.
 
 ## 11. Generated artifacts
 
-Derived from the catalog, never hand-edited, verified by `sietch gen --check`:
+Derived from the catalog, never hand-edited, verified by `landsraad gen --check`:
 
 - `CODEOWNERS`
 - Alertmanager / PagerDuty routing, via `owner` → `teams.yaml`
@@ -344,7 +351,7 @@ that failed. Degraded mode must be visible in the artifact, not only in a log.
 ## 13. Package layout
 
 ```
-cmd/sietch/            cobra commands
+cmd/landsraad/            cobra commands
 internal/catalog/      Entity types, parse, merge, refs, graph
 internal/schema/       go:embed'd JSON Schema, strict validation
 internal/fetch/        Fetcher interface; github/, gitlab/ adapters
@@ -392,9 +399,5 @@ Test-first.
 
 ## 16. Open items
 
-1. **`sietch` name availability** — GitHub org, domain, pkg.go.dev. Blocks the
-   module path, which is a one-way door. Verify before `go.mod`.
-2. **`apiVersion` value** — `sietch.dev/v1` follows k8s and Backstage
-   convention but presumes a domain. Settled by item 1.
-3. **Tier-2 SLO severity at launch** — `warn` in the matrix above. Confirm with
+1. **Tier-2 SLO severity at launch** — `warn` in the matrix above. Confirm with
    the first adopting team rather than by argument.
