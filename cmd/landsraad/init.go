@@ -68,7 +68,7 @@ func runInit(root string, out io.Writer) error {
 		fmt.Fprintf(out, "  created %s\n", f.path)
 	}
 	fmt.Fprintf(out, "\nNext: run `landsraad validate`. Editor autocompletion is already wired up:\n"+
-		"service.yaml points at schema/service.schema.json, written above.\n")
+		"service.yaml points at schema/service.schema.json.\n")
 	return nil
 }
 
