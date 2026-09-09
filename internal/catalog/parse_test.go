@@ -126,7 +126,7 @@ spec:
 	if got.Line == 0 {
 		t.Error("a decode error must carry a line number")
 	}
-	expectedMsg := "cannot read as a catalog entity: yaml: unmarshal errors:\n  line 5: cannot unmarshal !!str `not-an-...` into int"
+	expectedMsg := "expected a number, found a string"
 	if got.Message != expectedMsg {
 		t.Errorf("Message = %q, want %q", got.Message, expectedMsg)
 	}

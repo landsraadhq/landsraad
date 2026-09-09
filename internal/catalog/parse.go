@@ -6,17 +6,12 @@ import (
 	"fmt"
 	"io"
 	pathpkg "path"
-	"regexp"
-	"strconv"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/landsraadhq/landsraad/internal/diag"
+	"github.com/landsraadhq/landsraad/internal/yamlerr"
 )
-
-// yamlLineRE pulls the line number out of a yaml.v3 error string, which has
-// the form "yaml: line 3: mapping values are not allowed in this context".
-var yamlLineRE = regexp.MustCompile(`line (\d+):`)
 
 // ParseFile turns one service.yaml into an Entity, attaching provenance and
 // the line number of metadata.name. It reports at most one diagnostic and
@@ -34,7 +29,7 @@ func ParseFile(repo, path string, data []byte, c *diag.Collector) (*Entity, bool
 			Severity: diag.SevError,
 			Repo:     repo,
 			File:     path,
-			Line:     lineFromYAMLError(err),
+			Line:     yamlerr.Line(err),
 			Check:    "yaml-parse",
 			Message:  fmt.Sprintf("cannot parse YAML: %v", err),
 		})
@@ -77,14 +72,29 @@ func ParseFile(repo, path string, data []byte, c *diag.Collector) (*Entity, bool
 
 	var e Entity
 	if err := root.Decode(&e); err != nil {
-		c.Add(diag.Diagnostic{
-			Severity: diag.SevError,
-			Repo:     repo,
-			File:     path,
-			Line:     lineFromYAMLError(err),
-			Check:    "yaml-decode",
-			Message:  fmt.Sprintf("cannot read as a catalog entity: %v", err),
-		})
+		// The schema stage reports most of these too, on the same line, and
+		// two diagnostics for one cause is noise this codebase avoids
+		// elsewhere. It is kept anyway: schema.Validate returns false both
+		// when it reported a violation and when it deliberately stayed silent
+		// for bytes that are not YAML, so suppressing on it would make a
+		// malformed file vanish with no diagnostic at all, and skipping
+		// schema-failing files here would drop their owner and reference
+		// diagnostics — landsraad reports every problem in one run. Noise is
+		// the safe direction; silence is not.
+		for _, p := range yamlerr.Problems(path, catalogNouns, err) {
+			message := p.Message
+			if !p.Translated {
+				message = fmt.Sprintf("cannot read as a catalog entity: %s", p.Message)
+			}
+			c.Add(diag.Diagnostic{
+				Severity: diag.SevError,
+				Repo:     repo,
+				File:     path,
+				Line:     p.Line,
+				Check:    "yaml-decode",
+				Message:  message,
+			})
+		}
 		return nil, false
 	}
 
@@ -118,7 +128,7 @@ func extraDocuments(dec *yaml.Decoder) (extra, line int) {
 			// it as one, pointing at where the parser gave up: the count is
 			// what the reader needs, and the fix is the same either way.
 			if extra == 0 {
-				line = lineFromYAMLError(err)
+				line = yamlerr.Line(err)
 			}
 			return extra + 1, line
 		}
@@ -140,17 +150,6 @@ func isEmptyDocument(doc *yaml.Node) bool {
 	}
 	n := doc.Content[0]
 	return len(doc.Content) == 1 && n.Kind == yaml.ScalarNode && n.Tag == "!!null"
-}
-
-// lineFromYAMLError extracts a 1-indexed line from a yaml.v3 error, falling
-// back to 1 so no diagnostic is ever emitted without a line.
-func lineFromYAMLError(err error) int {
-	if m := yamlLineRE.FindStringSubmatch(err.Error()); m != nil {
-		if n, convErr := strconv.Atoi(m[1]); convErr == nil {
-			return n
-		}
-	}
-	return 1
 }
 
 // fieldLine walks a document node down the given key path and returns the
