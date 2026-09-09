@@ -66,8 +66,9 @@ repos:
     paths: [.]
 ```
 
-If it's absent, `validate` falls back to `services/*, workers/*, libs/*` and
-says so in its output rather than staying silent about it.
+If it's absent, `validate` falls back to `., services/*, workers/*, libs/*,
+topics/*` — including `.` itself, so a root-level `service.yaml` is still
+found — and says so in its output rather than staying silent about it.
 
 ### `service.yaml`
 

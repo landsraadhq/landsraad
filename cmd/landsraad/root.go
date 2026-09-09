@@ -14,10 +14,18 @@ var rootMarkers = []string{"repos.yaml", "teams.yaml", ".git"}
 // linter does. Without it, running `landsraad validate` from inside
 // services/foo/ reports "teams.yaml not found at the repository root" while
 // standing in a subdirectory of a perfectly valid repo.
+//
+// start itself must exist: without this check, a typo'd argument inside a
+// real repo (`validate serivces/api`) walked upward, found the repo's real
+// root by accident, and validated that instead — a clean pass for a
+// directory that was never actually inspected.
 func findRoot(start string) (string, error) {
 	dir, err := filepath.Abs(start)
 	if err != nil {
 		return "", err
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("%s is not a directory", start)
 	}
 	for {
 		for _, marker := range rootMarkers {
