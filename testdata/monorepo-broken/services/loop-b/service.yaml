@@ -1,0 +1,11 @@
+apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: loop-b
+  owner: team-payments
+  tier: 3
+  lifecycle: production
+spec:
+  path: services/loop-b
+  dependsOn:
+    - service:loop-a

@@ -1,0 +1,5 @@
+teams:
+  - name: team-payments
+    members: [alice]
+    slack: "#payments"
+    pagerduty: PAY
