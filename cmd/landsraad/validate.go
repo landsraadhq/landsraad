@@ -81,7 +81,7 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter) int {
 	if c.HasErrors() {
 		return exitValidation
 	}
-	fmt.Fprintf(errOut, "ok: %d entities validated, no problems found\n", len(cat.Entities()))
+	fmt.Fprintf(errOut, "ok: %s validated, no problems found\n", plural(len(cat.Entities()), "entity", "entities"))
 	return exitOK
 }
 
@@ -222,4 +222,14 @@ func newValidateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&format, "format", "auto",
 		"output format: auto, "+strings.Join(diag.FormatNames(), ", "))
 	return cmd
+}
+
+// plural renders a count with the right noun. "1 entities validated" is the
+// most-read line the tool prints, in a project whose thesis is that message
+// quality is the product.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }

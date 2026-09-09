@@ -479,3 +479,15 @@ func TestPatternsForDoesNotStackANoteOnAParseError(t *testing.T) {
 		t.Fatalf("expected exactly one diagnostic for one cause, got %d: %+v", c.Len(), c.Diagnostics())
 	}
 }
+
+// "1 entities validated" is the most-read line the tool prints.
+func TestPluralRendersTheRightNoun(t *testing.T) {
+	for _, tc := range []struct {
+		n    int
+		want string
+	}{{0, "0 entities"}, {1, "1 entity"}, {2, "2 entities"}} {
+		if got := plural(tc.n, "entity", "entities"); got != tc.want {
+			t.Errorf("plural(%d) = %q, want %q", tc.n, got, tc.want)
+		}
+	}
+}

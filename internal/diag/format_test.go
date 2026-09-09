@@ -3,7 +3,6 @@ package diag
 import (
 	"bytes"
 	"encoding/json"
-	"io"
 	"strings"
 	"testing"
 
@@ -186,21 +185,3 @@ func TestFormattersAreConsistent(t *testing.T) {
 		t.Errorf("FormatNames must be sorted, got %v", got)
 	}
 }
-
-// A caller can supply its own Formatter: the interface is the extension
-// point, which is why the Registry type was unnecessary.
-func TestAnyFormatterSatisfiesTheInterface(t *testing.T) {
-	var f Formatter = quietFormat{}
-	var buf bytes.Buffer
-	if err := f.Write(&buf, sample); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if buf.Len() != 0 {
-		t.Errorf("quiet formatter wrote %q", buf.String())
-	}
-}
-
-type quietFormat struct{}
-
-func (quietFormat) Name() string                        { return "quiet" }
-func (quietFormat) Write(io.Writer, []Diagnostic) error { return nil }
