@@ -130,11 +130,26 @@ specific mechanism rather than by good intentions.
   `*diag.Collector`; rendering happens once, at the edge.
 
 **Writes belong to the command layer.** `io/fs.FS` is read-only by design.
-Plan 2's `gen` and Plan 3's `EMIT` produce files, so they take `io.Writer`s and
-the command layer decides where bytes land. Without stating this, the "no `os`
-below `cmd/`" rule gets quietly weakened the first time someone needs to write
-a file — and an absolute rule that has to be broken teaches contributors to
-ignore the rules.
+Plan 2's `gen` and Plan 3's `EMIT` produce files, and the command layer decides
+where bytes land. Without stating this, the "no `os` below `cmd/`" rule gets
+quietly weakened the first time someone needs to write a file — and an absolute
+rule that has to be broken teaches contributors to ignore the rules.
+
+An `io.Writer` is one stream, which covers a single artifact and not a tree.
+`EMIT` produces `dist/`: a page per entity, a search index, CODEOWNERS, a
+history file. A contributor writing `internal/render/` would reach for
+`os.MkdirAll`, be blocked, and then either move the renderer into `cmd/` —
+losing the pure-stage discipline — or weaken the rule. So:
+
+> **A generator is a pure function returning the files it would write** —
+> `[]File{Path, Data}`, paths slash-separated and relative to a root it never
+> names — and `cmd/` owns the one loop that puts them on disk.
+
+`internal/scaffold` is the first instance, backing `landsraad init`. Its
+correctness property — what init writes already validates — is therefore
+checked against an in-memory filesystem rather than a temporary directory.
+`File` stays local to that package until Plan 2's generators give it a second
+producer, which is when the type is promoted rather than guessed at.
 
 **Reusability — one component serves unrelated callers.**
 
