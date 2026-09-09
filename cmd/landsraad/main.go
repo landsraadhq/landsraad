@@ -25,6 +25,7 @@ func main() {
 		Short: "A lightweight developer portal for small teams",
 	}
 	root.AddCommand(newValidateCmd())
+	root.AddCommand(newInitCmd())
 	root.AddCommand(&cobra.Command{
 		Use:   "schema",
 		Short: "Print the JSON Schema for service.yaml",
@@ -39,7 +40,7 @@ func main() {
 		Use:   "version",
 		Short: "Print the version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Fprintf(cmd.OutOrStdout(), "landsraad %s\n", Version)
+			fmt.Fprintf(cmd.OutOrStdout(), "landsraad %s\n", version())
 		},
 	})
 	if err := root.Execute(); err != nil {

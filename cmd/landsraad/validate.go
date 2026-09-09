@@ -178,9 +178,9 @@ func newValidateCmd() *cobra.Command {
 			if len(args) == 1 {
 				root = args[0]
 			}
-			info, err := os.Stat(root)
-			if err != nil || !info.IsDir() {
-				return fmt.Errorf("%s is not a directory", root)
+			resolved, err := findRoot(root)
+			if err != nil {
+				return err
 			}
 			name := format
 			if name == "auto" {
@@ -197,7 +197,7 @@ func newValidateCmd() *cobra.Command {
 			}
 			cmd.SilenceUsage = true
 			// os.DirFS is the single place this program touches os for reading.
-			if code := Validate(os.DirFS(root), cmd.OutOrStdout(), cmd.ErrOrStderr(), f); code != exitOK {
+			if code := Validate(os.DirFS(resolved), cmd.OutOrStdout(), cmd.ErrOrStderr(), f); code != exitOK {
 				os.Exit(code)
 			}
 			return nil
