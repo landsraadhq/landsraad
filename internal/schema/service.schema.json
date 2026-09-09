@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/landsraadhq/landsraad/main/schema/service.schema.json",
+  "title": "landsraad catalog entity",
+  "type": "object",
+  "unevaluatedProperties": false,
+  "required": ["apiVersion", "kind", "metadata"],
+  "properties": {
+    "apiVersion": { "const": "landsraad/v1" },
+    "kind": {
+      "enum": ["Service", "Worker", "Cron", "Library", "Topic", "Database", "API", "Resource"]
+    },
+    "metadata": {
+      "type": "object",
+      "unevaluatedProperties": false,
+      "required": ["name", "owner", "lifecycle"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$",
+          "maxLength": 63
+        },
+        "aliases": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$" }
+        },
+        "description": { "type": "string" },
+        "owner": { "type": "string", "minLength": 1 },
+        "tier": { "type": "integer", "enum": [1, 2, 3] },
+        "lifecycle": { "enum": ["experimental", "production", "deprecated"] },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "labels": { "type": "object", "additionalProperties": { "type": "string" } },
+        "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "type": { "type": "string" },
+        "language": { "type": "string" },
+        "path": { "type": "string" },
+        "docs": { "type": "string" },
+        "runbook": { "type": "string" },
+        "oncall": { "type": "string" },
+        "repoUrl": { "type": "string" },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "unevaluatedProperties": false,
+            "required": ["title", "url"],
+            "properties": {
+              "title": { "type": "string" },
+              "url": { "type": "string" },
+              "type": { "type": "string" }
+            }
+          }
+        },
+        "dependsOn": { "type": "array", "items": { "type": "string" } },
+        "providesApis": { "type": "array", "items": { "type": "string" } },
+        "slo": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "unevaluatedProperties": false,
+            "required": ["name", "target"],
+            "properties": {
+              "name": { "type": "string" },
+              "target": { "type": "string" },
+              "window": { "type": "string" }
+            }
+          }
+        },
+        "exemptions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "unevaluatedProperties": false,
+            "required": ["check", "reason"],
+            "properties": {
+              "check": { "type": "string" },
+              "reason": { "type": "string", "minLength": 1 },
+              "until": { "type": "string", "format": "date" }
+            }
+          }
+        },
+        "alerts": { "type": "string" },
+        "runtime": {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "properties": {
+            "selector": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "tier is required only for things that can page someone. A Kafka topic's criticality is derived from its consumers; a library has none.",
+      "if": {
+        "required": ["kind"],
+        "properties": { "kind": { "enum": ["Service", "Worker", "Cron", "API"] } }
+      },
+      "then": {
+        "properties": { "metadata": { "required": ["tier"] } }
+      }
+    }
+  ]
+}

@@ -1,0 +1,215 @@
+package schema
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/landsraadhq/landsraad/internal/catalog"
+	"github.com/landsraadhq/landsraad/internal/diag"
+)
+
+const good = `apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: payments-worker
+  owner: team-payments
+  tier: 1
+  lifecycle: production
+spec:
+  language: go
+`
+
+func mustDefault(t *testing.T) *Validator {
+	t.Helper()
+	v, err := Default()
+	if err != nil {
+		t.Fatalf("the embedded schema must compile: %v", err)
+	}
+	return v
+}
+
+func TestValidateAcceptsAGoodFile(t *testing.T) {
+	var c diag.Collector
+	if !mustDefault(t).Validate("monorepo", "a/service.yaml", []byte(good), &c) {
+		t.Fatalf("a valid file must pass: %+v", c.Diagnostics())
+	}
+}
+
+func TestValidateRejectsUnknownFields(t *testing.T) {
+	in := strings.Replace(good, "  language: go\n", "  language: go\n  nonsense: yes\n", 1)
+	var c diag.Collector
+	if mustDefault(t).Validate("monorepo", "a/service.yaml", []byte(in), &c) {
+		t.Fatal("unevaluatedProperties is false — an unknown field must be rejected, not ignored")
+	}
+	if !c.HasErrors() {
+		t.Fatal("rejection must produce an error diagnostic")
+	}
+	if c.Diagnostics()[0].Line == 0 {
+		t.Error("a schema violation must carry a line number")
+	}
+	// Without an exact message assertion, a Validate that emitted one
+	// hardcoded "invalid" for every violation would pass every rejection
+	// test in this file.
+	got := c.Diagnostics()[0].Message
+	want := `at '/spec/nonsense': false schema`
+	if got != want {
+		t.Errorf("message =\n%s\nwant   =\n%s", got, want)
+	}
+}
+
+func TestValidateRejectsBadTier(t *testing.T) {
+	in := strings.Replace(good, "tier: 1", "tier: 9", 1)
+	var c diag.Collector
+	if mustDefault(t).Validate("monorepo", "a/service.yaml", []byte(in), &c) {
+		t.Fatal("tier 9 is not one of 1, 2, 3")
+	}
+	got := c.Diagnostics()[0].Message
+	want := `at '/metadata/tier': value must be one of 1, 2, 3`
+	if got != want {
+		t.Errorf("message =\n%s\nwant   =\n%s", got, want)
+	}
+}
+
+func TestValidateRejectsMissingOwner(t *testing.T) {
+	in := strings.Replace(good, "  owner: team-payments\n", "", 1)
+	var c diag.Collector
+	if mustDefault(t).Validate("monorepo", "a/service.yaml", []byte(in), &c) {
+		t.Fatal("owner is required")
+	}
+	got := c.Diagnostics()[0].Message
+	want := `at '/metadata': missing property 'owner'`
+	if got != want {
+		t.Errorf("message =\n%s\nwant   =\n%s", got, want)
+	}
+}
+
+// tier is required for things that page, optional for things that do not.
+func TestTierIsRequiredOnlyForPageableKinds(t *testing.T) {
+	lib := `apiVersion: landsraad/v1
+kind: Library
+metadata:
+  name: kafkaclient
+  owner: team-payments
+  lifecycle: production
+`
+	var c diag.Collector
+	if !mustDefault(t).Validate("", "libs/kafkaclient/service.yaml", []byte(lib), &c) {
+		t.Errorf("a Library needs no tier: %+v", c.Diagnostics())
+	}
+
+	svc := strings.Replace(good, "  tier: 1\n", "", 1)
+	var c2 diag.Collector
+	if mustDefault(t).Validate("", "a/service.yaml", []byte(svc), &c2) {
+		t.Fatal("a Service without a tier must be rejected")
+	}
+	got := c2.Diagnostics()[0].Message
+	want := `at '/metadata': missing property 'tier'`
+	if got != want {
+		t.Errorf("message =\n%s\nwant   =\n%s", got, want)
+	}
+}
+
+func TestValidateAcceptsAnnotationsAndAliases(t *testing.T) {
+	in := strings.Replace(good, "  tier: 1\n",
+		"  tier: 1\n  aliases: [payments-svc]\n  annotations:\n    grafana-folder: abc123\n", 1)
+	var c diag.Collector
+	if !mustDefault(t).Validate("", "a/service.yaml", []byte(in), &c) {
+		t.Errorf("annotations and aliases must be accepted: %+v", c.Diagnostics())
+	}
+}
+
+func TestNameMustNotEndInASeparator(t *testing.T) {
+	wants := map[string]string{
+		"payments.": `at '/metadata/name': 'payments.' does not match pattern '^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$'`,
+		"foo-":      `at '/metadata/name': 'foo-' does not match pattern '^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$'`,
+		"bar_":      `at '/metadata/name': 'bar_' does not match pattern '^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$'`,
+	}
+	for _, bad := range []string{"payments.", "foo-", "bar_"} {
+		in := strings.Replace(good, "name: payments-worker", "name: "+bad, 1)
+		var c diag.Collector
+		if mustDefault(t).Validate("", "a/service.yaml", []byte(in), &c) {
+			t.Errorf("%q ends in a separator and must be rejected (Backstage requires "+
+				"names to end alphanumeric; loosening later is free, tightening is not)", bad)
+			continue
+		}
+		got := c.Diagnostics()[0].Message
+		if want := wants[bad]; got != want {
+			t.Errorf("%q: message =\n%s\nwant   =\n%s", bad, got, want)
+		}
+	}
+}
+
+func TestValidateRejectsWrongAPIVersion(t *testing.T) {
+	in := strings.Replace(good, "landsraad/v1", "platform/v1", 1)
+	var c diag.Collector
+	if mustDefault(t).Validate("monorepo", "a/service.yaml", []byte(in), &c) {
+		t.Fatal("only landsraad/v1 is accepted")
+	}
+	got := c.Diagnostics()[0].Message
+	want := `at '/apiVersion': value must be 'landsraad/v1'`
+	if got != want {
+		t.Errorf("message =\n%s\nwant   =\n%s", got, want)
+	}
+}
+
+// A Validator is a value, so a caller can supply its own schema. This is the
+// flexibility requirement in spec §3.1, asserted rather than assumed.
+func TestNewAcceptsACallerSuppliedSchema(t *testing.T) {
+	v, err := New([]byte(`{"type":"object","required":["kind"]}`))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	var c diag.Collector
+	if !v.Validate("", "a.yaml", []byte("kind: Anything\n"), &c) {
+		t.Errorf("the caller's schema must be the one applied: %+v", c.Diagnostics())
+	}
+}
+
+func TestNewRejectsBrokenSchema(t *testing.T) {
+	if _, err := New([]byte("{not json")); err == nil {
+		t.Fatal("a schema that is not JSON must return an error, not panic")
+	}
+}
+
+// A violation nested inside an array, several levels below the document
+// root, must still report the line of the offending entry — not line 1 and
+// not the line of some unrelated sibling.
+func TestValidateReportsLineOfNestedViolation(t *testing.T) {
+	in := `apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: payments-worker
+  owner: team-payments
+  tier: 1
+  lifecycle: production
+spec:
+  language: go
+  slo:
+    - name: latency
+      target: p99<200ms
+    - name: availability
+`
+	var c diag.Collector
+	if mustDefault(t).Validate("", "a/service.yaml", []byte(in), &c) {
+		t.Fatal("an slo entry without a target must be rejected")
+	}
+	d := c.Diagnostics()[0]
+	const wantLine = 13 // "- name: availability", the start of the incomplete entry
+	if d.Line != wantLine {
+		t.Errorf("line = %d, want %d", d.Line, wantLine)
+	}
+	want := `at '/spec/slo/1': missing property 'target'`
+	if d.Message != want {
+		t.Errorf("message =\n%s\nwant   =\n%s", d.Message, want)
+	}
+}
+
+// The schema and the Go Kind constants must never drift apart.
+func TestSchemaKindsMatchGoKinds(t *testing.T) {
+	raw := string(Raw)
+	for _, k := range catalog.AllKinds {
+		if !strings.Contains(raw, `"`+string(k)+`"`) {
+			t.Errorf("kind %q exists in Go but not in service.schema.json", k)
+		}
+	}
+}
