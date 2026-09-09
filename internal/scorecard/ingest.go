@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"sort"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -19,6 +20,14 @@ var CheckResultsSchema []byte
 
 // ChecksDir is where CI jobs write their results.
 const ChecksDir = ".landsraad/checks"
+
+// IsCheckResultsFile reports whether name is a check-results file by
+// extension. validate and Ingest must agree on this predicate: a divergence
+// means a file validate accepts as well-formed silently vanishes from score,
+// or vice versa.
+func IsCheckResultsFile(name string) bool {
+	return strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".yml")
+}
 
 // Reported is one ingested result with the provenance needed to resolve
 // precedence and to name a producer in a diagnostic.
@@ -71,7 +80,7 @@ func Ingest(fsys fs.FS, cat *catalog.Catalog, staleAfterDays int, now time.Time,
 			continue
 		}
 		n := e.Name()
-		if len(n) < 6 || (n[len(n)-5:] != ".yaml" && n[len(n)-4:] != ".yml") {
+		if !IsCheckResultsFile(n) {
 			continue
 		}
 		names = append(names, n)

@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -49,6 +50,22 @@ func loadCatalog(fsys fs.FS, c *diag.Collector) (*catalog.Catalog, *config.Teams
 			Message: fmt.Sprintf("cannot search for %s files: %v", discover.Filename, err),
 		})
 		return nil, nil
+	}
+	// Matching nothing at all must be an error here too: gen and score both
+	// call loadCatalog, and without this check an empty-matching repos.yaml
+	// produces a valid-looking empty catalog that gen writes as empty
+	// artifacts and gen --check certifies as up to date forever. Compare
+	// Validate's identical check in validate.go.
+	if len(found) == 0 {
+		c.Add(diag.Diagnostic{
+			Severity: diag.SevError,
+			File:     "repos.yaml",
+			Line:     1,
+			Check:    "no-entities",
+			Message: fmt.Sprintf("no %s found under any configured path (%s)",
+				discover.Filename, strings.Join(paths, ", ")),
+			Hint: "add a repos.yaml listing the paths your services live under",
+		})
 	}
 	files := discover.Load(fsys, found, c)
 

@@ -78,7 +78,11 @@ func computeScore(fsys fs.FS, errOut io.Writer, opts ScoreOptions) (*scorecard.S
 		MaxDocsAgeDays: std.Param("docs-fresh", "maxAgeDays", 180),
 		LastEdit:       opts.LastEdit,
 	}
-	return scorecard.Score(cat, std, reported, env, &c), std, &c, true
+	sc := scorecard.Score(cat, std, reported, env, &c)
+	if c.HasErrors() {
+		return nil, nil, &c, false
+	}
+	return sc, std, &c, true
 }
 
 // Score measures the catalog against the standard.
@@ -222,8 +226,17 @@ func newScoreCmd() *cobra.Command {
 			if gate != config.SevRequired && gate != config.SevWarn {
 				return fmt.Errorf("--fail-on must be required or warn, got %q", failOn)
 			}
+			var scoreFormatter diag.Formatter
+			switch format {
+			case "text":
+				scoreFormatter = diagText()
+			case "json":
+				scoreFormatter = diag.JSON{}
+			default:
+				return fmt.Errorf("--format must be text or json, got %q", format)
+			}
 			opts := ScoreOptions{
-				Format:   diagText(),
+				Format:   scoreFormatter,
 				FailOn:   gate,
 				Now:      time.Now().UTC(),
 				LastEdit: gitLastEdit(resolved),

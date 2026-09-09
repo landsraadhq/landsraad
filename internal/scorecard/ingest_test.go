@@ -236,6 +236,29 @@ func TestIngestReportsAMalformedFile(t *testing.T) {
 	}
 }
 
+// A filename 5 characters or shorter with a .yml extension (e.g. "a.yml")
+// must still be ingested. validate.go and Ingest used to disagree on this via
+// two independently hand-rolled predicates; IsCheckResultsFile is now the one
+// place both check.
+func TestIngestReadsAShortDotYmlFilename(t *testing.T) {
+	cat := catalogOf(t, svc("api"))
+	fsys := fstest.MapFS{
+		".landsraad/checks/a.yml": {Data: resultsFile("2026-09-08T14:00:00Z",
+			"  - { entity: service:api, check: image-scanned, status: pass }\n")},
+	}
+	var c diag.Collector
+
+	got := Ingest(fsys, cat, 14, now, &c)
+
+	if c.HasErrors() {
+		t.Fatalf("a well-formed short .yml results file must ingest cleanly: %+v", c.Diagnostics())
+	}
+	ref := catalog.Ref{Kind: catalog.KindService, Name: "api"}
+	if _, ok := got[ref]["image-scanned"]; !ok {
+		t.Fatalf("a.yml must be ingested; got %+v", got)
+	}
+}
+
 // No directory at all is not an error — a repository that reports no external
 // results is a normal repository. Every external check renders not-reported,
 // which is the honest answer and is visible in the scorecard.

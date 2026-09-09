@@ -115,7 +115,7 @@ func validateCheckResults(fsys fs.FS, c *diag.Collector) {
 		return
 	}
 	for _, e := range entries {
-		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".yaml") && !strings.HasSuffix(e.Name(), ".yml")) {
+		if e.IsDir() || !scorecard.IsCheckResultsFile(e.Name()) {
 			continue
 		}
 		path := scorecard.ChecksDir + "/" + e.Name()

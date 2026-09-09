@@ -343,6 +343,35 @@ func TestTeamScoresAggregate(t *testing.T) {
 	}
 }
 
+// standards.yaml naming a check id this binary does not implement — a typo,
+// or a check id from a different version of landsraad — must warn rather
+// than silently score fewer checks than the team believes it configured.
+func TestScoreWarnsOnAnUnknownHermeticCheck(t *testing.T) {
+	e := svc("api")
+	cat := catalogOf(t, e)
+	std := stdOf(t, `apiVersion: landsraad/v1
+kind: Standards
+spec:
+  checks:
+    made-up-check: { tiers: {1: required} }
+`)
+	var c diag.Collector
+
+	Score(cat, std, nil, env(nil), &c)
+
+	if !hasWarn(c.Diagnostics()) {
+		t.Fatal("an unknown, non-external check must warn")
+	}
+	d := c.Diagnostics()[0]
+	if d.Check != "standards-unknown-check" {
+		t.Errorf("Check = %q, want %q", d.Check, "standards-unknown-check")
+	}
+	want := `check "made-up-check" is not implemented by this version of landsraad and is not marked ` + "`source: external`"
+	if d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+}
+
 func hasWarn(ds []diag.Diagnostic) bool {
 	for _, d := range ds {
 		if d.Severity == diag.SevWarn {

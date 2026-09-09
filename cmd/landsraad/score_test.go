@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/landsraadhq/landsraad/internal/config"
+	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/scorecard"
 )
 
@@ -172,6 +173,61 @@ spec:
 	var out, errOut bytes.Buffer
 	if code := Score(fsys, &out, &errOut, scoreOpts()); code != exitValidation {
 		t.Fatalf("exit = %d, want %d", code, exitValidation)
+	}
+}
+
+// An error raised during scoring — not only during loadCatalog — must also
+// gate the exit code. Two producers reporting the same (entity, check) at the
+// same instant is scorecard.Ingest's checks-tie error (spec §6: "a tie is an
+// error rather than a coin flip"); it used to be printed to stderr but leave
+// Score() reporting exitOK, because computeScore only checked HasErrors()
+// once, before Ingest ran.
+func TestScoreExitsTwoWhenIngestReportsATie(t *testing.T) {
+	fsys := scoreFS()
+	fsys[".landsraad/checks/a.yaml"] = &fstest.MapFile{Data: []byte(
+		"apiVersion: landsraad/v1\nkind: CheckResults\nproducer: ci/a\ngeneratedAt: 2026-09-08T00:00:00Z\nresults:\n  - { entity: service:api, check: image-scanned, status: pass }\n")}
+	fsys[".landsraad/checks/b.yaml"] = &fstest.MapFile{Data: []byte(
+		"apiVersion: landsraad/v1\nkind: CheckResults\nproducer: ci/b\ngeneratedAt: 2026-09-08T00:00:00Z\nresults:\n  - { entity: service:api, check: image-scanned, status: fail }\n")}
+
+	var out, errOut bytes.Buffer
+	if code := Score(fsys, &out, &errOut, scoreOpts()); code != exitValidation {
+		t.Fatalf("exit = %d, want %d (a checks-tie error must gate the exit code); stderr:\n%s", code, exitValidation, errOut.String())
+	}
+}
+
+// opts.Format must hold on the broken-catalog error path too, not only on
+// the success path (which opts.JSON controls). Score() writes diagnostics
+// through opts.Format.Write when the catalog has errors; if that were
+// hardcoded to the text formatter, `score --format json` would emit plain
+// text on stdout for a broken catalog, breaking every consumer expecting
+// only JSON there.
+func TestScoreErrorPathHonoursTheJSONFormatter(t *testing.T) {
+	fsys := scoreFS()
+	fsys["services/api/service.yaml"] = &fstest.MapFile{Data: []byte(`apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: api
+  description: The API.
+  owner: team-nope
+  tier: 1
+  lifecycle: production
+spec:
+  path: services/api
+`)}
+
+	var out, errOut bytes.Buffer
+	opts := scoreOpts()
+	opts.Format = diag.JSON{}
+
+	if code := Score(fsys, &out, &errOut, opts); code != exitValidation {
+		t.Fatalf("exit = %d, want %d", code, exitValidation)
+	}
+	var ds []diag.Diagnostic
+	if err := json.Unmarshal(out.Bytes(), &ds); err != nil {
+		t.Fatalf("stdout must be valid JSON diagnostics on the error path: %v\n%s", err, out.String())
+	}
+	if len(ds) == 0 {
+		t.Fatal("expected at least one diagnostic for the unknown owner")
 	}
 }
 
