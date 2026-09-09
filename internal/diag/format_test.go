@@ -116,6 +116,55 @@ func TestGitLabEmitsCodeQualityShape(t *testing.T) {
 	if out[0]["description"] == "" || out[0]["check_name"] != "unknown-owner" {
 		t.Errorf("description/check_name not carried: %v", out[0])
 	}
+	// GitLab's Code Quality shape has no field of its own for a suggested
+	// fix, so the hint must be folded into the description — exactly as
+	// GitHub.Write already does — or it is silently lost. Assert the exact
+	// rendering, not just that a hint appears somewhere.
+	wantDesc0 := `owner "team-payment" is not defined in teams.yaml (did you mean "team-payments"?)`
+	if out[0]["description"] != wantDesc0 {
+		t.Errorf("description\n got: %v\nwant: %s", out[0]["description"], wantDesc0)
+	}
+	// sample[1] has no Hint: the description must be the bare message, with
+	// no trailing " ()" artefact.
+	wantDesc1 := `spec.runbook points at "nope.md", which does not exist`
+	if out[1]["description"] != wantDesc1 {
+		t.Errorf("description\n got: %v\nwant: %s", out[1]["description"], wantDesc1)
+	}
+}
+
+// The fingerprint identifies the underlying problem, not the tool's current
+// wording for how to fix it. Two diagnostics that differ only in Hint (say,
+// because teams.yaml gained a closer name match) must fingerprint
+// identically, or every such change would churn GitLab's issue tracking for
+// a problem that has not actually changed — while the description, which a
+// human reads, must still reflect the new hint.
+func TestGitLabFingerprintIgnoresHint(t *testing.T) {
+	withHint := []Diagnostic{{Severity: SevError, File: "a.yaml", Line: 1,
+		Check: "unknown-owner", Message: "owner not defined", Hint: "did you mean X?"}}
+	withoutHint := []Diagnostic{{Severity: SevError, File: "a.yaml", Line: 1,
+		Check: "unknown-owner", Message: "owner not defined"}}
+
+	var buf1, buf2 bytes.Buffer
+	if err := (GitLab{}).Write(&buf1, withHint); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := (GitLab{}).Write(&buf2, withoutHint); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	var out1, out2 []map[string]any
+	if err := json.Unmarshal(buf1.Bytes(), &out1); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if err := json.Unmarshal(buf2.Bytes(), &out2); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if out1[0]["fingerprint"] != out2[0]["fingerprint"] {
+		t.Errorf("fingerprint must not depend on Hint, got %v and %v",
+			out1[0]["fingerprint"], out2[0]["fingerprint"])
+	}
+	if out1[0]["description"] == out2[0]["description"] {
+		t.Error("description must still differ when Hint differs — the hint would otherwise be silently lost")
+	}
 }
 
 // Every built-in format resolves, and each one's Name matches its key.

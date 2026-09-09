@@ -151,11 +151,25 @@ func (GitLab) Write(w io.Writer, ds []Diagnostic) error {
 			severity = "minor"
 		}
 		// GitLab dedupes by fingerprint across pipeline runs, so it must be
-		// stable for the same problem in the same place.
+		// stable for the same problem in the same place. Hint is deliberately
+		// excluded from it: Hint is advisory ("did you mean team-payments?")
+		// and can reword on its own when, say, teams.yaml gains a closer
+		// name match, with the underlying problem unchanged. Folding it into
+		// the fingerprint would churn GitLab's issue tracking for the same
+		// unresolved diagnostic every time the suggestion's wording shifts.
 		h := fnv.New64a()
 		fmt.Fprintf(h, "%s:%d:%s:%s", d.File, d.Line, d.Check, d.Message)
+		// GitLab's Code Quality shape has no field of its own for a
+		// suggested fix, so the hint is folded into the description — the
+		// same treatment GitHub.Write gives it above. Without this, the
+		// hint — the actionable half of every diagnostic this tool
+		// produces — is visible in every format except this one.
+		description := d.Message
+		if d.Hint != "" {
+			description += " (" + d.Hint + ")"
+		}
 		out = append(out, qissue{
-			Description: d.Message,
+			Description: description,
 			CheckName:   d.Check,
 			Fingerprint: hex.EncodeToString(h.Sum(nil)),
 			Severity:    severity,
