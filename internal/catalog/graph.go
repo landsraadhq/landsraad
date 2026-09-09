@@ -25,9 +25,16 @@ const (
 // Navigator — route-finding over the dependency graph.
 //
 // Graph is produced BY Resolve and holds the resolved edges. Keeping the edges
-// here rather than on Catalog is what makes the ordering constraint a compile
-// error: there is no cat.Cycles() to call before resolving, so the silent
-// "zero cycles" answer from an unresolved catalog cannot happen.
+// here rather than on Catalog removes the obvious way to get a silent "zero
+// cycles" answer: there is no cat.Cycles() to call before resolving.
+//
+// It is not, however, a compile error, and this comment used to claim it was.
+// Graph is an exported struct with a usable zero value, so
+// `(&catalog.Graph{}).Cycles()` compiles from anywhere and answers "no
+// cycles". That answer is defensible — a graph with no edges genuinely has
+// none — so the type stays as it is; the claim is what was wrong. The
+// constraint is conventional, enforced by Resolve being the only thing that
+// returns a populated Graph, not by the type checker.
 type Graph struct {
 	order   []*Entity
 	edges   map[Ref][]Ref
@@ -42,11 +49,11 @@ type Graph struct {
 // resolve anywhere.
 func (c *Catalog) Resolve(scope Scope, col *diag.Collector) *Graph {
 	g := &Graph{
-		order:   c.Entities,
-		edges:   make(map[Ref][]Ref, len(c.Entities)),
-		reverse: make(map[Ref][]Ref, len(c.Entities)),
+		order:   c.entities,
+		edges:   make(map[Ref][]Ref, len(c.entities)),
+		reverse: make(map[Ref][]Ref, len(c.entities)),
 	}
-	for _, e := range c.Entities {
+	for _, e := range c.entities {
 		from := e.Ref()
 		c.resolveRefs(g, e, from, e.Spec.DependsOn, "dependsOn", scope, col)
 		c.resolveRefs(g, e, from, e.Spec.ProvidesApis, "providesApis", scope, col)

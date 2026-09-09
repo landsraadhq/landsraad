@@ -45,7 +45,7 @@ func TestRefStringIsLowercasePrefixed(t *testing.T) {
 }
 
 func TestRefRoundTrips(t *testing.T) {
-	for _, k := range AllKinds {
+	for _, k := range AllKinds() {
 		in := Ref{Kind: k, Name: "thing"}
 		out, err := ParseRef(in.String())
 		if err != nil {

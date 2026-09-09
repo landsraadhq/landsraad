@@ -82,3 +82,29 @@ func TestNewCatalogAllowsSameNameDifferentKind(t *testing.T) {
 		t.Errorf("service:orders and topic:orders are distinct refs and must coexist: %+v", c.Diagnostics())
 	}
 }
+
+// Audit finding 7. Catalog.Entities used to be exported while byRef was not,
+// so a keyed composite literal compiled from any package in the module and
+// built a catalog in which no entity could find itself: Resolve fabricated
+// dangling-ref diagnostics for entities that were present, and reported zero
+// cycles for a genuine self-loop.
+//
+// This is the regression test for that, and it is a compile-time one — the
+// field is unexported now, so the bad construction cannot be written. What is
+// asserted here is the property that made it dangerous: a catalog built the
+// only way that remains resolves its own entities.
+func TestNewCatalogIsTheOnlyConstructor(t *testing.T) {
+	var c diag.Collector
+	e := ent("monorepo", "services/a/service.yaml", "a", KindService, 4)
+	e.Spec.DependsOn = []string{"service:a"}
+	cat := NewCatalog([]*Entity{e}, &c)
+
+	g := cat.Resolve(FullCatalog, &c)
+
+	if c.HasErrors() {
+		t.Errorf("an entity that depends on itself is present, not dangling: %+v", c.Diagnostics())
+	}
+	if len(g.Cycles()) != 1 {
+		t.Errorf("a self-loop is one cycle, got %d", len(g.Cycles()))
+	}
+}

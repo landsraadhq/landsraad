@@ -30,7 +30,7 @@ func ParseRef(s string) (Ref, error) {
 	if kindStr == "" {
 		return Ref{}, fmt.Errorf("reference %q has an empty kind", s)
 	}
-	for _, k := range AllKinds {
+	for _, k := range allKinds {
 		if strings.EqualFold(kindStr, string(k)) {
 			return Ref{Kind: k, Name: name}, nil
 		}

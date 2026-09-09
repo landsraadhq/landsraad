@@ -67,8 +67,8 @@ func TestLoadReposReportsMalformedYAML(t *testing.T) {
 	// callers need no nil checks — and that value must fall back to the
 	// conventional layout so the rest of the run can still say something
 	// useful about the repo, rather than aborting outright.
-	if got, _ := r.LocalPatterns(); len(got) != len(DefaultPatterns) {
-		t.Errorf("LocalPatterns() after a parse failure = %v, want DefaultPatterns %v", got, DefaultPatterns)
+	if got, _ := r.LocalPatterns(); len(got) != len(DefaultPatterns()) {
+		t.Errorf("LocalPatterns() after a parse failure = %v, want DefaultPatterns %v", got, DefaultPatterns())
 	}
 }
 
@@ -82,12 +82,12 @@ func TestLocalPatternsFallsBackToDefaultsWhenEmpty(t *testing.T) {
 	if !defaulted {
 		t.Error("LocalPatterns() fell back to defaults but did not say so")
 	}
-	if len(got) != len(DefaultPatterns) {
-		t.Fatalf("LocalPatterns() = %v, want DefaultPatterns %v", got, DefaultPatterns)
+	if len(got) != len(DefaultPatterns()) {
+		t.Fatalf("LocalPatterns() = %v, want DefaultPatterns %v", got, DefaultPatterns())
 	}
-	for i := range DefaultPatterns {
-		if got[i] != DefaultPatterns[i] {
-			t.Errorf("LocalPatterns()[%d] = %q, want %q", i, got[i], DefaultPatterns[i])
+	for i := range DefaultPatterns() {
+		if got[i] != DefaultPatterns()[i] {
+			t.Errorf("LocalPatterns()[%d] = %q, want %q", i, got[i], DefaultPatterns()[i])
 		}
 	}
 }
@@ -96,8 +96,8 @@ func TestLocalPatternsFallsBackToDefaultsWhenEmpty(t *testing.T) {
 // with service.yaml at its root is invisible to `validate` and it exits 0
 // having examined nothing.
 func TestDefaultPatternsIncludesRoot(t *testing.T) {
-	if len(DefaultPatterns) == 0 || DefaultPatterns[0] != "." {
-		t.Errorf("DefaultPatterns = %v, want it to start with \".\" so a root-level service.yaml is found", DefaultPatterns)
+	if len(DefaultPatterns()) == 0 || DefaultPatterns()[0] != "." {
+		t.Errorf("DefaultPatterns = %v, want it to start with \".\" so a root-level service.yaml is found", DefaultPatterns())
 	}
 }
 
@@ -124,8 +124,8 @@ func TestLoadReposReportsAScalarWhereTheRepoListBelongs(t *testing.T) {
 	if d.Hint != reposParseHint {
 		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, reposParseHint)
 	}
-	if got, _ := r.LocalPatterns(); len(got) != len(DefaultPatterns) {
-		t.Errorf("LocalPatterns() after a parse failure = %v, want DefaultPatterns %v", got, DefaultPatterns)
+	if got, _ := r.LocalPatterns(); len(got) != len(DefaultPatterns()) {
+		t.Errorf("LocalPatterns() after a parse failure = %v, want DefaultPatterns %v", got, DefaultPatterns())
 	}
 }
 
@@ -200,7 +200,7 @@ func TestLocalPatternsSaysWhenItDefaulted(t *testing.T) {
 	if !defaulted {
 		t.Fatal("LocalPatterns() used DefaultPatterns without reporting it")
 	}
-	if len(got) != len(DefaultPatterns) {
-		t.Errorf("LocalPatterns() = %v, want DefaultPatterns %v", got, DefaultPatterns)
+	if len(got) != len(DefaultPatterns()) {
+		t.Errorf("LocalPatterns() = %v, want DefaultPatterns %v", got, DefaultPatterns())
 	}
 }

@@ -29,12 +29,22 @@ type Repos struct {
 // a consequence of the error rather than a separate thing to announce.
 func (r *Repos) Loaded() bool { return r.loaded }
 
-// DefaultPatterns is where entities live when repos.yaml says nothing.
+// defaultPatterns is where entities live when repos.yaml says nothing. Kept
+// unexported and array-shaped for the reason in catalog.allKinds: an exported
+// mutable slice is state any importer, or any test in the same process, can
+// rewrite underneath everything else.
 //
 // "." matches a service.yaml at the repository root — the single-service repo
 // shape in spec §5.1. Without it such a repo validates zero entities and
 // exits 0, which is the worst possible first run.
-var DefaultPatterns = []string{".", "services/*", "workers/*", "libs/*", "topics/*"}
+var defaultPatterns = [...]string{".", "services/*", "workers/*", "libs/*", "topics/*"}
+
+// DefaultPatterns returns the conventional layout, fresh on each call.
+func DefaultPatterns() []string {
+	out := make([]string, len(defaultPatterns))
+	copy(out, defaultPatterns[:])
+	return out
+}
 
 // reposParseHint is the same advice whatever went wrong with the file.
 const reposParseHint = "repos.yaml is a list under `repos:`, each entry with url and paths"
@@ -71,7 +81,7 @@ func LoadRepos(path string, data []byte, c *diag.Collector) *Repos {
 // visible in the artifact.
 func (r *Repos) LocalPatterns() (patterns []string, defaulted bool) {
 	if len(r.Repos) == 0 || len(r.Repos[0].Paths) == 0 {
-		return DefaultPatterns, true
+		return DefaultPatterns(), true
 	}
 	return r.Repos[0].Paths, false
 }

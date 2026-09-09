@@ -199,8 +199,8 @@ func TestJSONOutputIsParseableOnFailure(t *testing.T) {
 func TestPatternsForAnnouncesDefaultPatternsExactMessage(t *testing.T) {
 	var c diag.Collector
 	got := patternsFor(fstest.MapFS{}, &c)
-	if len(got) != len(config.DefaultPatterns) {
-		t.Fatalf("patternsFor with no repos.yaml = %v, want DefaultPatterns %v", got, config.DefaultPatterns)
+	if len(got) != len(config.DefaultPatterns()) {
+		t.Fatalf("patternsFor with no repos.yaml = %v, want DefaultPatterns %v", got, config.DefaultPatterns())
 	}
 	if c.Len() != 1 {
 		t.Fatalf("expected exactly one diagnostic, got %d: %+v", c.Len(), c.Diagnostics())
@@ -245,8 +245,8 @@ func TestPatternsForReportsMalformedReposYAML(t *testing.T) {
 	// Even while reporting the error, patternsFor still returns something
 	// usable so the run can proceed and report everything else wrong with
 	// the repo in the same pass, rather than aborting outright.
-	if len(got) != len(config.DefaultPatterns) {
-		t.Errorf("patternsFor fallback = %v, want DefaultPatterns %v", got, config.DefaultPatterns)
+	if len(got) != len(config.DefaultPatterns()) {
+		t.Errorf("patternsFor fallback = %v, want DefaultPatterns %v", got, config.DefaultPatterns())
 	}
 }
 
@@ -451,8 +451,8 @@ func TestPatternsForAnnouncesDefaultsWhenReposYAMLListsNoPaths(t *testing.T) {
 	}
 	var c diag.Collector
 	got := patternsFor(fsys, &c)
-	if len(got) != len(config.DefaultPatterns) {
-		t.Fatalf("patternsFor = %v, want DefaultPatterns %v", got, config.DefaultPatterns)
+	if len(got) != len(config.DefaultPatterns()) {
+		t.Fatalf("patternsFor = %v, want DefaultPatterns %v", got, config.DefaultPatterns())
 	}
 	if c.Len() != 1 {
 		t.Fatalf("expected exactly one diagnostic, got %d: %+v", c.Len(), c.Diagnostics())

@@ -3,7 +3,7 @@ package catalog
 import "testing"
 
 func TestKindValid(t *testing.T) {
-	for _, k := range AllKinds {
+	for _, k := range AllKinds() {
 		if !k.Valid() {
 			t.Errorf("%q is in AllKinds but reports invalid", k)
 		}

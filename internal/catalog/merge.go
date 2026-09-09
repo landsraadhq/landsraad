@@ -8,10 +8,25 @@ import (
 )
 
 // Catalog is the merged set of entities from every source repo.
+//
+// Both fields are unexported so NewCatalog is the only way to build one. A
+// keyed composite literal used to compile from any package in the module and
+// produce a catalog whose byRef index was nil — in which no entity could find
+// itself, so Resolve fabricated dangling-ref diagnostics for entities that
+// were present and reported zero cycles for a genuine self-loop. A plausible
+// empty answer where a crash would be better; now it does not compile.
 type Catalog struct {
-	Entities []*Entity
+	entities []*Entity
 	byRef    map[Ref]*Entity
 }
+
+// Entities returns the merged entities, sorted by source repo then path.
+//
+// The slice is the catalog's own: callers read it, and the compiler does not
+// stop them writing to it. Nothing in this codebase does, and returning a copy
+// on every call to defend against a caller that does not exist is the
+// over-abstraction half of the composition rule.
+func (c *Catalog) Entities() []*Entity { return c.entities }
 
 // NewCatalog merges entities into one catalog, reporting a collision when two
 // entities share a kind and a name. Names are flat and globally unique, so a
@@ -31,7 +46,7 @@ func NewCatalog(entities []*Entity, c *diag.Collector) *Catalog {
 	})
 
 	cat := &Catalog{
-		Entities: sorted,
+		entities: sorted,
 		byRef:    make(map[Ref]*Entity, len(sorted)),
 	}
 	for _, e := range sorted {

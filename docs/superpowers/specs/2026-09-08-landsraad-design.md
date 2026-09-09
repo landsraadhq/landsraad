@@ -113,8 +113,19 @@ specific mechanism rather than by good intentions.
   stage before it.
 - `validate` and `build` are two explicit compositions of those same
   functions. Adding a stage to one does not touch the other, and Go's type
-  checker refuses a composition that runs `New` before `ParseAll` — an
+  checker refuses a composition that runs `New` before `ParseAll` — that
   ordering bug is a compile error, not a nil dereference at runtime.
+
+  The claim holds where a stage consumes the *return type* of the one before
+  it, and only there. It does not follow from a type being unexported-ish or
+  from a comment asserting it: `Graph` has a usable zero value, so
+  `(&Graph{}).Cycles()` compiles and answers "no cycles" — defensible, since
+  a graph with no edges has none, but conventional rather than enforced. Where
+  the wrong construction gives a *wrong* answer instead of an empty one, make
+  it impossible: `Catalog`'s fields are unexported because a keyed literal
+  used to build a catalog whose index was nil, in which entities could not
+  find themselves and `Resolve` invented dangling references for entities that
+  were right there.
 - Nothing does its own IO or its own printing. Stages take an `fs.FS` and a
   `*diag.Collector`; rendering happens once, at the edge.
 

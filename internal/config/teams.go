@@ -157,7 +157,7 @@ func (t *Teams) ValidateOwners(cat *catalog.Catalog, c *diag.Collector) {
 		return
 	}
 
-	for _, e := range cat.Entities {
+	for _, e := range cat.Entities() {
 		// Skip entities with no owner. The schema already requires owner with
 		// minLength: 1, so this is the schema's diagnostic to make, not ours.
 		if e.Metadata.Owner == "" {

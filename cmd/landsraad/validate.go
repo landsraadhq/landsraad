@@ -81,7 +81,7 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter) int {
 	if c.HasErrors() {
 		return exitValidation
 	}
-	fmt.Fprintf(errOut, "ok: %d entities validated, no problems found\n", len(cat.Entities))
+	fmt.Fprintf(errOut, "ok: %d entities validated, no problems found\n", len(cat.Entities()))
 	return exitOK
 }
 
@@ -110,7 +110,7 @@ func patternsFor(fsys fs.FS, c *diag.Collector) []string {
 		// be visible in the artifact, not only in a log. Compare checkOwners,
 		// which errors loudly for a missing teams.yaml.
 		c.Add(defaultPatternsNote("no repos.yaml found"))
-		return config.DefaultPatterns
+		return config.DefaultPatterns()
 	}
 	r := config.LoadRepos("repos.yaml", data, c)
 	patterns, defaulted := r.LocalPatterns()
@@ -134,7 +134,7 @@ func defaultPatternsNote(reason string) diag.Diagnostic {
 		Line:     1,
 		Check:    "default-patterns",
 		Message: fmt.Sprintf("%s; using default paths (%s)",
-			reason, strings.Join(config.DefaultPatterns, ", ")),
+			reason, strings.Join(config.DefaultPatterns(), ", ")),
 		Hint: "add repos.yaml if your services live elsewhere",
 	}
 }

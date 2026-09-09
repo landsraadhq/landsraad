@@ -25,14 +25,29 @@ const (
 	KindResource Kind = "Resource"
 )
 
-// AllKinds is the complete set, used by validation and by the JSON Schema test.
-var AllKinds = []Kind{
+// allKinds is the complete set, used by validation and by the JSON Schema
+// test. It is an array rather than a slice, and unexported, because an
+// exported mutable slice is package-level state any importer can rewrite:
+// `catalog.AllKinds[0] = "Nonsense"` used to make ParseRef reject
+// "service:ledger-api" as an unknown kind. The practical cost in a single
+// binary is small, but tests in a package share a process, so one test
+// mutating it without a t.Cleanup poisons every test that runs after it and
+// the failure surfaces somewhere else entirely.
+var allKinds = [...]Kind{
 	KindService, KindWorker, KindCron, KindLibrary,
 	KindTopic, KindDatabase, KindAPI, KindResource,
 }
 
+// AllKinds returns the complete set of kinds. The slice is fresh on each
+// call, so a caller cannot reach back and change what the package believes.
+func AllKinds() []Kind {
+	out := make([]Kind, len(allKinds))
+	copy(out, allKinds[:])
+	return out
+}
+
 func (k Kind) Valid() bool {
-	for _, known := range AllKinds {
+	for _, known := range allKinds {
 		if k == known {
 			return true
 		}

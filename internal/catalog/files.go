@@ -15,7 +15,7 @@ import (
 // Taking an fs.FS rather than a root path is what lets the platform build run
 // this against a fetched remote repo with no change.
 func CheckFiles(fsys fs.FS, cat *Catalog, c *diag.Collector) {
-	for _, e := range cat.Entities {
+	for _, e := range cat.entities {
 		for _, f := range []struct {
 			field string
 			path  string

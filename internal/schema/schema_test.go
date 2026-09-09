@@ -320,7 +320,7 @@ spec:
 // The schema and the Go Kind constants must never drift apart.
 func TestSchemaKindsMatchGoKinds(t *testing.T) {
 	raw := string(Raw)
-	for _, k := range catalog.AllKinds {
+	for _, k := range catalog.AllKinds() {
 		if !strings.Contains(raw, `"`+string(k)+`"`) {
 			t.Errorf("kind %q exists in Go but not in service.schema.json", k)
 		}
