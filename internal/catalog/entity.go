@@ -123,12 +123,9 @@ type Entity struct {
 }
 
 // Ref returns this entity's canonical reference, e.g. "service:ledger-api".
-// NOTE: This method is commented out until Task 5, when the Ref type is defined.
-/*
 func (e *Entity) Ref() Ref {
 	return Ref{Kind: e.Kind, Name: e.Metadata.Name}
 }
-*/
 
 // Location renders where this entity came from: "repo:path" when the repo is
 // known, "path" when it is not. `landsraad validate` runs inside one repo and
