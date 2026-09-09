@@ -9,7 +9,10 @@ if not path.endswith(".go") or path.endswith("_test.go"):
     sys.exit(0)
 if "/internal/" not in path and not path.startswith("internal/"):
     sys.exit(0)
-if re.search(r'^\s*(?:_\s+)?"os"\s*$', body, re.M):
+# Matches every import spec form: block ("os" / _ "os" / alias "os") and
+# single-line (import "os" / import _ "os" / import alias "os"). The earlier
+# pattern only caught the block form, so `import "os"` walked past the guard.
+if re.search(r'^\s*(?:import\s+)?(?:[\w.]+\s+|_\s+)?"os"\s*$', body, re.M):
     block(
         'Blocked: internal/ may not import "os".\n'
         "  Reads take io/fs.FS, writes take io.Writer, and only cmd/ touches the\n"
