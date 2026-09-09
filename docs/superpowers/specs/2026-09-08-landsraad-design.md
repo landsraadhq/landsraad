@@ -19,6 +19,32 @@ without a framework to maintain.
 The metadata is the *source* for CODEOWNERS and alert routing, never a copy, so
 letting it rot breaks something visible.
 
+### 1.1 Success metrics
+
+Without these there is nothing to falsify, and no way to tell the "worked but
+nobody cared" outcome from the intended one.
+
+| Metric | Baseline | Target (6 months) | Measured by |
+|---|---|---|---|
+| Time for a new hire to find owner + runbook + dashboard for any service | minutes of asking | < 60 s, unassisted | onboarding observation |
+| Services with complete metadata (owner, tier, runbook, dashboard, alerts, SLO) | unknown | 100 % | scorecard, enforced in CI |
+| Scorecard average | — | ≥ 90 % tier-1, ≥ 75 % overall | portal |
+| Incidents where on-call had to hunt for owner or runbook | count from postmortems | 0 | postmortem tag |
+| Portal freshness | — | < 5 min after merge | build timestamps |
+| Maintenance effort | — | < 2 h / month | time tracking |
+| Adopting teams still running it after 90 days | — | ≥ 3 | ask them |
+| Catalog size at which the ownership forcing-function bites | — | stated, not assumed | see below |
+
+**The honest caveat on the forcing function.** Goal 2 claims that because
+CODEOWNERS and alert routing are *generated* from the catalog, letting the
+metadata rot breaks something visible. That is true only when a wrong owner
+routes to a *different human*. At 5–15 engineers with one or two rotations, it
+frequently does not: `gen --check` catches metadata that is **stale relative to
+the catalog**, never metadata that is **wrong relative to reality**. The
+mechanism bites somewhere above three rotations or roughly 25 services; below
+that, the truth-rot checks (`owner-active`, `docs-fresh`) are doing the work,
+not the generated artefacts. This is a known limit, not a solved problem.
+
 ---
 
 ## 2. Scope
@@ -54,7 +80,7 @@ Recorded because the *why* is the part that gets lost.
 | D3 | Hermetic checks in-binary, expensive checks ingested | `landsraad score` must run offline in under a second with no Docker daemon and no network egress. Checks needing a build, a scanner or an HTTP probe are *reported into* the tool via `.landsraad/checks/*.yaml` written by the CI jobs that already know the answer. The extension point is YAML, not a plugin API — consistent with the non-goal of a plugin system. |
 | D4 | Go checks + YAML severity matrix | Checks are Go funcs with stable ids; `standards.yaml` holds only the tier→severity matrix and thresholds. Type-safe, precise messages, nothing to debug in YAML. A CEL expression language was rejected as an API surface with no demonstrated demand. |
 | D5 | GitHub + GitLab host API adapters | User decision, taken over a recommendation for a host-agnostic fetcher. Consequence accepted and recorded as a non-goal (§15): Gitea, Forgejo, Bitbucket and self-hosted git are unsupported in v1. Fetching sits behind a Go interface so a generic fetcher is additive later. |
-| D6 | Flat global entity names | `metadata.name` unique across the merged catalog; refs are `kind:name`. Repos, not teams, are the namespacing axis, and at a handful of repos collisions are a two-minute rename, not a migration. Decisive factor: flat → namespaced is a non-breaking additive change later (Backstage's default namespace is literally `default`), while namespaced → flat is breaking. On a one-way door, take the door that stays open. |
+| D6 | Flat entity names, unique per `(kind, name)` | `metadata.name` unique across the merged catalog; refs are `kind:name`. Repos, not teams, are the namespacing axis, and at a handful of repos collisions are a two-minute rename, not a migration. Decisive factor: flat → namespaced is a non-breaking additive change later (Backstage's default namespace is literally `default`), while namespaced → flat is breaking. On a one-way door, take the door that stays open. |
 | D7 | Strict schema (`additionalProperties: false`) | Unknown fields are rejected, not ignored. Prevents a half-working `namespace:` field existing in the wild before v2 defines one. |
 | D8 | Everything starts in `internal/` | `internal → pkg` is additive; `pkg → internal` is breaking. Catalog types get promoted when someone actually asks to import them. |
 | D9 | Dune naming on user-facing surfaces only | Project, binary and deployed components carry Dune names; Go packages are literal (`catalog`, `scorecard`, `render`). Themed package names tax every future contributor with a glossary. |
@@ -146,7 +172,7 @@ the code it describes.
 apiVersion: landsraad/v1
 kind: Service            # Service | Worker | Cron | Library | Topic | Database | API
 metadata:
-  name: payments-worker  # unique across the merged catalog
+  name: payments-worker  # (kind, name) unique across the merged catalog
   description: Consumes payment events and settles them.
   owner: team-payments   # must exist in teams.yaml
   tier: 1                # 1 critical, 2 important, 3 best-effort
@@ -170,9 +196,27 @@ spec:
     selector: { app.kubernetes.io/name: payments-worker }
 ```
 
-`kind`, `metadata`, `spec.owner`, `spec.lifecycle`, `dependsOn` and
-`providesApis` keep Backstage-compatible names so a converter to
-`catalog-info.yaml` stays a small script.
+**Backstage compatibility — what is actually true.** `kind`, `metadata`,
+`dependsOn` and `providesApis` borrow Backstage's *field names*. The claim
+stops there, and earlier drafts of this spec overstated it:
+
+- landsraad puts `owner`, `tier` and `lifecycle` in **`metadata`**; Backstage
+  requires `owner` and `lifecycle` in **`spec`**. The placement is the opposite.
+- Backstage requires `spec.type` on Component and Resource. landsraad has no
+  such field, and its seven kinds map many-to-one onto Backstage's kinds, so a
+  converter must synthesise the value.
+- Backstage's `API` kind requires a non-empty `spec.definition`. landsraad has
+  no field for it and `additionalProperties: false` forbids adding one, so
+  `kind: API` entities cannot be converted at all today.
+- Backstage refs are `[<kind>:][<namespace>/]<name>`. Rewriting
+  `topic:payments.events` into `resource:default/payments.events` requires
+  knowing the *target's* kind — a catalog-wide transform, not a per-file one.
+
+So: migration is a **catalog-wide converter**, not a 20-line per-file script,
+and it is not lossless for `kind: API`. The shared field names still make it
+tractable, and `/` is absent from the name pattern so the namespace slot stays
+reserved. Closing the remaining gaps is a decision for a later revision, not
+something this spec should claim is already done.
 
 **Provenance** — `SourceRepo` and `SourcePath` are attached at parse time, not
 present in the file. They exist so collision and dangling-ref errors can name
@@ -262,8 +306,15 @@ Stages are pure functions where practical, each independently testable.
 
 | Command | Stages | Network | Run by |
 |---|---|---|---|
-| `landsraad validate` | 1, 3, 4, 5*, 6 | none | every service repo's PR CI |
+| `landsraad validate` | 1, 3, 4, 5* | none | every service repo's PR CI |
 | `landsraad build` | 1–8 | yes | platform repo, on merge to main |
+
+Stage 6 (INGEST) is deliberately **not** part of `validate` in v1. Structurally
+validating `.landsraad/checks/*.yaml` would be hermetic and would belong here,
+but the schema defining that file's shape arrives with the scorecard in Plan 2,
+and validating a shape that is not yet specified is premature. The consequence
+is recorded rather than hidden: until Plan 2 ships, a malformed check-results
+file is first caught by the platform build, not by the PR that introduced it.
 
 `*` — refs pointing outside the current repo are **recorded, not resolved**.
 Cross-repo references resolve at merge time only. A service repo's CI therefore
@@ -372,6 +423,12 @@ error: duplicate entity name "api"
   names must be unique across the merged catalog
 ```
 
+Uniqueness is on the **pair** `(kind, name)`, not on the name alone:
+`service:orders` and `topic:orders` are distinct entities and may coexist.
+Every generated artefact — CODEOWNERS, alert routing, the Slack map, and the
+portal's per-entity URL — is therefore keyed on the **ref**, never the bare
+name.
+
 **Exit codes**
 
 | Code | Meaning | Who fixes it |
@@ -383,6 +440,12 @@ error: duplicate entity name "api"
 
 2 and 3 are distinct because "your metadata is broken" and "your service does
 not meet the standard" are different problems for different people.
+
+**Stream contract.** `stdout` carries **only** the selected format's payload;
+every human line — the `ok:` summary, usage errors, internal failures — goes to
+`stderr`. Without this, `--format json` on a clean repo emits a JSON array
+followed by `ok: 3 entities validated`, which no parser accepts, and the GitLab
+Code Quality artefact is corrupt on the common path.
 
 **Output** — `--format text|json`, plus auto-detected CI annotations:
 `::error file=…,line=…::` under `GITHUB_ACTIONS`, Code Quality JSON under
