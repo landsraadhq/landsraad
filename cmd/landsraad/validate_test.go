@@ -408,3 +408,37 @@ func TestValidateRunsSchemaAndParseOverSameBytes(t *testing.T) {
 		t.Errorf("the parser's diagnostic must be present — a malformed file must never be silently accepted:\n%s", out)
 	}
 }
+
+// Both stages decoded only the first document, so a second entity in the same
+// file — the Kubernetes habit this schema invites — was never looked at and
+// the run still reported a clean pass. The whole file is rejected instead.
+func TestValidateRejectsAMultiDocumentFile(t *testing.T) {
+	repo := fstest.MapFS{
+		"teams.yaml": {Data: []byte("teams:\n  - name: team-a\n")},
+		"services/api/service.yaml": {Data: []byte(`apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: api
+  owner: team-a
+  tier: 1
+  lifecycle: production
+---
+apiVersion: landsraad/v1
+kind: Topic
+metadata:
+  name: NOT_A_LEGAL_NAME
+  owner: no-such-team
+  lifecycle: production
+`)},
+	}
+	code, out, errOut := validate(repo)
+	if code != exitValidation {
+		t.Fatalf("a multi-document file must fail validation, got exit %d:\n%s%s", code, out, errOut)
+	}
+	if !strings.Contains(out, "service.yaml must contain exactly one document, found 2") {
+		t.Errorf("the run must say why it rejected the file:\n%s", out)
+	}
+	if strings.Contains(errOut, "no problems found") {
+		t.Errorf("a file whose second half was never validated must not report a clean pass:\n%s", errOut)
+	}
+}
