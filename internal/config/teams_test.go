@@ -266,3 +266,38 @@ func TestValidateOwnersSkipsOnBrokenTeamsYAML(t *testing.T) {
 		t.Errorf("Severity = %v, want info: the parse error above already fails the run", d.Severity)
 	}
 }
+
+// The same Go-type leak reached teams.yaml through its non-unknown-key branch:
+// "cannot unmarshal !!str `alice` into []string". Both loaders share one
+// translator, so this is the second call site that proves it earns its keep.
+func TestLoadTeamsReportsAScalarWhereTheMembersListBelongs(t *testing.T) {
+	var c diag.Collector
+	LoadTeams("teams.yaml", []byte("teams:\n  - name: team-a\n    members: alice\n"), &c)
+	if !c.HasErrors() {
+		t.Fatal("a scalar where the members list belongs must be an error")
+	}
+	d := c.Diagnostics()[0]
+	if d.Check != "teams-parse" {
+		t.Errorf("Check = %q, want %q", d.Check, "teams-parse")
+	}
+	if d.Line != 3 {
+		t.Errorf("Line = %d, want 3 — the line `members:` is on", d.Line)
+	}
+	want := `expected a list of strings, found a string ("alice")`
+	if d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+}
+
+func TestLoadTeamsReportsAScalarWhereTheTeamListBelongs(t *testing.T) {
+	var c diag.Collector
+	LoadTeams("teams.yaml", []byte("teams: oops\n"), &c)
+	if !c.HasErrors() {
+		t.Fatal("a scalar where the team list belongs must be an error")
+	}
+	d := c.Diagnostics()[0]
+	want := `expected a list of team entries, found a string ("oops")`
+	if d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+}

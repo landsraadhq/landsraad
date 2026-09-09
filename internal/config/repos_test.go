@@ -41,15 +41,24 @@ func TestLoadReposReportsMalformedYAML(t *testing.T) {
 	if got.File != "repos.yaml" {
 		t.Errorf("File = %q, want %q", got.File, "repos.yaml")
 	}
-	if got.Line != 1 {
-		t.Errorf("Line = %d, want 1", got.Line)
+	// Line 2 is where the bad indent is. This assertion used to read `want 1`,
+	// because LoadRepos hardcoded Line: 1 while quoting an error that named a
+	// different line — the diagnostic pointed away from the problem.
+	if got.Line != 2 {
+		t.Errorf("Line = %d, want 2 — the line the bad indent is on", got.Line)
 	}
 	if got.Severity != diag.SevError {
 		t.Errorf("Severity = %v, want SevError", got.Severity)
 	}
+	// A syntax error's wording is the library's and passes through unchanged:
+	// it names a YAML construct, not a Go type, so there is nothing to
+	// translate.
 	want := "cannot parse repos file: yaml: line 2: mapping values are not allowed in this context"
 	if got.Message != want {
 		t.Errorf("Message\n got: %s\nwant: %s", got.Message, want)
+	}
+	if got.Hint != reposParseHint {
+		t.Errorf("Hint\n got: %s\nwant: %s", got.Hint, reposParseHint)
 	}
 	// Even on a parse failure, LoadRepos must still return a usable value —
 	// callers need no nil checks — and that value must fall back to the
@@ -83,5 +92,51 @@ func TestLocalPatternsFallsBackToDefaultsWhenEmpty(t *testing.T) {
 func TestDefaultPatternsIncludesRoot(t *testing.T) {
 	if len(DefaultPatterns) == 0 || DefaultPatterns[0] != "." {
 		t.Errorf("DefaultPatterns = %v, want it to start with \".\" so a root-level service.yaml is found", DefaultPatterns)
+	}
+}
+
+// A yaml.v3 type error names a Go type: "cannot unmarshal !!str `oops` into
+// []config.Repo". The person reading it is editing YAML and has never heard of
+// config.Repo. Spec §14: assert the exact string.
+func TestLoadReposReportsAScalarWhereTheRepoListBelongs(t *testing.T) {
+	var c diag.Collector
+	r := LoadRepos("repos.yaml", []byte("repos: oops\n"), &c)
+	if !c.HasErrors() {
+		t.Fatal("a scalar where the repo list belongs must be an error")
+	}
+	d := c.Diagnostics()[0]
+	if d.Check != "repos-parse" {
+		t.Errorf("Check = %q, want %q", d.Check, "repos-parse")
+	}
+	if d.Line != 1 {
+		t.Errorf("Line = %d, want 1", d.Line)
+	}
+	want := `expected a list of repository entries, found a string ("oops")`
+	if d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+	if d.Hint != reposParseHint {
+		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, reposParseHint)
+	}
+	if got := r.LocalPatterns(); len(got) != len(DefaultPatterns) {
+		t.Errorf("LocalPatterns() after a parse failure = %v, want DefaultPatterns %v", got, DefaultPatterns)
+	}
+}
+
+// The line number matters as much as the wording: this diagnostic used to be
+// hardcoded to line 1 while the error it quoted said line 3.
+func TestLoadReposReportsTheLineOfAScalarPaths(t *testing.T) {
+	var c diag.Collector
+	LoadRepos("repos.yaml", []byte("repos:\n  - url: https://x/y\n    paths: \"services/*\"\n"), &c)
+	if !c.HasErrors() {
+		t.Fatal("a scalar where the paths list belongs must be an error")
+	}
+	d := c.Diagnostics()[0]
+	if d.Line != 3 {
+		t.Errorf("Line = %d, want 3 — the line `paths:` is on", d.Line)
+	}
+	want := `expected a list of strings, found a string ("services/*")`
+	if d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
 	}
 }

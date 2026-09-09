@@ -1,8 +1,6 @@
 package config
 
 import (
-	"fmt"
-
 	"gopkg.in/yaml.v3"
 
 	"github.com/landsraadhq/landsraad/internal/diag"
@@ -26,14 +24,16 @@ type Repos struct {
 // exits 0, which is the worst possible first run.
 var DefaultPatterns = []string{".", "services/*", "workers/*", "libs/*", "topics/*"}
 
+// reposParseHint is the same advice whatever went wrong with the file.
+const reposParseHint = "repos.yaml is a list under `repos:`, each entry with url and paths"
+
 // LoadRepos reads repos.yaml, always returning a usable value.
 func LoadRepos(path string, data []byte, c *diag.Collector) *Repos {
 	r := &Repos{}
 	if err := yaml.Unmarshal(data, r); err != nil {
-		c.Add(diag.Diagnostic{
-			Severity: diag.SevError, File: path, Line: 1,
-			Check: "repos-parse", Message: fmt.Sprintf("cannot parse repos file: %v", err),
-		})
+		for _, d := range yamlDiagnostics(path, "repos-parse", "repos file", reposParseHint, err) {
+			c.Add(d)
+		}
 		return &Repos{}
 	}
 	return r

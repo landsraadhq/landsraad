@@ -4,12 +4,9 @@ package config
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
-	"regexp"
 	"sort"
-	"strconv"
 
 	"gopkg.in/yaml.v3"
 
@@ -52,7 +49,7 @@ func LoadTeams(path string, data []byte, c *diag.Collector) *Teams {
 	dec.KnownFields(true)
 	var f teamsFile
 	if err := dec.Decode(&f); err != nil && err != io.EOF {
-		ds := parseDiagnostics(path, err)
+		ds := yamlDiagnostics(path, "teams-parse", "teams file", teamsParseHint, err)
 		t.errLine = ds[0].Line
 		for _, d := range ds {
 			c.Add(d)
@@ -90,54 +87,6 @@ func LoadTeams(path string, data []byte, c *diag.Collector) *Teams {
 // teamsParseHint is the same advice whatever went wrong with the file.
 const teamsParseHint = "teams.yaml is a list under `teams:` with name, members, slack and pagerduty"
 
-// unknownFieldRE matches one line of a yaml.v3 TypeError for a rejected key:
-// "line 3: field pagerDuty not found in type config.Team".
-var unknownFieldRE = regexp.MustCompile(`^line (\d+): field (.+) not found in type \S+$`)
-
-// parseDiagnostics turns a yaml.v3 decode failure into diagnostics a user can
-// act on. It always returns at least one.
-//
-// A KnownFields decoder reports an unknown key as "field pagerDuty not found
-// in type config.Team" — a Go struct name shown to someone editing YAML, and
-// the message a new user is most likely to see, since `pagerDuty` is the
-// worked example in both the README and the spec. yaml.v3 collects every
-// rejected key into one TypeError, so each becomes its own diagnostic: one
-// run reports everything that is wrong with the file.
-func parseDiagnostics(path string, err error) []diag.Diagnostic {
-	var typeErr *yaml.TypeError
-	if errors.As(err, &typeErr) {
-		out := make([]diag.Diagnostic, 0, len(typeErr.Errors))
-		for _, e := range typeErr.Errors {
-			d := diag.Diagnostic{
-				Severity: diag.SevError, File: path, Line: 1,
-				Check: "teams-parse", Hint: teamsParseHint,
-			}
-			if m := unknownFieldRE.FindStringSubmatch(e); m != nil {
-				if n, convErr := strconv.Atoi(m[1]); convErr == nil {
-					d.Line = n
-				}
-				d.Message = fmt.Sprintf("unknown key %q in %s", m[2], path)
-			} else {
-				// Some other type error, e.g. a string where a list belongs.
-				// Its wording is the library's, but it names a YAML value
-				// rather than a Go type.
-				d.Line = lineFromYAMLError(errors.New(e))
-				d.Message = fmt.Sprintf("cannot parse teams file: %s", e)
-			}
-			out = append(out, d)
-		}
-		if len(out) > 0 {
-			return out
-		}
-	}
-	return []diag.Diagnostic{{
-		Severity: diag.SevError, File: path, Line: lineFromYAMLError(err),
-		Check:   "teams-parse",
-		Message: fmt.Sprintf("cannot parse teams file: %v", err),
-		Hint:    teamsParseHint,
-	}}
-}
-
 // teamLines returns the 1-indexed line of each entry under `teams:`, so a
 // duplicate or nameless team points at itself rather than at line 1. The
 // yaml.Node technique is the same one catalog.ParseFile uses.
@@ -168,18 +117,6 @@ func teamLines(data []byte, n int) []int {
 	}
 	return out
 }
-
-// lineFromYAMLError pulls a line out of a yaml.v3 error string.
-func lineFromYAMLError(err error) int {
-	if m := yamlLineRE.FindStringSubmatch(err.Error()); m != nil {
-		if n, convErr := strconv.Atoi(m[1]); convErr == nil {
-			return n
-		}
-	}
-	return 1
-}
-
-var yamlLineRE = regexp.MustCompile(`line (\d+):`)
 
 func (t *Teams) Get(name string) (*Team, bool) {
 	team, ok := t.byName[name]
