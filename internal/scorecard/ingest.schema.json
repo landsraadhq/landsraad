@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "check-results.schema.json",
+  "title": "landsraad check results",
+  "description": "Results reported in by CI for checks declared source: external.",
+  "type": "object",
+  "required": ["apiVersion", "kind", "generatedAt", "results"],
+  "properties": {
+    "apiVersion": { "const": "landsraad/v1" },
+    "kind": { "const": "CheckResults" },
+    "producer": {
+      "type": "string",
+      "minLength": 1,
+      "description": "What wrote this file, e.g. ci/image-scan. Named in the diagnostic when two producers tie."
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 with an explicit offset. The staleAfterDays arithmetic depends on it."
+    },
+    "results": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["entity", "check", "status"],
+        "properties": {
+          "entity": {
+            "type": "string",
+            "minLength": 1,
+            "description": "A ref: kind:name. A bare name is a deprecated alias, resolved only when unambiguous."
+          },
+          "check": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["pass", "fail", "error"] },
+          "detail": { "type": "string" },
+          "url": { "type": "string" }
+        },
+        "unevaluatedProperties": false
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}
