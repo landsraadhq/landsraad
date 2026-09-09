@@ -26,6 +26,7 @@ func main() {
 	}
 	root.AddCommand(newValidateCmd())
 	root.AddCommand(newInitCmd())
+	root.AddCommand(newGenCmd())
 	root.AddCommand(&cobra.Command{
 		Use:   "schema",
 		Short: "Print the JSON Schema for service.yaml",
