@@ -107,6 +107,11 @@ tasks:
       - go vet ./...
       - test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
 
+  release:
+    desc: Build tagged, checksummed binaries for every platform
+    cmds:
+      - goreleaser release --clean
+
   install:
     desc: Build and symlink the lsr alias alongside the binary
     deps: [build]
@@ -128,14 +133,28 @@ tasks:
       - task: ci
 ```
 
-- [ ] **Step 3: Write `.gitignore`**
+- [ ] **Step 3: Add the licence**
+
+Unlicensed code is all-rights-reserved by default: an adopter with any standard
+OSS policy is blocked before `go install`, and pkg.go.dev hides documentation
+for modules with no detected licence. This is the cheapest fix in the project
+and the one with the widest blast radius.
+
+```bash
+curl -sSL https://www.apache.org/licenses/LICENSE-2.0.txt -o LICENSE
+```
+
+Apache-2.0 rather than MIT: it carries an explicit patent grant, which is what
+corporate legal review looks for in a tool that will be adopted at work.
+
+- [ ] **Step 4: Write `.gitignore`**
 
 ```
 bin/
 dist/
 ```
 
-- [ ] **Step 4: Write the failing test**
+- [ ] **Step 5: Write the failing test**
 
 Create `cmd/landsraad/main_test.go`:
 
@@ -151,12 +170,12 @@ func TestVersionIsSet(t *testing.T) {
 }
 ```
 
-- [ ] **Step 5: Run it to verify it fails**
+- [ ] **Step 6: Run it to verify it fails**
 
 Run: `task test`
 Expected: FAIL — `undefined: Version`
 
-- [ ] **Step 6: Write the minimal implementation**
+- [ ] **Step 7: Write the minimal implementation**
 
 Create `cmd/landsraad/main.go`:
 
@@ -184,12 +203,12 @@ func main() {
 }
 ```
 
-- [ ] **Step 7: Run it to verify it passes**
+- [ ] **Step 8: Run it to verify it passes**
 
 Run: `task test`
 Expected: PASS
 
-- [ ] **Step 8: Write the CI workflow**
+- [ ] **Step 9: Write the CI workflow**
 
 Create `.github/workflows/ci.yml`:
 
@@ -215,10 +234,27 @@ jobs:
       - run: task ci
 ```
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Add dependency updates**
+
+Create `.github/dependabot.yml`:
+
+```yaml
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+```
+
+- [ ] **Step 11: Commit**
 
 ```bash
-git add go.mod Taskfile.yml .gitignore .github/workflows/ci.yml cmd/landsraad/main.go cmd/landsraad/main_test.go
+git add go.mod Taskfile.yml .gitignore LICENSE .github/workflows/ci.yml .github/dependabot.yml cmd/landsraad/main.go cmd/landsraad/main_test.go
 git commit -m "feat: project scaffold with go-task build and test cycle"
 ```
 
@@ -499,12 +535,18 @@ const (
 	KindTopic    Kind = "Topic"
 	KindDatabase Kind = "Database"
 	KindAPI      Kind = "API"
+	// KindResource is the escape hatch: an S3 bucket, an SQS queue, a Redis
+	// cache, a Terraform module. Without it users model those as Database or
+	// Topic — a lie that then flows into the tier matrix, the dependency
+	// graph and the portal. Backstage converged on the same answer: a small
+	// kind set plus a free-string spec.type.
+	KindResource Kind = "Resource"
 )
 
 // AllKinds is the complete set, used by validation and by the JSON Schema test.
 var AllKinds = []Kind{
 	KindService, KindWorker, KindCron, KindLibrary,
-	KindTopic, KindDatabase, KindAPI,
+	KindTopic, KindDatabase, KindAPI, KindResource,
 }
 
 func (k Kind) Valid() bool {
@@ -518,12 +560,18 @@ func (k Kind) Valid() bool {
 
 // Metadata is the identity and ownership block.
 type Metadata struct {
-	Name        string   `yaml:"name"`
-	Description string   `yaml:"description"`
-	Owner       string   `yaml:"owner"`
-	Tier        int      `yaml:"tier"`
-	Lifecycle   string   `yaml:"lifecycle"`
-	Tags        []string `yaml:"tags"`
+	Name string `yaml:"name"`
+	// Aliases are former names. References resolve through them, so renaming
+	// an entity is additive rather than a break for every repo that depends
+	// on it — and the scorecard time series survives the rename.
+	Aliases     []string          `yaml:"aliases"`
+	Description string            `yaml:"description"`
+	Owner       string            `yaml:"owner"`
+	Tier        int               `yaml:"tier"`
+	Lifecycle   string            `yaml:"lifecycle"`
+	Tags        []string          `yaml:"tags"`
+	Labels      map[string]string `yaml:"labels"`
+	Annotations map[string]string `yaml:"annotations"`
 }
 
 // Link is one external destination: dashboard, deploy, traces, and so on.
@@ -546,20 +594,34 @@ type Runtime struct {
 	Selector map[string]string `yaml:"selector"`
 }
 
+// Exemption waives one scorecard check with a stated reason. Without this a
+// tier-1 nightly backfill that genuinely has no runbook fails forever, and the
+// team's only lever is to lie about its tier — corrupting the dataset the
+// whole product is built on.
+type Exemption struct {
+	Check  string `yaml:"check"`
+	Reason string `yaml:"reason"`
+	Until  string `yaml:"until"`
+}
+
 // Spec is the operational block.
 type Spec struct {
-	Language     string   `yaml:"language"`
-	Path         string   `yaml:"path"`
-	Docs         string   `yaml:"docs"`
-	Runbook      string   `yaml:"runbook"`
-	Oncall       string   `yaml:"oncall"`
-	RepoURL      string   `yaml:"repoUrl"`
-	Links        []Link   `yaml:"links"`
-	DependsOn    []string `yaml:"dependsOn"`
-	ProvidesApis []string `yaml:"providesApis"`
-	SLO          []SLO    `yaml:"slo"`
-	Alerts       string   `yaml:"alerts"`
-	Runtime      *Runtime `yaml:"runtime"`
+	// Type is a free string, deliberately unconstrained, matching Backstage's
+	// spec.type. It is how a Resource says what kind of resource it is.
+	Type         string      `yaml:"type"`
+	Language     string      `yaml:"language"`
+	Path         string      `yaml:"path"`
+	Docs         string      `yaml:"docs"`
+	Runbook      string      `yaml:"runbook"`
+	Oncall       string      `yaml:"oncall"`
+	RepoURL      string      `yaml:"repoUrl"`
+	Links        []Link      `yaml:"links"`
+	DependsOn    []string    `yaml:"dependsOn"`
+	ProvidesApis []string    `yaml:"providesApis"`
+	SLO          []SLO       `yaml:"slo"`
+	Exemptions   []Exemption `yaml:"exemptions"`
+	Alerts       string      `yaml:"alerts"`
+	Runtime      *Runtime    `yaml:"runtime"`
 }
 
 // Entity is one parsed service.yaml.
@@ -1170,10 +1232,15 @@ git commit -m "feat: entity references and catalog merge with collision detectio
 - Consumes: `Catalog`, `Ref`, `diag.Collector`.
 - Produces:
   - `type Scope int` with `FullCatalog` and `LocalOnly`
-  - `func (c *Catalog) Resolve(scope Scope, col *diag.Collector)` — resolves every `dependsOn`; under `LocalOnly`, references to entities absent from the catalog are recorded rather than reported (a service repo cannot see other repos)
-  - `func (c *Catalog) DependsOn(r Ref) []Ref` — forward edges, sorted
-  - `func (c *Catalog) Dependents(r Ref) []Ref` — reverse edges, sorted
-  - `type Cycle []Ref`; `func (c *Catalog) Cycles() []Cycle`
+  - `type Graph`; `func (c *Catalog) Resolve(scope Scope, col *diag.Collector) *Graph` — resolves `dependsOn` and `providesApis` and returns the graph. Under `LocalOnly`, references to entities absent from the catalog are recorded rather than reported (a service repo cannot see other repos)
+  - `func (g *Graph) DependsOn(r Ref) []Ref` — forward edges, sorted
+  - `func (g *Graph) Dependents(r Ref) []Ref` — reverse edges, sorted
+  - `type Cycle []Ref`; `func (g *Graph) Cycles() []Cycle`
+
+`Cycles` lives on `Graph`, not `Catalog`, so it cannot be called before
+`Resolve`. Spec §3.1 claims an ordering bug is a compile error rather than a
+runtime nil; with the edges on `Catalog` that claim was false for this exact
+pair — `cat.Cycles()` would have compiled and silently returned zero cycles.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1205,7 +1272,7 @@ func TestResolveReportsDanglingRefs(t *testing.T) {
 		t.Fatal("a dangling reference must be an error when resolving the full catalog")
 	}
 	got := c.Diagnostics()[0].Message
-	if want := "service:a depends on service:nowhere, which is not in the catalog"; got != want {
+	if want := "service:a dependsOn service:nowhere, which is not in the catalog"; got != want {
 		t.Errorf("dangling-ref message\n got: %s\nwant: %s", got, want)
 	}
 }
@@ -1239,9 +1306,9 @@ func TestCyclesDetectsASimpleCycle(t *testing.T) {
 		entDeps("a", KindService, "service:b"),
 		entDeps("b", KindService, "service:a"),
 	}, &c)
-	cat.Resolve(FullCatalog, &c)
+	g := cat.Resolve(FullCatalog, &c)
 
-	cycles := cat.Cycles()
+	cycles := g.Cycles()
 	if len(cycles) != 1 {
 		t.Fatalf("a <-> b is one cycle, got %d: %v", len(cycles), cycles)
 	}
@@ -1256,12 +1323,45 @@ func TestCyclesDetectsASimpleCycle(t *testing.T) {
 	}
 }
 
+func TestResolveValidatesProvidesApis(t *testing.T) {
+	var c diag.Collector
+	e := ent("monorepo", "services/a/service.yaml", "a", KindService, 4)
+	e.Spec.ProvidesApis = []string{"api:typo"}
+	cat := NewCatalog([]*Entity{e}, &c)
+	cat.Resolve(FullCatalog, &c)
+
+	if !c.HasErrors() {
+		t.Fatal("a providesApis typo must be caught now, not silently accepted " +
+			"until a later release starts resolving the field")
+	}
+	if got := c.Diagnostics()[0].Message; got != "service:a providesApis api:typo, which is not in the catalog" {
+		t.Errorf("message = %q", got)
+	}
+}
+
+// providesApis is validated but must NOT become a dependency edge.
+func TestProvidesApisIsNotADependencyEdge(t *testing.T) {
+	var c diag.Collector
+	svc := ent("monorepo", "services/a/service.yaml", "a", KindService, 4)
+	svc.Spec.ProvidesApis = []string{"api:billing"}
+	api := ent("monorepo", "apis/billing/service.yaml", "billing", KindAPI, 4)
+	cat := NewCatalog([]*Entity{svc, api}, &c)
+	g := cat.Resolve(FullCatalog, &c)
+
+	if c.HasErrors() {
+		t.Fatalf("both entities exist: %+v", c.Diagnostics())
+	}
+	if got := g.DependsOn(Ref{Kind: KindService, Name: "a"}); len(got) != 0 {
+		t.Errorf("providesApis must not create a dependency edge, got %v", got)
+	}
+}
+
 func TestCyclesDetectsASelfDependency(t *testing.T) {
 	var c diag.Collector
 	cat := NewCatalog([]*Entity{entDeps("a", KindService, "service:a")}, &c)
-	cat.Resolve(FullCatalog, &c)
+	g := cat.Resolve(FullCatalog, &c)
 
-	cycles := cat.Cycles()
+	cycles := g.Cycles()
 	if len(cycles) != 1 || len(cycles[0]) != 1 || cycles[0][0].String() != "service:a" {
 		t.Errorf("a service depending on itself is a cycle, got %v", cycles)
 	}
@@ -1274,9 +1374,9 @@ func TestCyclesDetectsALongerChain(t *testing.T) {
 		entDeps("b", KindService, "service:c"),
 		entDeps("c", KindService, "service:a"),
 	}, &c)
-	cat.Resolve(FullCatalog, &c)
+	g := cat.Resolve(FullCatalog, &c)
 
-	cycles := cat.Cycles()
+	cycles := g.Cycles()
 	if len(cycles) != 1 || len(cycles[0]) != 3 {
 		t.Errorf("a -> b -> c -> a is one 3-node cycle, got %v", cycles)
 	}
@@ -1290,9 +1390,9 @@ func TestDependsOnReturnsForwardEdges(t *testing.T) {
 		entDeps("b", KindService),
 		entDeps("c", KindService),
 	}, &c)
-	cat.Resolve(FullCatalog, &c)
+	g := cat.Resolve(FullCatalog, &c)
 
-	got := cat.DependsOn(Ref{Kind: KindService, Name: "a"})
+	got := g.DependsOn(Ref{Kind: KindService, Name: "a"})
 	if len(got) != 2 || got[0].String() != "service:b" || got[1].String() != "service:c" {
 		t.Errorf("DependsOn must return sorted forward edges, got %v", got)
 	}
@@ -1306,9 +1406,9 @@ func TestCyclesIgnoresADiamond(t *testing.T) {
 		entDeps("c", KindService, "service:d"),
 		entDeps("d", KindService),
 	}, &c)
-	cat.Resolve(FullCatalog, &c)
+	g := cat.Resolve(FullCatalog, &c)
 
-	if cycles := cat.Cycles(); len(cycles) != 0 {
+	if cycles := g.Cycles(); len(cycles) != 0 {
 		t.Errorf("a diamond is not a cycle, got %v", cycles)
 	}
 }
@@ -1320,9 +1420,9 @@ func TestDependentsReturnsReverseEdges(t *testing.T) {
 		entDeps("b", KindService, "topic:t"),
 		ent("monorepo", "topics/t/service.yaml", "t", KindTopic, 4),
 	}, &c)
-	cat.Resolve(FullCatalog, &c)
+	g := cat.Resolve(FullCatalog, &c)
 
-	got := cat.Dependents(Ref{Kind: KindTopic, Name: "t"})
+	got := g.Dependents(Ref{Kind: KindTopic, Name: "t"})
 	if len(got) != 2 {
 		t.Fatalf("topic:t has two consumers, got %d: %v", len(got), got)
 	}
@@ -1351,8 +1451,7 @@ import (
 	"github.com/landsraadhq/landsraad/internal/diag"
 )
 
-// Navigator — reference resolution and route-finding over the dependency
-// graph. Cycle is a dependency loop, listed in traversal order.
+// Cycle is a dependency loop, listed in traversal order.
 type Cycle []Ref
 
 // Scope says how much of the world the caller can see.
@@ -1367,61 +1466,90 @@ const (
 	LocalOnly
 )
 
-// Resolve walks every dependsOn entry and builds the forward and reverse edge
-// maps.
+// Navigator — route-finding over the dependency graph.
+//
+// Graph is produced BY Resolve and holds the resolved edges. Keeping the edges
+// here rather than on Catalog is what makes the ordering constraint a compile
+// error: there is no cat.Cycles() to call before resolving, so the silent
+// "zero cycles" answer from an unresolved catalog cannot happen.
+type Graph struct {
+	order   []*Entity
+	edges   map[Ref][]Ref
+	reverse map[Ref][]Ref
+}
+
+// Resolve walks every reference and returns the resolved graph.
 //
 // Under LocalOnly an unresolvable reference is recorded and skipped rather
 // than reported, because the target may simply live in another repo.
 // Malformed references are errors under either scope: they could never
 // resolve anywhere.
-func (c *Catalog) Resolve(scope Scope, col *diag.Collector) {
-	c.edges = make(map[Ref][]Ref, len(c.Entities))
-	c.reverse = make(map[Ref][]Ref, len(c.Entities))
-
+func (c *Catalog) Resolve(scope Scope, col *diag.Collector) *Graph {
+	g := &Graph{
+		order:   c.Entities,
+		edges:   make(map[Ref][]Ref, len(c.Entities)),
+		reverse: make(map[Ref][]Ref, len(c.Entities)),
+	}
 	for _, e := range c.Entities {
 		from := e.Ref()
-		for _, raw := range e.Spec.DependsOn {
-			to, err := ParseRef(raw)
-			if err != nil {
+		c.resolveRefs(g, e, from, e.Spec.DependsOn, "dependsOn", scope, col)
+		c.resolveRefs(g, e, from, e.Spec.ProvidesApis, "providesApis", scope, col)
+	}
+	for k := range g.edges {
+		sortRefs(g.edges[k])
+	}
+	for k := range g.reverse {
+		sortRefs(g.reverse[k])
+	}
+	return g
+}
+
+// resolveRefs validates one reference list and records its edges.
+//
+// providesApis goes through the same path as dependsOn: it was previously
+// accepted and never resolved, so `providesApis: [api:bling]` validated green
+// today and would have become a hard failure the day a later release started
+// resolving it — breaking repos that had been green for months.
+func (c *Catalog) resolveRefs(g *Graph, e *Entity, from Ref, raws []string, field string, scope Scope, col *diag.Collector) {
+	for _, raw := range raws {
+		to, err := ParseRef(raw)
+		if err != nil {
+			col.Add(diag.Diagnostic{
+				Severity: diag.SevError,
+				Repo:     e.SourceRepo,
+				File:     e.SourcePath,
+				Line:     e.NameLine,
+				Entity:   e.Metadata.Name,
+				Check:    "malformed-ref",
+				Message:  fmt.Sprintf("%s: %v", field, err),
+				Hint:     "references look like service:ledger-api or topic:payments.events",
+			})
+			continue
+		}
+		if _, found := c.Lookup(to); !found {
+			if scope == FullCatalog {
 				col.Add(diag.Diagnostic{
 					Severity: diag.SevError,
 					Repo:     e.SourceRepo,
 					File:     e.SourcePath,
 					Line:     e.NameLine,
 					Entity:   e.Metadata.Name,
-					Check:    "malformed-ref",
-					Message:  err.Error(),
-					Hint:     "references look like service:ledger-api or topic:payments.events",
+					Check:    "dangling-ref",
+					Message: fmt.Sprintf("%s %s %s, which is not in the catalog",
+						from, field, to),
+					Hint: "check the spelling, or add the missing entity",
 				})
-				continue
 			}
-			if _, found := c.Lookup(to); !found {
-				if scope == FullCatalog {
-					col.Add(diag.Diagnostic{
-						Severity: diag.SevError,
-						Repo:     e.SourceRepo,
-						File:     e.SourcePath,
-						Line:     e.NameLine,
-						Entity:   e.Metadata.Name,
-						Check:    "dangling-ref",
-						Message: fmt.Sprintf("%s depends on %s, which is not in the catalog",
-							from, to),
-						Hint: "check the spelling, or add the missing entity",
-					})
-				}
-				// Under LocalOnly the target lives in another repo. Record
-				// no edge: the platform build resolves it.
-				continue
-			}
-			c.edges[from] = append(c.edges[from], to)
-			c.reverse[to] = append(c.reverse[to], from)
+			// Under LocalOnly the target lives in another repo. Record no
+			// edge: the platform build resolves it.
+			continue
 		}
-	}
-	for k := range c.edges {
-		sortRefs(c.edges[k])
-	}
-	for k := range c.reverse {
-		sortRefs(c.reverse[k])
+		// providesApis is validated but is not a dependency: recording it as
+		// one would put a false edge in the graph the portal renders.
+		if field == "dependsOn" {
+			g.edges[from] = append(g.edges[from], to)
+			g.reverse[to] = append(g.reverse[to], from)
+		}
 	}
 }
 
@@ -1430,21 +1558,21 @@ func sortRefs(rs []Ref) {
 }
 
 // DependsOn returns the resolved outgoing edges, sorted.
-func (c *Catalog) DependsOn(r Ref) []Ref { return c.edges[r] }
+func (g *Graph) DependsOn(r Ref) []Ref { return g.edges[r] }
 
 // Dependents returns everything that depends on r, sorted. This is what
 // answers "who consumes this topic?" on an entity page.
-func (c *Catalog) Dependents(r Ref) []Ref { return c.reverse[r] }
+func (g *Graph) Dependents(r Ref) []Ref { return g.reverse[r] }
 
-// Cycles returns every dependency loop, using an iterative depth-first search
-// with a recursion stack. Each cycle is reported once.
-func (c *Catalog) Cycles() []Cycle {
+// Cycles returns every dependency loop, using a depth-first search with a
+// recursion stack. Each cycle is reported once.
+func (g *Graph) Cycles() []Cycle {
 	const (
 		white = 0 // unvisited
 		grey  = 1 // on the current path
 		black = 2 // finished
 	)
-	state := make(map[Ref]int, len(c.Entities))
+	state := make(map[Ref]int, len(g.order))
 	var path []Ref
 	var found []Cycle
 	seen := make(map[string]bool)
@@ -1453,14 +1581,14 @@ func (c *Catalog) Cycles() []Cycle {
 	visit = func(r Ref) {
 		state[r] = grey
 		path = append(path, r)
-		for _, next := range c.edges[r] {
+		for _, next := range g.edges[r] {
 			switch state[next] {
 			case white:
 				visit(next)
 			case grey:
 				// Found a loop: take the path back to where next appears.
-				for i, p := range path {
-					if p == next {
+				for i, pr := range path {
+					if pr == next {
 						cyc := append(Cycle{}, path[i:]...)
 						if key := cycleKey(cyc); !seen[key] {
 							seen[key] = true
@@ -1476,7 +1604,7 @@ func (c *Catalog) Cycles() []Cycle {
 	}
 
 	// Iterate entities in their sorted order so output is deterministic.
-	for _, e := range c.Entities {
+	for _, e := range g.order {
 		if state[e.Ref()] == white {
 			visit(e.Ref())
 		}
@@ -1500,36 +1628,13 @@ func cycleKey(cyc Cycle) string {
 }
 ```
 
-- [ ] **Step 4: Add the edge maps to `Catalog`**
 
-In `internal/catalog/merge.go`, extend the struct and the constructor:
-
-```go
-type Catalog struct {
-	Entities []*Entity
-	byRef    map[Ref]*Entity
-	edges    map[Ref][]Ref
-	reverse  map[Ref][]Ref
-}
-```
-
-In `NewCatalog`, initialise them alongside `byRef`:
-
-```go
-	cat := &Catalog{
-		Entities: sorted,
-		byRef:    make(map[Ref]*Entity, len(sorted)),
-		edges:    make(map[Ref][]Ref),
-		reverse:  make(map[Ref][]Ref),
-	}
-```
-
-- [ ] **Step 5: Run it to verify it passes**
+- [ ] **Step 4: Run it to verify it passes**
 
 Run: `go test ./internal/catalog/ -v`
-Expected: PASS — every test, including the six new graph tests
+Expected: PASS — every test, including the graph tests
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add internal/catalog/
@@ -1577,33 +1682,44 @@ editors point at is generated from it by `task schema`.
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://landsraad.dev/schema/service.schema.json",
+  "$id": "https://raw.githubusercontent.com/landsraadhq/landsraad/main/schema/service.schema.json",
   "title": "landsraad catalog entity",
   "type": "object",
-  "additionalProperties": false,
+  "unevaluatedProperties": false,
   "required": ["apiVersion", "kind", "metadata"],
   "properties": {
     "apiVersion": { "const": "landsraad/v1" },
     "kind": {
-      "enum": ["Service", "Worker", "Cron", "Library", "Topic", "Database", "API"]
+      "enum": ["Service", "Worker", "Cron", "Library", "Topic", "Database", "API", "Resource"]
     },
     "metadata": {
       "type": "object",
-      "additionalProperties": false,
-      "required": ["name", "owner", "tier", "lifecycle"],
+      "unevaluatedProperties": false,
+      "required": ["name", "owner", "lifecycle"],
       "properties": {
-        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$", "maxLength": 63 },
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$",
+          "maxLength": 63
+        },
+        "aliases": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$" }
+        },
         "description": { "type": "string" },
         "owner": { "type": "string", "minLength": 1 },
         "tier": { "type": "integer", "enum": [1, 2, 3] },
         "lifecycle": { "enum": ["experimental", "production", "deprecated"] },
-        "tags": { "type": "array", "items": { "type": "string" } }
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "labels": { "type": "object", "additionalProperties": { "type": "string" } },
+        "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
       }
     },
     "spec": {
       "type": "object",
-      "additionalProperties": false,
+      "unevaluatedProperties": false,
       "properties": {
+        "type": { "type": "string" },
         "language": { "type": "string" },
         "path": { "type": "string" },
         "docs": { "type": "string" },
@@ -1614,7 +1730,7 @@ editors point at is generated from it by `task schema`.
           "type": "array",
           "items": {
             "type": "object",
-            "additionalProperties": false,
+            "unevaluatedProperties": false,
             "required": ["title", "url"],
             "properties": {
               "title": { "type": "string" },
@@ -1629,7 +1745,7 @@ editors point at is generated from it by `task schema`.
           "type": "array",
           "items": {
             "type": "object",
-            "additionalProperties": false,
+            "unevaluatedProperties": false,
             "required": ["name", "target"],
             "properties": {
               "name": { "type": "string" },
@@ -1638,10 +1754,23 @@ editors point at is generated from it by `task schema`.
             }
           }
         },
+        "exemptions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "unevaluatedProperties": false,
+            "required": ["check", "reason"],
+            "properties": {
+              "check": { "type": "string" },
+              "reason": { "type": "string", "minLength": 1 },
+              "until": { "type": "string", "format": "date" }
+            }
+          }
+        },
         "alerts": { "type": "string" },
         "runtime": {
           "type": "object",
-          "additionalProperties": false,
+          "unevaluatedProperties": false,
           "properties": {
             "selector": {
               "type": "object",
@@ -1651,7 +1780,19 @@ editors point at is generated from it by `task schema`.
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "$comment": "tier is required only for things that can page someone. A Kafka topic's criticality is derived from its consumers; a library has none.",
+      "if": {
+        "required": ["kind"],
+        "properties": { "kind": { "enum": ["Service", "Worker", "Cron", "API"] } }
+      },
+      "then": {
+        "properties": { "metadata": { "required": ["tier"] } }
+      }
+    }
+  ]
 }
 ```
 
@@ -1735,6 +1876,47 @@ func TestValidateRejectsMissingOwner(t *testing.T) {
 	}
 	if msg := c.Diagnostics()[0].Message; !strings.Contains(msg, "owner") {
 		t.Errorf("the message must name the missing field, got %q", msg)
+	}
+}
+
+// tier is required for things that page, optional for things that do not.
+func TestTierIsRequiredOnlyForPageableKinds(t *testing.T) {
+	lib := `apiVersion: landsraad/v1
+kind: Library
+metadata:
+  name: kafkaclient
+  owner: team-payments
+  lifecycle: production
+`
+	var c diag.Collector
+	if !mustDefault(t).Validate("", "libs/kafkaclient/service.yaml", []byte(lib), &c) {
+		t.Errorf("a Library needs no tier: %+v", c.Diagnostics())
+	}
+
+	svc := strings.Replace(good, "  tier: 1\n", "", 1)
+	var c2 diag.Collector
+	if mustDefault(t).Validate("", "a/service.yaml", []byte(svc), &c2) {
+		t.Error("a Service without a tier must be rejected")
+	}
+}
+
+func TestValidateAcceptsAnnotationsAndAliases(t *testing.T) {
+	in := strings.Replace(good, "  tier: 1\n",
+		"  tier: 1\n  aliases: [payments-svc]\n  annotations:\n    grafana-folder: abc123\n", 1)
+	var c diag.Collector
+	if !mustDefault(t).Validate("", "a/service.yaml", []byte(in), &c) {
+		t.Errorf("annotations and aliases must be accepted: %+v", c.Diagnostics())
+	}
+}
+
+func TestNameMustNotEndInASeparator(t *testing.T) {
+	for _, bad := range []string{"payments.", "foo-", "bar_"} {
+		in := strings.Replace(good, "name: payments-worker", "name: "+bad, 1)
+		var c diag.Collector
+		if mustDefault(t).Validate("", "a/service.yaml", []byte(in), &c) {
+			t.Errorf("%q ends in a separator and must be rejected (Backstage requires "+
+				"names to end alphanumeric; loosening later is free, tightening is not)", bad)
+		}
 	}
 }
 
@@ -2026,6 +2208,26 @@ func TestLoadTeams(t *testing.T) {
 	}
 }
 
+func TestLoadTeamsRejectsUnknownFields(t *testing.T) {
+	var c diag.Collector
+	LoadTeams("teams.yaml", []byte("teams:\n  - name: team-a\n    pagerDuty: PAY\n"), &c)
+	if !c.HasErrors() {
+		t.Fatal("a misspelled key in the file that routes alerts must be rejected, not ignored")
+	}
+}
+
+func TestLoadTeamsReportsRealLineNumbers(t *testing.T) {
+	in := "teams:\n  - name: team-a\n  - name: team-a\n"
+	var c diag.Collector
+	LoadTeams("teams.yaml", []byte(in), &c)
+	if !c.HasErrors() {
+		t.Fatal("a duplicate team must be an error")
+	}
+	if got := c.Diagnostics()[0].Line; got != 3 {
+		t.Errorf("the duplicate is on line 3, diagnostic points at line %d", got)
+	}
+}
+
 func TestValidateOwnersRejectsUnknownTeam(t *testing.T) {
 	var c diag.Collector
 	teams := LoadTeams("teams.yaml", []byte(teamsYAML), &c)
@@ -2085,8 +2287,12 @@ Create `internal/config/teams.go`:
 package config
 
 import (
+	"bytes"
 	"fmt"
+	"io"
+	"regexp"
 	"sort"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 
@@ -2116,27 +2322,40 @@ type teamsFile struct {
 func LoadTeams(path string, data []byte, c *diag.Collector) *Teams {
 	t := &Teams{byName: map[string]*Team{}}
 
+	// KnownFields(true) rejects unknown keys. teams.yaml is the source for
+	// alert routing, so a silently-ignored `pagerDuty:` typo would make
+	// routing rot invisibly — the exact inverse of this product's thesis.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
 	var f teamsFile
-	if err := yaml.Unmarshal(data, &f); err != nil {
+	if err := dec.Decode(&f); err != nil && err != io.EOF {
 		c.Add(diag.Diagnostic{
-			Severity: diag.SevError, File: path, Line: 1,
-			Check: "teams-parse", Message: fmt.Sprintf("cannot parse teams file: %v", err),
+			Severity: diag.SevError, File: path, Line: lineFromYAMLError(err),
+			Check:   "teams-parse",
+			Message: fmt.Sprintf("cannot parse teams file: %v", err),
+			Hint:    "teams.yaml is a list under `teams:` with name, members, slack and pagerduty",
 		})
 		return t
 	}
-	for _, team := range f.Teams {
+
+	lines := teamLines(data, len(f.Teams))
+	for i, team := range f.Teams {
+		line := lines[i]
 		if team.Name == "" {
 			c.Add(diag.Diagnostic{
-				Severity: diag.SevError, File: path, Line: 1,
+				Severity: diag.SevError, File: path, Line: line,
 				Check: "teams-parse", Message: "a team entry has no name",
+				Hint: "every team needs a name; it is what service.yaml owner fields refer to",
 			})
 			continue
 		}
-		if _, dup := t.byName[team.Name]; dup {
+		if prev, dup := t.byName[team.Name]; dup {
+			_ = prev
 			c.Add(diag.Diagnostic{
-				Severity: diag.SevError, File: path, Line: 1,
+				Severity: diag.SevError, File: path, Line: line,
 				Check:   "teams-duplicate",
 				Message: fmt.Sprintf("team %q is defined twice", team.Name),
+				Hint:    "merge the two entries",
 			})
 			continue
 		}
@@ -2144,6 +2363,49 @@ func LoadTeams(path string, data []byte, c *diag.Collector) *Teams {
 	}
 	return t
 }
+
+// teamLines returns the 1-indexed line of each entry under `teams:`, so a
+// duplicate or nameless team points at itself rather than at line 1. The
+// yaml.Node technique is the same one catalog.ParseFile uses.
+func teamLines(data []byte, n int) []int {
+	out := make([]int, n)
+	for i := range out {
+		out[i] = 1
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil || len(root.Content) == 0 {
+		return out
+	}
+	doc := root.Content[0]
+	if doc.Kind != yaml.MappingNode {
+		return out
+	}
+	for i := 0; i+1 < len(doc.Content); i += 2 {
+		if doc.Content[i].Value != "teams" {
+			continue
+		}
+		seq := doc.Content[i+1]
+		if seq.Kind != yaml.SequenceNode {
+			return out
+		}
+		for j := 0; j < len(seq.Content) && j < n; j++ {
+			out[j] = seq.Content[j].Line
+		}
+	}
+	return out
+}
+
+// lineFromYAMLError pulls a line out of a yaml.v3 error string.
+func lineFromYAMLError(err error) int {
+	if m := yamlLineRE.FindStringSubmatch(err.Error()); m != nil {
+		if n, convErr := strconv.Atoi(m[1]); convErr == nil {
+			return n
+		}
+	}
+	return 1
+}
+
+var yamlLineRE = regexp.MustCompile(`line (\d+):`)
 
 func (t *Teams) Get(name string) (*Team, bool) {
 	team, ok := t.byName[name]
@@ -2874,7 +3136,7 @@ of these stages against a fetched repo rather than reimplementing them.
 - Consumes: everything above.
 - Produces:
   - `type diag.Formatter interface { Name() string; Write(io.Writer, []Diagnostic) error }`
-  - `type diag.Registry`; `func diag.NewRegistry(...Formatter) *Registry`; `func diag.DefaultRegistry() *Registry`; `(*Registry).Get(string) (Formatter, bool)`; `(*Registry).Names() []string`
+  - `func diag.Formatters() map[string]Formatter`; `func diag.Lookup(string) (Formatter, bool)`; `func diag.FormatNames() []string`
   - `type diag.Text`, `diag.JSON`, `diag.GitHub`, `diag.GitLab` — the four formats
   - `func config.LoadRepos(path string, data []byte, c *diag.Collector) *Repos`; `(*Repos).LocalPatterns() []string`
   - `func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter) int` — `out` carries only the format payload
@@ -3010,24 +3272,36 @@ func TestGitLabEmitsCodeQualityShape(t *testing.T) {
 	}
 }
 
-// Adding a format must be a new type, never an edit to a switch (spec §3.1).
-func TestRegistryIsOpenForExtension(t *testing.T) {
-	r := DefaultRegistry()
+// Every built-in format resolves, and each one's Name matches its key.
+func TestFormattersAreConsistent(t *testing.T) {
 	for _, name := range []string{"text", "json", "github", "gitlab"} {
-		if _, ok := r.Get(name); !ok {
-			t.Errorf("built-in format %q is not registered", name)
+		f, ok := Lookup(name)
+		if !ok {
+			t.Errorf("built-in format %q does not resolve", name)
+			continue
+		}
+		if f.Name() != name {
+			t.Errorf("format keyed %q reports Name() = %q", name, f.Name())
 		}
 	}
-	if _, ok := r.Get("nope"); ok {
-		t.Error("an unregistered name must not resolve")
+	if _, ok := Lookup("nope"); ok {
+		t.Error("an unknown name must not resolve")
 	}
+	if got := FormatNames(); len(got) != 4 || got[0] != "github" {
+		t.Errorf("FormatNames must be sorted, got %v", got)
+	}
+}
 
-	custom := NewRegistry(Text{}, quietFormat{})
-	if _, ok := custom.Get("quiet"); !ok {
-		t.Error("a caller-supplied formatter must be usable without touching diag")
+// A caller can supply its own Formatter: the interface is the extension
+// point, which is why the Registry type was unnecessary.
+func TestAnyFormatterSatisfiesTheInterface(t *testing.T) {
+	var f Formatter = quietFormat{}
+	var buf bytes.Buffer
+	if err := f.Write(&buf, sample); err != nil {
+		t.Fatalf("Write: %v", err)
 	}
-	if _, ok := custom.Get("gitlab"); ok {
-		t.Error("a custom registry must contain only what the caller passed")
+	if buf.Len() != 0 {
+		t.Errorf("quiet formatter wrote %q", buf.String())
 	}
 }
 
@@ -3067,37 +3341,37 @@ type Formatter interface {
 	Write(w io.Writer, ds []Diagnostic) error
 }
 
-// Registry maps format names to formatters. It is a value, not package state:
-// a caller can build a registry containing whatever it likes.
-type Registry struct{ m map[string]Formatter }
-
-func NewRegistry(fs ...Formatter) *Registry {
-	r := &Registry{m: make(map[string]Formatter, len(fs))}
-	for _, f := range fs {
-		r.m[f.Name()] = f
+// Formatters returns the built-in formats by name. A new format is a new type
+// implementing Formatter plus one line here — no switch to edit, and no init()
+// self-registration, which would be package-level mutable state.
+//
+// This was a Registry type with a constructor and a Names method. It was
+// deleted: there was never a second registry, its only consumer was a test
+// that invented its own subject to justify it, and the interface alone gives
+// every property the extra type claimed.
+func Formatters() map[string]Formatter {
+	return map[string]Formatter{
+		"text":   Text{},
+		"json":   JSON{},
+		"github": GitHub{},
+		"gitlab": GitLab{},
 	}
-	return r
 }
 
-func (r *Registry) Get(name string) (Formatter, bool) {
-	f, ok := r.m[name]
+// Lookup finds a formatter by name.
+func Lookup(name string) (Formatter, bool) {
+	f, ok := Formatters()[name]
 	return f, ok
 }
 
-// Names returns the registered format names, sorted, for help text.
-func (r *Registry) Names() []string {
-	out := make([]string, 0, len(r.m))
-	for n := range r.m {
+// FormatNames returns the built-in names, sorted, for help text.
+func FormatNames() []string {
+	out := make([]string, 0, 4)
+	for n := range Formatters() {
 		out = append(out, n)
 	}
 	sort.Strings(out)
 	return out
-}
-
-// DefaultRegistry returns a registry holding the four built-in formats. It
-// returns a fresh value each call; there is no shared global to mutate.
-func DefaultRegistry() *Registry {
-	return NewRegistry(Text{}, JSON{}, GitHub{}, GitLab{})
 }
 
 // Text renders diagnostics for a human terminal.
@@ -3632,8 +3906,8 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter) int {
 	cat := catalog.NewCatalog(catalog.ParseAll(localRepoName(fsys), files, &c), &c)
 
 	// 4. resolve — LocalOnly: this repo cannot see entities defined elsewhere
-	cat.Resolve(catalog.LocalOnly, &c)
-	reportCycles(cat, &c)
+	g := cat.Resolve(catalog.LocalOnly, &c)
+	reportCycles(cat, g, &c)
 
 	// 5. semantic checks
 	checkOwners(fsys, cat, &c)
@@ -3706,8 +3980,8 @@ func checkOwners(fsys fs.FS, cat *catalog.Catalog, c *diag.Collector) {
 	config.LoadTeams("teams.yaml", data, c).ValidateOwners(cat, c)
 }
 
-func reportCycles(cat *catalog.Catalog, c *diag.Collector) {
-	for _, cyc := range cat.Cycles() {
+func reportCycles(cat *catalog.Catalog, g *catalog.Graph, c *diag.Collector) {
+	for _, cyc := range g.Cycles() {
 		d := diag.Diagnostic{
 			Severity: diag.SevError, Line: 1,
 			Check:   "dependency-cycle",
@@ -3732,7 +4006,7 @@ func joinRefs(rs []catalog.Ref) string {
 	return out + rs[0].String()
 }
 
-func newValidateCmd(reg *diag.Registry) *cobra.Command {
+func newValidateCmd() *cobra.Command {
 	var format string
 	cmd := &cobra.Command{
 		Use:   "validate [root]",
@@ -3760,9 +4034,9 @@ func newValidateCmd(reg *diag.Registry) *cobra.Command {
 					name = "gitlab"
 				}
 			}
-			f, ok := reg.Get(name)
+			f, ok := diag.Lookup(name)
 			if !ok {
-				return fmt.Errorf("unknown format %q, want one of %v", name, reg.Names())
+				return fmt.Errorf("unknown format %q, want one of %v", name, diag.FormatNames())
 			}
 			cmd.SilenceUsage = true
 			// os.DirFS is the single place this program touches os for reading.
@@ -3773,7 +4047,7 @@ func newValidateCmd(reg *diag.Registry) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&format, "format", "auto",
-		"output format: auto, "+strings.Join(reg.Names(), ", "))
+		"output format: auto, "+strings.Join(diag.FormatNames(), ", "))
 	return cmd
 }
 ```
@@ -3791,7 +4065,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/schema"
 )
 
@@ -3806,14 +4079,11 @@ const (
 )
 
 func main() {
-	// The registry is built here and injected. Nothing registers itself.
-	reg := diag.DefaultRegistry()
-
 	root := &cobra.Command{
 		Use:   "landsraad",
 		Short: "A lightweight developer portal for small teams",
 	}
-	root.AddCommand(newValidateCmd(reg))
+	root.AddCommand(newValidateCmd())
 	root.AddCommand(&cobra.Command{
 		Use:   "schema",
 		Short: "Print the JSON Schema for service.yaml",
@@ -3875,6 +4145,345 @@ git commit -m "feat: validate command composed from typed stages, four output fo
 
 ---
 
+## Task 11: The on-ramp
+
+The review's pre-mortem walked a six-person team through their first hour and
+they quit inside it: no licence, no README, no idea what `teams.yaml` contains,
+`landsraad validate` from a subdirectory failing with "not found at the
+repository root", and `landsraad version` printing `dev` in every bug report.
+None of that is a code defect and all of it is fatal to adoption.
+
+**Files:**
+- Create: `cmd/landsraad/init.go`, `cmd/landsraad/root.go`, `README.md`, `CONTRIBUTING.md`
+- Modify: `cmd/landsraad/main.go` — real version, register `init`
+- Test: `cmd/landsraad/init_test.go`, `cmd/landsraad/root_test.go`
+
+**Interfaces:**
+- Consumes: everything above.
+- Produces:
+  - `func findRoot(start string) (string, error)` — nearest ancestor holding `repos.yaml`, `teams.yaml` or `.git`
+  - `func version() string` — module version from the build, falling back to `Version`
+  - `func newInitCmd() *cobra.Command`
+
+- [ ] **Step 1: Write the failing root-discovery test**
+
+Create `cmd/landsraad/root_test.go`:
+
+```go
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestFindRootWalksUp(t *testing.T) {
+	base := t.TempDir()
+	deep := filepath.Join(base, "services", "payments-worker", "docs")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "teams.yaml"), []byte("teams: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := findRoot(deep)
+	if err != nil {
+		t.Fatalf("findRoot: %v", err)
+	}
+	want, _ := filepath.EvalSymlinks(base)
+	gotEval, _ := filepath.EvalSymlinks(got)
+	if gotEval != want {
+		t.Errorf("findRoot(%q) = %q, want %q — running from a subdirectory is "+
+			"the normal case and must work", deep, gotEval, want)
+	}
+}
+
+func TestFindRootFailsWithAClearMessage(t *testing.T) {
+	_, err := findRoot(t.TempDir())
+	if err == nil {
+		t.Fatal("a directory with no markers above it must be an error")
+	}
+	if !strings.Contains(err.Error(), "repos.yaml") {
+		t.Errorf("the error must say what it looked for, got %q", err)
+	}
+}
+
+func TestVersionFallsBackToTheConstant(t *testing.T) {
+	if version() == "" {
+		t.Error("version() must never be empty — every bug report quotes it")
+	}
+}
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `go test ./cmd/landsraad/ -run 'TestFindRoot|TestVersion' -v`
+Expected: FAIL — `undefined: findRoot`
+
+- [ ] **Step 3: Write `root.go`**
+
+Create `cmd/landsraad/root.go`:
+
+```go
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime/debug"
+)
+
+// rootMarkers identify a repository root, most specific first.
+var rootMarkers = []string{"repos.yaml", "teams.yaml", ".git"}
+
+// findRoot walks up from start looking for a repository root, the way every
+// linter does. Without it, running `landsraad validate` from inside
+// services/foo/ reports "teams.yaml not found at the repository root" while
+// standing in a subdirectory of a perfectly valid repo.
+func findRoot(start string) (string, error) {
+	dir, err := filepath.Abs(start)
+	if err != nil {
+		return "", err
+	}
+	for {
+		for _, marker := range rootMarkers {
+			if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
+				return dir, nil
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("no repository root above %s: looked for %v "+
+				"(run `landsraad init` to create them)", start, rootMarkers)
+		}
+		dir = parent
+	}
+}
+
+// version reports the module version recorded at build time, so a bug report
+// quotes something useful. `go install ...@latest` applies no -ldflags, which
+// is why every user would otherwise report "dev".
+func version() string {
+	if Version != "dev" {
+		return Version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		if v := bi.Main.Version; v != "" && v != "(devel)" {
+			return v
+		}
+	}
+	return Version
+}
+```
+
+- [ ] **Step 4: Run it to verify it passes**
+
+Run: `go test ./cmd/landsraad/ -run 'TestFindRoot|TestVersion' -v`
+Expected: PASS — all three tests
+
+- [ ] **Step 5: Write the failing `init` test**
+
+Create `cmd/landsraad/init_test.go`:
+
+```go
+package main
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestInitWritesAWorkingCatalog(t *testing.T) {
+	dir := t.TempDir()
+	var out bytes.Buffer
+	if err := runInit(dir, &out); err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+	for _, f := range []string{"teams.yaml", "repos.yaml", "services/example/service.yaml"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Errorf("init did not create %s", f)
+		}
+	}
+
+	// The whole point: what init writes must pass validate immediately.
+	var vout, verr bytes.Buffer
+	if code := Validate(os.DirFS(dir), &vout, &verr, diagText()); code != exitOK {
+		t.Errorf("a freshly initialised repo must validate, got exit %d\n%s", code, vout.String())
+	}
+}
+
+func TestInitDoesNotClobber(t *testing.T) {
+	dir := t.TempDir()
+	keep := []byte("teams:\n  - name: mine\n")
+	if err := os.WriteFile(filepath.Join(dir, "teams.yaml"), keep, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := runInit(dir, &out); err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "teams.yaml"))
+	if string(got) != string(keep) {
+		t.Error("init must never overwrite a file that already exists")
+	}
+}
+```
+
+- [ ] **Step 6: Run it to verify it fails**
+
+Run: `go test ./cmd/landsraad/ -run TestInit -v`
+Expected: FAIL — `undefined: runInit`
+
+- [ ] **Step 7: Write `init.go`**
+
+Create `cmd/landsraad/init.go`:
+
+```go
+package main
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+
+	"github.com/spf13/cobra"
+
+	"github.com/landsraadhq/landsraad/internal/diag"
+)
+
+// diagText exists so tests can name the default formatter without importing
+// the whole registry surface.
+func diagText() diag.Formatter { return diag.Text{} }
+
+// scaffold is what `landsraad init` writes. Every file is valid on the first
+// run: the acceptance test for init is that validate passes immediately after.
+var scaffold = []struct {
+	path string
+	body string
+}{
+	{"teams.yaml", `teams:
+  - name: team-example
+    members: [you]
+    slack: "#team-example"
+    pagerduty: EXAMPLE
+`},
+	{"repos.yaml", `# The first entry is the repository you are in.
+repos:
+  - url: https://github.com/your-org/your-repo
+    paths: [services/*, workers/*, libs/*]
+`},
+	{"services/example/service.yaml", `# yaml-language-server: $schema=../../schema/service.schema.json
+apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: example
+  description: Replace me with a real service.
+  owner: team-example
+  tier: 3
+  lifecycle: experimental
+spec:
+  language: go
+  path: services/example
+`},
+}
+
+func runInit(root string, out io.Writer) error {
+	for _, f := range scaffold {
+		full := filepath.Join(root, filepath.FromSlash(f.path))
+		if _, err := os.Stat(full); err == nil {
+			fmt.Fprintf(out, "  skip    %s (already exists)\n", f.path)
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(full, []byte(f.body), 0o644); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "  created %s\n", f.path)
+	}
+	fmt.Fprintf(out, "\nNext: run `landsraad schema > schema/service.schema.json` for editor\n"+
+		"autocompletion, then `landsraad validate`.\n")
+	return nil
+}
+
+func newInitCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "init [root]",
+		Short: "Missionaria — scaffold teams.yaml, repos.yaml and a first service",
+		Long: "Write a minimal, valid catalog into this repository. Existing files " +
+			"are never overwritten. What init produces passes `landsraad validate` " +
+			"on the first run.",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			root := "."
+			if len(args) == 1 {
+				root = args[0]
+			}
+			return runInit(root, cmd.OutOrStdout())
+		},
+	}
+}
+```
+
+- [ ] **Step 8: Register `init` and use the real version and root**
+
+In `cmd/landsraad/main.go`, add `root.AddCommand(newInitCmd())` beside the
+other commands, and change the version command to print `version()` rather
+than `Version`.
+
+In `cmd/landsraad/validate.go`, replace the `os.Stat(root)` check inside
+`newValidateCmd`'s `RunE` with root discovery:
+
+```go
+			resolved, err := findRoot(root)
+			if err != nil {
+				return err
+			}
+```
+
+and pass `os.DirFS(resolved)` to `Validate`.
+
+- [ ] **Step 9: Run everything**
+
+Run: `task ci`
+Expected: PASS
+
+- [ ] **Step 10: Write `README.md`**
+
+The first hour is the product. Cover, in this order: what it is in two
+sentences; `go install github.com/landsraadhq/landsraad/cmd/landsraad@latest`;
+`landsraad init`; what `teams.yaml`, `repos.yaml` and `service.yaml` each
+contain, with the worked examples from §5 and §6 of the spec; wiring
+`landsraad validate` into CI with a copyable GitHub Actions and GitLab CI
+snippet; the editor-autocompletion setup; and a "why not Backstage / Cortex /
+OpsLevel / Port / a README table" section stating plainly that landsraad is
+cheaper to run and more expensive to feed.
+
+- [ ] **Step 11: Write `CONTRIBUTING.md`**
+
+Cover: `task ci` must pass; tests are table-driven and assert **exact**
+diagnostic messages (spec §14), because the wording is the product; new
+scorecard checks are Go functions with stable ids, not a plugin system (D4);
+all file access goes through `io/fs.FS` and nothing under `internal/` may
+import `os` (spec §3.1); commits are conventional; no AI attribution.
+
+- [ ] **Step 12: Commit**
+
+```bash
+git add cmd/landsraad/ README.md CONTRIBUTING.md
+git commit -m "feat: init command, root discovery, real version, README"
+```
+
+---
+
 ## Definition of done
 
 **Composition (spec §3.1) — these are pass/fail, not aspirations:**
@@ -3883,8 +4492,10 @@ git commit -m "feat: validate command composed from typed stages, four output fo
 - [ ] `grep -rn 'sync.Once\|^func init(' internal/` returns **nothing** — no hidden initialisation. (`AllKinds`, `DefaultPatterns` and `schema.Raw` are exported package-level slices, therefore technically mutable by an importer; they are read-only by convention and never written after init.)
 - [ ] Every stage function takes its input type and a `*diag.Collector`, and returns its output type. None takes a root path string.
 - [ ] `Validate` reads top to bottom as the stage list in spec §7, with no branching on where the files came from
+- [ ] `grep -rn 'diag.Registry\|NewRegistry' .` returns **nothing** — the interface is the extension point
+- [ ] `cat.Cycles()` does not compile; cycles are reachable only through the `*Graph` that `Resolve` returns
 - [ ] `catalog.ParseAll` does no IO — the package imports `io/fs` only in `files.go`
-- [ ] A new output format is a new type implementing `Formatter` plus one line in `DefaultRegistry()` — no `switch` to edit and no `init()` registration
+- [ ] A new output format is a new type implementing `Formatter` plus one line in `Formatters()` — no `switch` to edit and no `init()` registration
 
 **Function:**
 
@@ -3898,6 +4509,23 @@ git commit -m "feat: validate command composed from typed stages, four output fo
 - [ ] The full pipeline runs against `fstest.MapFS` with no disk access (`TestValidateRunsEntirelyInMemory`)
 - [ ] All four output formats work: text, json, github, gitlab
 
+**One-way doors (they land in other people's repositories):**
+
+- [ ] A name ending in `-`, `.` or `_` is rejected
+- [ ] `tier` is required for `Service`/`Worker`/`Cron`/`API` and optional for the rest
+- [ ] `metadata.annotations`, `metadata.labels`, `metadata.aliases` and `spec.exemptions` all validate
+- [ ] `kind: Resource` with a free-string `spec.type` validates
+- [ ] A `providesApis` typo is an error, not silently accepted
+- [ ] `teams.yaml` rejects an unknown key, and its diagnostics carry real line numbers
+
+**The first hour:**
+
+- [ ] `LICENSE` exists and is Apache-2.0
+- [ ] `landsraad init` in an empty directory produces a repo that `landsraad validate` passes
+- [ ] `landsraad validate` works from a subdirectory, not only the repo root
+- [ ] `landsraad version` reports the module version for a `go install` build, not `dev`
+- [ ] `README.md` and `CONTRIBUTING.md` exist
+
 ## What this plan deliberately leaves out
 
 Handled by later plans, not gaps:
@@ -3907,3 +4535,8 @@ Handled by later plans, not gaps:
 - **Fetching remote repos, GitHub and GitLab adapters** — Plan 3
 - **Rendering, goldmark, admonitions, search, `build`, `serve`** — Plan 3
 - **Exit code 3** — arrives with the scorecard gate in Plan 2
+- **Pipeline stage 6 (ingesting `.landsraad/checks/*.yaml`)** — deferred with the
+  schema that defines the file's shape; spec §7.1 records the consequence
+- **Resolving `metadata.aliases` when matching references** — the field is
+  accepted and validated in v1 so it can be populated; resolution through it
+  lands with the merged catalog in Plan 3

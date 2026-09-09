@@ -81,7 +81,9 @@ Recorded because the *why* is the part that gets lost.
 | D4 | Go checks + YAML severity matrix | Checks are Go funcs with stable ids; `standards.yaml` holds only the tier→severity matrix and thresholds. Type-safe, precise messages, nothing to debug in YAML. A CEL expression language was rejected as an API surface with no demonstrated demand. |
 | D5 | GitHub + GitLab host API adapters | User decision, taken over a recommendation for a host-agnostic fetcher. Consequence accepted and recorded as a non-goal (§15): Gitea, Forgejo, Bitbucket and self-hosted git are unsupported in v1. Fetching sits behind a Go interface so a generic fetcher is additive later. |
 | D6 | Flat entity names, unique per `(kind, name)` | `metadata.name` unique across the merged catalog; refs are `kind:name`. Repos, not teams, are the namespacing axis, and at a handful of repos collisions are a two-minute rename, not a migration. Decisive factor: flat → namespaced is a non-breaking additive change later (Backstage's default namespace is literally `default`), while namespaced → flat is breaking. On a one-way door, take the door that stays open. |
-| D7 | Strict schema (`additionalProperties: false`) | Unknown fields are rejected, not ignored. Prevents a half-working `namespace:` field existing in the wild before v2 defines one. |
+| D7 | Strict schema (`unevaluatedProperties: false`) | Unknown fields are rejected, not ignored. `unevaluatedProperties` rather than `additionalProperties` because the latter, at the root, makes a field introduced inside a conditional branch *unevaluated* and therefore rejected — foreclosing per-kind fields forever. Switching is free today and a behaviour change once files exist in the wild. |
+| D12 | `metadata.aliases` from v1 | Names are not identities. Without aliases a rename breaks every `dependsOn` in every other repo, rewrites CODEOWNERS and alert routing, and silently restarts `scorecard-history.csv` — the one artefact with no way to notice it broke. Aliases make a rename additive. |
+| D13 | `kind: Resource` plus free-string `spec.type` | A fixed seven-kind enum has no home for an S3 bucket, an SQS queue, a Redis cache or a Terraform module, so users model them as `Database` and the lie flows into the tier matrix, the dependency graph and the portal. For a product whose thesis is "the metadata is the source", users lying in the data is the worse failure. Backstage converged on the same shape. |
 | D8 | Everything starts in `internal/` | `internal → pkg` is additive; `pkg → internal` is breaking. Catalog types get promoted when someone actually asks to import them. |
 | D9 | Dune naming on user-facing surfaces only | Project, binary and deployed components carry Dune names; Go packages are literal (`catalog`, `scorecard`, `render`). Themed package names tax every future contributor with a glossary. |
 | D10 | Named `landsraad`, not `sietch` | `sietch` was the first choice and failed an availability check on 2026-09-08: `danprince/sietch` is an existing **Go Markdown static site generator** — same language, same niche — alongside a 141-star storage project, three Go modules, and sietch.dev/.io/.sh/.org all registered. `landsraad` has zero Go modules and no namesake above one star, and is semantically closer: the assembly of the Great Houses is a federated register of who owns what. `apiVersion` needs no domain (k8s uses `apps/v1`), so no domain sits on the critical path. |
@@ -116,15 +118,29 @@ specific mechanism rather than by good intentions.
 - Nothing does its own IO or its own printing. Stages take an `fs.FS` and a
   `*diag.Collector`; rendering happens once, at the edge.
 
+**Writes belong to the command layer.** `io/fs.FS` is read-only by design.
+Plan 2's `gen` and Plan 3's `EMIT` produce files, so they take `io.Writer`s and
+the command layer decides where bytes land. Without stating this, the "no `os`
+below `cmd/`" rule gets quietly weakened the first time someone needs to write
+a file — and an absolute rule that has to be broken teaches contributors to
+ignore the rules.
+
 **Reusability — one component serves unrelated callers.**
 
 - `Discover`, `ParseAll` and `CheckFiles` are used by `validate` against a
   local checkout and by `build` against every fetched repo. One
   implementation, three filesystems, no branching on which.
-- Output formats implement `diag.Formatter` and live in a `diag.Registry`.
-  The four the spec requires (text, JSON, GitHub annotations, GitLab Code
-  Quality) are four small types; a fifth is a new file, not an edit to a
-  switch statement.
+- Output formats implement `diag.Formatter`. The four the spec requires (text,
+  JSON, GitHub annotations, GitLab Code Quality) are four small types; a fifth
+  is a new type plus one line in `diag.Formatters()`. There is deliberately no
+  registry *type* — a map is enough, and an abstraction with a single instance
+  whose only consumer is a test that invents its own subject is speculative
+  generality.
+- **The graph is a value produced by `Resolve`, not state on `Catalog`.**
+  `Cycles`, `DependsOn` and `Dependents` are methods on `*Graph`, so asking for
+  cycles before resolving does not compile. With the edges on `Catalog` the
+  claim above was false for the one ordering constraint that is not obvious:
+  `cat.Cycles()` compiled and silently returned zero cycles.
 
 **What this deliberately is not.** "Replaceable at runtime" means the
 composition is *selected* at startup from configuration — not that code is
@@ -175,7 +191,10 @@ metadata:
   name: payments-worker  # (kind, name) unique across the merged catalog
   description: Consumes payment events and settles them.
   owner: team-payments   # must exist in teams.yaml
-  tier: 1                # 1 critical, 2 important, 3 best-effort
+  aliases: []            # former names; references resolve through them
+  tier: 1                # required for Service/Worker/Cron/API only
+  labels: {}             # short key/value, for selection
+  annotations: {}        # free key/value: Grafana folder, AWS account, cost centre
   lifecycle: production  # experimental | production | deprecated
   tags: [go, kafka]
 spec:
@@ -189,8 +208,11 @@ spec:
     - { title: Dashboard, url: https://grafana/d/pay-worker, type: dashboard }
   dependsOn: [topic:payments.events, database:payments-pg, service:ledger-api]
   providesApis: []
+  type: ""                                      # free string, as Backstage's spec.type
   slo:
     - { name: settle-latency-p99, target: "500ms", window: 30d }
+  exemptions:                                   # waive a check WITH a reason
+    - { check: runbook-present, reason: "nightly backfill, no on-call path", until: 2027-01-01 }
   alerts: services/payments-worker/alerts.yaml
   runtime:
     selector: { app.kubernetes.io/name: payments-worker }
@@ -229,8 +251,20 @@ both sides.
 
 ## 6. Supporting config
 
-**`teams.yaml`** — team → members, Slack channel, PagerDuty service. The source
-for CODEOWNERS and alert routing.
+**`teams.yaml`** — the source for CODEOWNERS and alert routing. Plan 2's
+generators consume exactly this shape, so it is a reviewed contract rather than
+an implementation detail:
+
+```yaml
+teams:
+  - name: team-payments      # what service.yaml `owner` refers to
+    members: [alice, bob]    # CODEOWNERS entries
+    slack: "#payments"       # deploy notifications
+    pagerduty: PAY           # alert routing target
+```
+
+Unknown keys are rejected. A silently-ignored `pagerDuty:` typo would make
+alert routing rot invisibly, which is the exact inverse of Goal 2.
 
 **`repos.yaml`** — which repos and paths make up the catalog.
 
@@ -273,9 +307,25 @@ kind: CheckResults
 producer: ci/image-scan
 generatedAt: 2026-09-08T14:00:00Z
 results:
-  - { service: payments-worker, check: image-scanned, status: pass,
+  - { entity: service:payments-worker, check: image-scanned, status: pass,
       detail: "0 critical, 2 medium (trivy 0.55)", url: "https://ci/run/1234" }
 ```
+
+This file is written by CI jobs **in other people's repositories**, which makes
+it the most expensive contract here to change later. Three rules that are cheap
+now and permanent support load if left undefined:
+
+- **`entity` is a ref** (`kind:name`), not a bare name — every other reference
+  in landsraad is a ref, and a bare name is genuinely ambiguous once
+  `service:orders` and `topic:orders` may coexist. A bare name is accepted as a
+  deprecated alias, resolved only when unambiguous.
+- **`generatedAt` is RFC 3339 with an explicit offset.** The `staleAfterDays`
+  arithmetic depends on it.
+- **Precedence** when two producers report the same `(entity, check)`: newest
+  `generatedAt` wins, and a tie is an error rather than a coin flip.
+
+Staleness is wall-clock, not per-commit: a scan of an older commit looks
+fresher than it is. Adding a `commit:` field later is additive.
 
 `status` is `pass` | `fail` | `error`. A result older than `staleAfterDays`
 renders as **stale**, not pass — an image scan from March is not evidence about
@@ -423,6 +473,18 @@ error: duplicate entity name "api"
   names must be unique across the merged catalog
 ```
 
+**`tier` is required only for kinds that can page someone** — `Service`,
+`Worker`, `Cron`, `API` — enforced by a conditional in the schema. A Kafka
+topic's criticality is derived from its consumers; a library has none.
+Requiring it everywhere means a team with forty libraries carries forty
+permanent warnings, which makes `--fail-on warn` unusable on day one. Making a
+required field optional later is non-breaking; the reverse is not.
+
+**Exemptions exist so nobody has to lie.** A tier-1 nightly backfill genuinely
+has no runbook. Without `spec.exemptions` the only available lever is to
+misstate the tier — corrupting the dataset the whole product rests on. A waiver
+needs a stated reason and may carry an expiry.
+
 Uniqueness is on the **pair** `(kind, name)`, not on the name alone:
 `service:orders` and `topic:orders` are distinct entities and may coexist.
 Every generated artefact — CODEOWNERS, alert routing, the Slack map, and the
@@ -496,6 +558,31 @@ Test-first.
   the test suite** — it must pass offline.
 - **Every diagnostic type asserts its exact message string.** Error message
   quality is the product; a wording regression fails a test.
+
+---
+
+## 14.1 Security posture
+
+**Trust boundary.** Service repositories are trusted, same-organisation
+content; the portal is an internal site. landsraad is not a sandbox for
+untrusted input and should not be described as one.
+
+**Path handling.** All catalog file access goes through `io/fs.FS`, which
+rejects absolute paths and any path containing `..`. A `service.yaml` cannot
+point `spec.runbook` outside its own repository. That is a security property of
+the seam in §3.1, not only a testing convenience.
+
+**Rendering** (Plan 3, decided now rather than under pressure): goldmark runs
+*without* `WithUnsafe`, so raw HTML in a runbook is escaped rather than injected
+into a shared portal page, and Mermaid renders in strict mode.
+
+**Supply chain.** Releases are tagged and checksummed; adopters pin a version in
+CI rather than tracking `@latest`. `dependabot.yml` covers Go modules and
+GitHub Actions.
+
+**Secrets.** landsraad reads YAML and writes static files. It holds no
+credentials in v1; the fetch adapters' tokens arrive with Plan 3 and belong in
+CI secrets, never in `repos.yaml`.
 
 ---
 
