@@ -6,7 +6,8 @@
 task ci
 ```
 
-runs everything CI runs — `go vet`, a `gofmt` check, and the full test suite.
+runs everything CI runs — `go vet`, a `gofmt` check, `go mod tidy -diff`,
+the project rules below (`scripts/check-rules.sh`), and the full test suite.
 It must pass from a clean checkout before a PR is reviewed.
 
 ## How this codebase is organised
@@ -22,27 +23,39 @@ mechanically, not just documented:
   — all three run the same discovery, parsing and file-check code unchanged.
   As a consequence, **nothing under `internal/` may import `"os"`** — reads
   take an `fs.FS`, writes take an `io.Writer`, and only `cmd/` touches the
-  real filesystem. A pre-commit hook blocks this; it isn't a style
-  preference.
+  real filesystem. `task lint` fails on it; it isn't a style preference.
 - **No `sync.Once`, no `func init()` below `cmd/`.** Package-level mutable
   state means two configurations can't coexist in the same process and
-  initialisation failure can't be tested. This is also hook-enforced.
+  initialisation failure can't be tested. `task lint` fails on this too.
+- **Diagnostic wording is asserted exactly** — see Tests below. `task lint`
+  fails on a substring assertion against `.Message` or `.Hint`.
 - **New checks are Go functions with stable ids, not a plugin system** (D4).
   When the scorecard lands, a new check is a typed function registered by id
   and a line in `standards.yaml`'s severity matrix — never a YAML rule
   language or a dynamically loaded plugin. That's a deliberate non-goal, not
   a gap.
 
+The first three are grep rules in `scripts/check-rules.sh`, which `task lint`
+runs, so they fail in your shell rather than in review. `.claude/hooks/`
+carries the same three patterns as editor-time hooks for Claude Code
+sessions; those run in that workflow only, and are a convenience, not the
+enforcement point.
+
 ## Tests
 
-Tests are table-driven: one entry per pass/fail/edge case, not one test
-function per case. For anything that produces a diagnostic, the test asserts
-the **exact** message string (and hint, where the diagnostic sets one) —
-never a substring match. Error message quality is the product here; a
-wording regression that a `strings.Contains` check would let through is a
-regression a user has to puzzle out in their own CI log. A hook blocks
-`strings.Contains` against `.Message` or `.Hint` in test files for this
-reason — assert with `==` and show both strings on failure:
+Most tests are one function per case, named for the behaviour they pin down
+(`TestParseFileRejectsASecondDocument`), so a failure names the property that
+broke before you read a line of it. A table with subtests is fine where the
+cases really are the same assertion over different inputs — prefer whichever
+makes the failure output say more.
+
+For anything that produces a diagnostic, the test asserts the **exact**
+message string (and hint, where the diagnostic sets one) — never a substring
+match. Error message quality is the product here; a wording regression that a
+`strings.Contains` check would let through is a regression a user has to
+puzzle out in their own CI log. `task lint` fails on `strings.Contains`
+against `.Message` or `.Hint` in a test file for this reason — assert with
+`==` and show both strings on failure:
 
 ```go
 if got.Message != want {

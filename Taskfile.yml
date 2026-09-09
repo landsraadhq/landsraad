@@ -12,10 +12,15 @@ tasks:
       - go test ./...
 
   lint:
-    desc: Vet and check formatting
+    desc: Vet, check formatting, and enforce the rules CONTRIBUTING.md states
     cmds:
       - go vet ./...
       - test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      # Go 1.23+. Exits non-zero, changing nothing, when go.mod or go.sum is
+      # untidy — which is how every direct dependency came to be marked
+      # "// indirect".
+      - go mod tidy -diff
+      - sh scripts/check-rules.sh
 
   release:
     desc: Build tagged, checksummed binaries for every platform
