@@ -249,7 +249,7 @@ func TestValidateOwnersSkipsOnBrokenTeamsYAML(t *testing.T) {
 	if want := "owner validation skipped: teams.yaml did not parse"; d.Message != want {
 		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
 	}
-	if want := "fix the error above and rerun: until then no owner in this repository has been checked"; d.Hint != want {
+	if want := "no owner in this repository has been checked; fix the parse error in teams.yaml and rerun"; d.Hint != want {
 		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, want)
 	}
 	// Line 0 renders as `teams.yaml:0` and, in GitHub format, as an

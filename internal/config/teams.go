@@ -213,7 +213,9 @@ func (t *Teams) ValidateOwners(cat *catalog.Catalog, c *diag.Collector) {
 			Line:     t.errLine,
 			Check:    "owners-skipped",
 			Message:  fmt.Sprintf("owner validation skipped: %s did not parse", t.path),
-			Hint:     "fix the error above and rerun: until then no owner in this repository has been checked",
+			// Not "the error above": diagnostics are sorted by location, and
+			// this one sorts before the parse error it refers to.
+			Hint: fmt.Sprintf("no owner in this repository has been checked; fix the parse error in %s and rerun", t.path),
 		})
 		return
 	}
