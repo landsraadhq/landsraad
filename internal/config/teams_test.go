@@ -42,9 +42,67 @@ func TestLoadTeamsRejectsUnknownFields(t *testing.T) {
 	if !c.HasErrors() {
 		t.Fatal("a misspelled key in the file that routes alerts must be rejected, not ignored")
 	}
+	if len(c.Diagnostics()) != 1 {
+		t.Fatalf("want exactly 1 diagnostic, got %d: %+v", len(c.Diagnostics()), c.Diagnostics())
+	}
 	d := c.Diagnostics()[0]
+	// `pagerDuty` is the flagship example in both the README and the spec, so
+	// this is the message a new user is most likely to see. It used to be
+	// "cannot parse teams file: yaml: unmarshal errors: line 3: field
+	// pagerDuty not found in type config.Team" — a Go struct name shown to
+	// someone who is editing YAML.
+	if want := `unknown key "pagerDuty" in teams.yaml`; d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
 	if want := "teams.yaml is a list under `teams:` with name, members, slack and pagerduty"; d.Hint != want {
 		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, want)
+	}
+	if d.File != "teams.yaml" || d.Line != 3 {
+		t.Errorf("location = %s:%d, want teams.yaml:3", d.File, d.Line)
+	}
+}
+
+// yaml.v3 reports every unknown key it found in one error. Reporting one
+// diagnostic per key is the same rule the rest of the tool follows: one run
+// tells you everything that is wrong, not the first thing.
+func TestLoadTeamsReportsEveryUnknownKey(t *testing.T) {
+	in := "teams:\n  - name: team-a\n    pagerDuty: PAY\n    Slack: \"#a\"\n"
+	var c diag.Collector
+	LoadTeams("teams.yaml", []byte(in), &c)
+	ds := c.Diagnostics()
+	if len(ds) != 2 {
+		t.Fatalf("want 2 diagnostics, one per unknown key, got %d: %+v", len(ds), ds)
+	}
+	for i, want := range []struct {
+		message string
+		line    int
+	}{
+		{`unknown key "pagerDuty" in teams.yaml`, 3},
+		{`unknown key "Slack" in teams.yaml`, 4},
+	} {
+		if ds[i].Message != want.message {
+			t.Errorf("Message[%d]\n got: %s\nwant: %s", i, ds[i].Message, want.message)
+		}
+		if ds[i].Line != want.line {
+			t.Errorf("Line[%d] = %d, want %d", i, ds[i].Line, want.line)
+		}
+	}
+}
+
+// A syntax error is not an unknown key, and must keep saying so.
+func TestLoadTeamsReportsASyntaxError(t *testing.T) {
+	var c diag.Collector
+	LoadTeams("teams.yaml", []byte("teams:\n  - name: team-a\n    x: y: z\n"), &c)
+	if len(c.Diagnostics()) != 1 {
+		t.Fatalf("want exactly 1 diagnostic, got %d: %+v", len(c.Diagnostics()), c.Diagnostics())
+	}
+	d := c.Diagnostics()[0]
+	want := "cannot parse teams file: yaml: line 3: mapping values are not allowed in this context"
+	if d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+	if d.File != "teams.yaml" || d.Line != 3 {
+		t.Errorf("location = %s:%d, want teams.yaml:3", d.File, d.Line)
 	}
 }
 
@@ -186,7 +244,25 @@ func TestValidateOwnersSkipsOnBrokenTeamsYAML(t *testing.T) {
 		t.Fatalf("expected 1 diagnostic (owner validation skipped), got %d: %+v", len(vc.Diagnostics()), vc.Diagnostics())
 	}
 	d := vc.Diagnostics()[0]
-	if want := "owner validation skipped: teams.yaml could not be read"; d.Message != want {
+	// The file was read; it did not parse. Saying "could not be read" sends
+	// the reader to check file permissions.
+	if want := "owner validation skipped: teams.yaml did not parse"; d.Message != want {
 		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+	if want := "fix the error above and rerun: until then no owner in this repository has been checked"; d.Hint != want {
+		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, want)
+	}
+	// Line 0 renders as `teams.yaml:0` and, in GitHub format, as an
+	// annotation GitHub rejects: its lines are 1-based.
+	if d.File != "teams.yaml" || d.Line != 3 {
+		t.Errorf("location = %s:%d, want teams.yaml:3 — where the parse failed", d.File, d.Line)
+	}
+	if d.Check != "owners-skipped" {
+		t.Errorf("Check = %q, want %q", d.Check, "owners-skipped")
+	}
+	// The parse failure is already an error, and reporting the same typo
+	// twice at error severity is how one mistake became two.
+	if d.Severity != diag.SevInfo {
+		t.Errorf("Severity = %v, want info: the parse error above already fails the run", d.Severity)
 	}
 }

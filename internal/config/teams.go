@@ -4,6 +4,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -28,6 +29,11 @@ type Team struct {
 type Teams struct {
 	byName map[string]*Team
 	loaded bool // true if teams.yaml parsed successfully; false if it had syntax/field errors
+	// path and errLine record where the parse failed, so the note that owner
+	// validation was skipped points at the same place as the parse error
+	// instead of at line 0.
+	path    string
+	errLine int
 }
 
 type teamsFile struct {
@@ -37,7 +43,7 @@ type teamsFile struct {
 // LoadTeams reads teams.yaml. It always returns a usable (possibly empty)
 // Teams so callers need no nil checks; problems are reported as diagnostics.
 func LoadTeams(path string, data []byte, c *diag.Collector) *Teams {
-	t := &Teams{byName: map[string]*Team{}}
+	t := &Teams{byName: map[string]*Team{}, path: path, errLine: 1}
 
 	// KnownFields(true) rejects unknown keys. teams.yaml is the source for
 	// alert routing, so a silently-ignored `pagerDuty:` typo would make
@@ -46,12 +52,11 @@ func LoadTeams(path string, data []byte, c *diag.Collector) *Teams {
 	dec.KnownFields(true)
 	var f teamsFile
 	if err := dec.Decode(&f); err != nil && err != io.EOF {
-		c.Add(diag.Diagnostic{
-			Severity: diag.SevError, File: path, Line: lineFromYAMLError(err),
-			Check:   "teams-parse",
-			Message: fmt.Sprintf("cannot parse teams file: %v", err),
-			Hint:    "teams.yaml is a list under `teams:` with name, members, slack and pagerduty",
-		})
+		ds := parseDiagnostics(path, err)
+		t.errLine = ds[0].Line
+		for _, d := range ds {
+			c.Add(d)
+		}
 		return t // loaded remains false
 	}
 
@@ -80,6 +85,57 @@ func LoadTeams(path string, data []byte, c *diag.Collector) *Teams {
 	}
 	t.loaded = true
 	return t
+}
+
+// teamsParseHint is the same advice whatever went wrong with the file.
+const teamsParseHint = "teams.yaml is a list under `teams:` with name, members, slack and pagerduty"
+
+// unknownFieldRE matches one line of a yaml.v3 TypeError for a rejected key:
+// "line 3: field pagerDuty not found in type config.Team".
+var unknownFieldRE = regexp.MustCompile(`^line (\d+): field (.+) not found in type \S+$`)
+
+// parseDiagnostics turns a yaml.v3 decode failure into diagnostics a user can
+// act on. It always returns at least one.
+//
+// A KnownFields decoder reports an unknown key as "field pagerDuty not found
+// in type config.Team" — a Go struct name shown to someone editing YAML, and
+// the message a new user is most likely to see, since `pagerDuty` is the
+// worked example in both the README and the spec. yaml.v3 collects every
+// rejected key into one TypeError, so each becomes its own diagnostic: one
+// run reports everything that is wrong with the file.
+func parseDiagnostics(path string, err error) []diag.Diagnostic {
+	var typeErr *yaml.TypeError
+	if errors.As(err, &typeErr) {
+		out := make([]diag.Diagnostic, 0, len(typeErr.Errors))
+		for _, e := range typeErr.Errors {
+			d := diag.Diagnostic{
+				Severity: diag.SevError, File: path, Line: 1,
+				Check: "teams-parse", Hint: teamsParseHint,
+			}
+			if m := unknownFieldRE.FindStringSubmatch(e); m != nil {
+				if n, convErr := strconv.Atoi(m[1]); convErr == nil {
+					d.Line = n
+				}
+				d.Message = fmt.Sprintf("unknown key %q in %s", m[2], path)
+			} else {
+				// Some other type error, e.g. a string where a list belongs.
+				// Its wording is the library's, but it names a YAML value
+				// rather than a Go type.
+				d.Line = lineFromYAMLError(errors.New(e))
+				d.Message = fmt.Sprintf("cannot parse teams file: %s", e)
+			}
+			out = append(out, d)
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return []diag.Diagnostic{{
+		Severity: diag.SevError, File: path, Line: lineFromYAMLError(err),
+		Check:   "teams-parse",
+		Message: fmt.Sprintf("cannot parse teams file: %v", err),
+		Hint:    teamsParseHint,
+	}}
 }
 
 // teamLines returns the 1-indexed line of each entry under `teams:`, so a
@@ -143,15 +199,21 @@ func (t *Teams) Names() []string {
 // ValidateOwners checks that every entity's owner exists, suggesting the
 // closest real team when the owner looks like a typo.
 func (t *Teams) ValidateOwners(cat *catalog.Catalog, c *diag.Collector) {
-	// If teams.yaml did not parse, skip owner validation. The parse error
-	// has already been reported; owner validation must not generate false
-	// "not defined" diagnostics for valid owners on a broken teams.yaml.
+	// If teams.yaml did not parse, skip owner validation: it must not invent
+	// "owner not defined" errors for owners it never got to look up. Say so
+	// rather than falling silent — a run that checked half of what it claims
+	// to check is exactly what this tool exists to catch.
+	//
+	// The parse failure is already reported as an error, so this is a note at
+	// the same location, not a second error for one typo.
 	if !t.loaded {
 		c.Add(diag.Diagnostic{
-			Severity: diag.SevError,
-			File:     "teams.yaml",
-			Check:    "teams-parse",
-			Message:  "owner validation skipped: teams.yaml could not be read",
+			Severity: diag.SevInfo,
+			File:     t.path,
+			Line:     t.errLine,
+			Check:    "owners-skipped",
+			Message:  fmt.Sprintf("owner validation skipped: %s did not parse", t.path),
+			Hint:     "fix the error above and rerun: until then no owner in this repository has been checked",
 		})
 		return
 	}
