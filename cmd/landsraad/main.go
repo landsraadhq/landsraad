@@ -15,6 +15,11 @@ const (
 	exitOK         = 0
 	exitUsage      = 1
 	exitValidation = 2
+	// exitScorecard: the metadata is valid and the service does not meet the
+	// standard. Distinct from exitValidation because they are different
+	// problems for different people (spec §12) — a broken service.yaml is the
+	// YAML author's, a failing check is the service owner's.
+	exitScorecard = 3
 )
 
 func main() {
@@ -26,6 +31,7 @@ func main() {
 	root.AddCommand(newInitCmd())
 	root.AddCommand(newGenCmd())
 	root.AddCommand(newSchemaCmd())
+	root.AddCommand(newScoreCmd())
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print the version",
