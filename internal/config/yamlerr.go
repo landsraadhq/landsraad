@@ -15,8 +15,10 @@ import (
 // field's type is missing here, so adding a field cannot quietly degrade a
 // message to "a value".
 var configNouns = yamlerr.Nouns{
-	"config.Team": {Singular: "team entry", Plural: "team entries"},
-	"config.Repo": {Singular: "repository entry", Plural: "repository entries"},
+	"config.Team":          {Singular: "team entry", Plural: "team entries"},
+	"config.Repo":          {Singular: "repository entry", Plural: "repository entries"},
+	"config.CheckStandard": {Singular: "check standard", Plural: "check standards"},
+	"config.standardsSpec": {Singular: "standards spec", Plural: "standards specs"},
 }
 
 // yamlDiagnostics turns a decode failure into diagnostics a user can act on.

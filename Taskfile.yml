@@ -34,10 +34,11 @@ tasks:
       - ln -sf landsraad bin/lsr
 
   schema:
-    desc: Export the JSON Schema to schema/ for editor autocompletion
+    desc: Export the JSON Schemas to schema/ for editor autocompletion
     cmds:
       - mkdir -p schema
       - go run ./cmd/landsraad schema > schema/service.schema.json
+      - go run ./cmd/landsraad schema --kind standards > schema/standards.schema.json
 
   ci:
     desc: Everything CI runs

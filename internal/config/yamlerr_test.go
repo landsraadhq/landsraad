@@ -19,6 +19,7 @@ func TestNounsCoverEveryFieldType(t *testing.T) {
 	for _, root := range []reflect.Type{
 		reflect.TypeOf(teamsFile{}),
 		reflect.TypeOf(Repos{}),
+		reflect.TypeOf(standardsFile{}),
 	} {
 		for _, name := range reachableTypes(root, map[reflect.Type]bool{}) {
 			if !yamlerr.Known(name, configNouns) {

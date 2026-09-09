@@ -1,0 +1,15 @@
+apiVersion: landsraad/v1
+kind: Standards
+spec:
+  staleAfterDays: 14
+  checks:
+    owner-set:       { tiers: {1: required, 2: required, 3: required} }
+    runbook-present: { tiers: {1: required, 2: required, 3: warn} }
+    alerts-parse:    { tiers: {1: required, 2: required, 3: info} }
+    slo-defined:     { tiers: {1: required, 2: warn, 3: info} }
+    docs-fresh:      { params: {maxAgeDays: 180},
+                       tiers: {1: warn, 2: warn, 3: info} }
+    dashboard-resolves: { source: external, tiers: {1: required, 2: warn, 3: warn} }
+    image-scanned:      { source: external, tiers: {1: required, 2: required, 3: warn} }
+    otel-present:       { source: external, tiers: {1: required, 2: warn, 3: info} }
+    deps-declared:      { source: external, tiers: {1: required, 2: required, 3: warn} }

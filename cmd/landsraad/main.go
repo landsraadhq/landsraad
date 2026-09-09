@@ -5,8 +5,6 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-
-	"github.com/landsraadhq/landsraad/internal/schema"
 )
 
 // Version is the binary version, overridden at release time with -ldflags.
@@ -27,16 +25,7 @@ func main() {
 	root.AddCommand(newValidateCmd())
 	root.AddCommand(newInitCmd())
 	root.AddCommand(newGenCmd())
-	root.AddCommand(&cobra.Command{
-		Use:   "schema",
-		Short: "Print the JSON Schema for service.yaml",
-		Long: "Print the embedded JSON Schema. Redirect it to schema/service.schema.json " +
-			"and point yaml-language-server at that file for editor autocompletion.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			_, err := cmd.OutOrStdout().Write(schema.Raw)
-			return err
-		},
-	})
+	root.AddCommand(newSchemaCmd())
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print the version",

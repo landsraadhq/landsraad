@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "standards.schema.json",
+  "title": "landsraad standards",
+  "description": "The tier by severity matrix: the only scoring knob.",
+  "type": "object",
+  "required": ["apiVersion", "kind", "spec"],
+  "properties": {
+    "apiVersion": { "const": "landsraad/v1" },
+    "kind": { "const": "Standards" },
+    "spec": {
+      "type": "object",
+      "required": ["checks"],
+      "properties": {
+        "staleAfterDays": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Ingested check results older than this render as stale, not pass."
+        },
+        "checks": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "object",
+            "required": ["tiers"],
+            "properties": {
+              "source": {
+                "enum": ["hermetic", "external"],
+                "description": "hermetic checks are computed in-binary; external results are reported in via .landsraad/checks/*.yaml"
+              },
+              "params": {
+                "type": "object",
+                "additionalProperties": { "type": "integer" }
+              },
+              "tiers": {
+                "type": "object",
+                "minProperties": 1,
+                "propertyNames": { "pattern": "^[123]$" },
+                "additionalProperties": { "enum": ["required", "warn", "info", "skip"] }
+              }
+            },
+            "unevaluatedProperties": false
+          }
+        }
+      },
+      "unevaluatedProperties": false
+    }
+  },
+  "unevaluatedProperties": false
+}
