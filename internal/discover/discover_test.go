@@ -70,6 +70,77 @@ func TestFindDotMeansRoot(t *testing.T) {
 	}
 }
 
+func TestFindRejectsAbsolutePattern(t *testing.T) {
+	_, err := Find(mem(), []string{"/etc/*"})
+	if err == nil {
+		t.Fatal("an absolute pattern must be rejected, not silently match nothing")
+	}
+	want := `path pattern "/etc/*" must not be absolute; write a path relative to the repository root, for example "etc/*"`
+	if err.Error() != want {
+		t.Errorf("error\n got: %s\nwant: %s", err.Error(), want)
+	}
+}
+
+func TestFindRejectsPatternEscapingRoot(t *testing.T) {
+	_, err := Find(mem(), []string{"../*"})
+	if err == nil {
+		t.Fatal("a pattern containing .. must be rejected, not silently match nothing")
+	}
+	want := `path pattern "../*" escapes the repository root via ".."; patterns must stay under the repository root`
+	if err.Error() != want {
+		t.Errorf("error\n got: %s\nwant: %s", err.Error(), want)
+	}
+}
+
+func TestFindRejectsPatternEscapingRootViaNestedDotDot(t *testing.T) {
+	_, err := Find(mem(), []string{"services/../../*"})
+	if err == nil {
+		t.Fatal("a pattern escaping the root partway through must be rejected")
+	}
+	want := `path pattern "services/../../*" escapes the repository root via ".."; patterns must stay under the repository root`
+	if err.Error() != want {
+		t.Errorf("error\n got: %s\nwant: %s", err.Error(), want)
+	}
+}
+
+func TestFindRejectsRedundantDotElement(t *testing.T) {
+	_, err := Find(mem(), []string{"a/./b"})
+	if err == nil {
+		t.Fatal("a pattern containing a redundant \".\" element must be rejected")
+	}
+	want := `path pattern "a/./b" contains a redundant "." element; write it without that segment`
+	if err.Error() != want {
+		t.Errorf("error\n got: %s\nwant: %s", err.Error(), want)
+	}
+}
+
+func TestFindRejectsTrailingSlash(t *testing.T) {
+	_, err := Find(mem(), []string{"services/"})
+	if err == nil {
+		t.Fatal("a pattern with a trailing slash must be rejected")
+	}
+	want := `path pattern "services/" has a trailing slash; write "services" instead`
+	if err.Error() != want {
+		t.Errorf("error\n got: %s\nwant: %s", err.Error(), want)
+	}
+}
+
+// The counterpart to the five rejections above: a well-formed pattern that
+// simply matches nothing must still succeed with no error. A fix that turned
+// "no services here" into an error would be worse than the bug it fixed.
+// (TestFindPatternMatchingNothingIsNotAnError above already asserts this for
+// "nonexistent/*"; this one uses a distinct valid-but-empty shape to make the
+// contrast with the rejections explicit.)
+func TestFindStructurallyValidPatternMatchingNothingStillSucceeds(t *testing.T) {
+	got, err := Find(mem(), []string{"services/nonexistent-dir/*"})
+	if err != nil {
+		t.Fatalf("a structurally valid pattern that matches nothing must not error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %v, want none", got)
+	}
+}
+
 func TestFindDeduplicatesOverlappingPatterns(t *testing.T) {
 	got, err := Find(mem(), []string{"services/*", "services/a"})
 	if err != nil {
