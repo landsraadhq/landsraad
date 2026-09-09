@@ -34,8 +34,8 @@
     enforced by the type checker, not by convention.
   - **No package-level mutable state.** No `sync.Once` singletons, no `init()`
     registration. Things that need configuring are values you construct.
-  - Output formats implement `diag.Formatter` and live in a `diag.Registry`.
-    Adding one is a new type, never an edit to a `switch`.
+  - Output formats implement `diag.Formatter`; `Formatters()` returns the
+    built-in ones. Adding one is a new type, never an edit to a `switch`.
 - **Task boundaries are commit boundaries.** Every task ends with a passing `task test` and a commit.
 
 ---
@@ -49,7 +49,7 @@
 | `cmd/landsraad/main.go` | entry point, exit codes |
 | `cmd/landsraad/validate.go` | the `validate` cobra command |
 | `internal/diag/diag.go` | `Severity`, `Diagnostic`, `Collector` |
-| `internal/diag/format.go` | `Formatter` interface, `Registry`, and the four formats |
+| `internal/diag/format.go` | `Formatter` interface, `Formatters()`, and the four formats |
 | `internal/catalog/entity.go` | `Kind`, `Entity`, `Metadata`, `Spec` |
 | `internal/catalog/parse.go` | YAML → `Entity`, preserving line numbers |
 | `internal/catalog/ref.go` | `Ref` parse and format |
@@ -3313,7 +3313,7 @@ func (quietFormat) Write(io.Writer, []Diagnostic) error { return nil }
 
 - [ ] **Step 3: Run it to verify it fails**
 
-Run: `go test ./internal/diag/ -run 'TestText|TestJSON|TestGitHub|TestGitLab|TestRegistry' -v`
+Run: `go test ./internal/diag/ -run 'TestText|TestJSON|TestGitHub|TestGitLab|TestFormatters|TestAnyFormatter' -v`
 Expected: FAIL — `undefined: Text`
 
 - [ ] **Step 4: Write `format.go`**

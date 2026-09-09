@@ -525,7 +525,7 @@ that failed. Degraded mode must be visible in the artifact, not only in a log.
 ```
 cmd/landsraad/         cobra commands; each command is one explicit
                        composition of the stages below
-internal/diag/         Diagnostic, Collector, Formatter interface + Registry
+internal/diag/         Diagnostic, Collector, Formatter interface + formats
 internal/discover/     Find(fs.FS, patterns) — stage 1
 internal/catalog/      Entity types, ParseAll, merge, refs, graph, CheckFiles
 internal/schema/       embedded JSON Schema; *Validator value, no globals
