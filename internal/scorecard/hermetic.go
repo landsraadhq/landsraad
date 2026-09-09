@@ -3,6 +3,7 @@ package scorecard
 import (
 	"fmt"
 	"io/fs"
+	pathpkg "path"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -136,7 +137,51 @@ func sloDefined(e *catalog.Entity, _ Env) Result {
 		Detail: fmt.Sprintf("%d defined", len(e.Spec.SLO))}
 }
 
-// docsFresh is implemented in Task 7, which adds the last-edit plumbing.
-func docsFresh(_ *catalog.Entity, _ Env) Result {
-	return Result{Check: "docs-fresh", Status: StatusNotReported, Detail: "not implemented"}
+// docsFresh answers spec §5.3's pairing: a docs index exists, and it was
+// edited recently enough to be believable.
+//
+// The date is injected (Env.LastEdit) rather than read here, because it comes
+// from git and nothing under internal/ may shell out. Spec §9 records the
+// consequence: free in a local repository, one API call per service for a
+// fetched one.
+//
+// The threshold is docs-fresh.params.maxAgeDays, default 180. It is NOT
+// spec.staleAfterDays — that clock ages out ingested check results. Two
+// clocks, deliberately, answering different questions (spec §6).
+func docsFresh(e *catalog.Entity, env Env) Result {
+	const id = "docs-fresh"
+	if e.Spec.Docs == "" {
+		return Result{Check: id, Status: StatusFail, Detail: "spec.docs is unset"}
+	}
+
+	index := pathpkg.Join(e.Spec.Docs, "index.md")
+	if _, err := fs.Stat(env.FS, index); err != nil {
+		// Docs with no index page is a directory, not documentation.
+		return Result{Check: id, Status: StatusFail,
+			Detail: fmt.Sprintf("%s has no index.md", e.Spec.Docs)}
+	}
+
+	if env.LastEdit == nil {
+		return Result{Check: id, Status: StatusNotReported,
+			Detail: fmt.Sprintf("no last-edit date available for %s", e.Spec.Docs)}
+	}
+	edited, ok := env.LastEdit(e.Spec.Docs)
+	if !ok {
+		// A repository fetched over a host API has no git history. Passing
+		// here would give every such service full marks for freshness.
+		return Result{Check: id, Status: StatusNotReported,
+			Detail: fmt.Sprintf("no last-edit date available for %s", e.Spec.Docs)}
+	}
+
+	age := int(env.Now.Sub(edited).Hours() / 24)
+	limit := env.MaxDocsAgeDays
+	if limit <= 0 {
+		limit = 180
+	}
+	if age > limit {
+		return Result{Check: id, Status: StatusFail,
+			Detail: fmt.Sprintf("%s last edited %d days ago, limit is %d", e.Spec.Docs, age, limit)}
+	}
+	return Result{Check: id, Status: StatusPass,
+		Detail: fmt.Sprintf("edited %d days ago", age)}
 }

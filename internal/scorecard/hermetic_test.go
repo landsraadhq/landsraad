@@ -183,3 +183,98 @@ func TestChecksReportErrorRatherThanPassOnAnUnreadableFile(t *testing.T) {
 		}
 	}
 }
+
+func TestDocsFreshUsesTheInjectedLastEditDate(t *testing.T) {
+	e := svc("api")
+	e.Spec.Docs = "services/api/docs"
+	files := fstest.MapFS{"services/api/docs/index.md": {Data: []byte("# Docs\n\nreal content\n")}}
+
+	base := env(files)
+	recent := base
+	recent.LastEdit = func(string) (time.Time, bool) {
+		return base.Now.AddDate(0, 0, -10), true
+	}
+	if got := docsFreshFor(t, e, recent); got.Status != StatusPass {
+		t.Errorf("Status = %q, want pass for docs edited 10 days ago", got.Status)
+	}
+
+	old := base
+	old.LastEdit = func(string) (time.Time, bool) {
+		return base.Now.AddDate(0, 0, -365), true
+	}
+	got := docsFreshFor(t, e, old)
+	if got.Status != StatusFail {
+		t.Errorf("Status = %q, want fail for docs edited 365 days ago", got.Status)
+	}
+	if got.Detail != "services/api/docs last edited 365 days ago, limit is 180" {
+		t.Errorf("Detail = %q", got.Detail)
+	}
+}
+
+// The boundary: exactly maxAgeDays old is still fresh. An off-by-one here
+// flips a whole tier of services on the day the threshold changes.
+func TestDocsFreshBoundaryIsInclusive(t *testing.T) {
+	e := svc("api")
+	e.Spec.Docs = "services/api/docs"
+	files := fstest.MapFS{"services/api/docs/index.md": {Data: []byte("# Docs\n\nc\n")}}
+
+	en := env(files)
+	base := en.Now
+	en.LastEdit = func(string) (time.Time, bool) { return base.AddDate(0, 0, -180), true }
+	if got := docsFreshFor(t, e, en); got.Status != StatusPass {
+		t.Errorf("exactly at the limit must pass, got %q", got.Status)
+	}
+	en.LastEdit = func(string) (time.Time, bool) { return base.AddDate(0, 0, -181), true }
+	if got := docsFreshFor(t, e, en); got.Status != StatusFail {
+		t.Errorf("one day past the limit must fail, got %q", got.Status)
+	}
+}
+
+// A repository fetched over a host API has no git history. Reporting pass
+// would silently give every such service full marks for documentation
+// freshness — the failure this project keeps finding in new corners.
+func TestDocsFreshReportsNotReportedWhenTheDateIsUnknown(t *testing.T) {
+	e := svc("api")
+	e.Spec.Docs = "services/api/docs"
+	files := fstest.MapFS{"services/api/docs/index.md": {Data: []byte("# Docs\n\nc\n")}}
+
+	got := docsFreshFor(t, e, env(files))
+	if got.Status != StatusNotReported {
+		t.Errorf("Status = %q, want not-reported when no last-edit date is available", got.Status)
+	}
+	if got.Detail != "no last-edit date available for services/api/docs" {
+		t.Errorf("Detail = %q", got.Detail)
+	}
+}
+
+// Spec §5.3 pairs freshness with an index: "Docs index and last edit < 180
+// days". Docs with no index page is a directory, not documentation.
+func TestDocsFreshRequiresAnIndex(t *testing.T) {
+	e := svc("api")
+	e.Spec.Docs = "services/api/docs"
+	en := env(fstest.MapFS{"services/api/docs/other.md": {Data: []byte("x\n")}})
+	en.LastEdit = func(string) (time.Time, bool) { return en.Now, true }
+
+	got := docsFreshFor(t, e, en)
+	if got.Status != StatusFail {
+		t.Errorf("Status = %q, want fail", got.Status)
+	}
+	if got.Detail != "services/api/docs has no index.md" {
+		t.Errorf("Detail = %q", got.Detail)
+	}
+}
+
+func TestDocsFreshFailsWhenDocsAreUnset(t *testing.T) {
+	got := docsFreshFor(t, svc("api"), env(nil))
+	if got.Status != StatusFail {
+		t.Errorf("Status = %q, want fail", got.Status)
+	}
+	if got.Detail != "spec.docs is unset" {
+		t.Errorf("Detail = %q", got.Detail)
+	}
+}
+
+func docsFreshFor(t *testing.T, e *catalog.Entity, en Env) Result {
+	t.Helper()
+	return run(t, "docs-fresh", e, en)
+}
