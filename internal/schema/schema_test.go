@@ -205,6 +205,85 @@ func TestNewRejectsBrokenSchema(t *testing.T) {
 	}
 }
 
+// `false` is a legal JSON Schema that rejects everything. Its violation has
+// an empty instance location, which the unknown-field rewrite below indexed
+// unguarded: an exported API that panics on legal input must not ship.
+func TestValidateOnAFalseSchemaReportsRatherThanPanics(t *testing.T) {
+	v, err := New([]byte("false"))
+	if err != nil {
+		t.Fatalf("`false` is a valid JSON Schema: %v", err)
+	}
+	var c diag.Collector
+	if v.Validate("", "a.yaml", []byte(good), &c) {
+		t.Fatal("a `false` schema rejects every instance")
+	}
+	if len(c.Diagnostics()) != 1 {
+		t.Fatalf("want exactly 1 diagnostic, got %d: %+v", len(c.Diagnostics()), c.Diagnostics())
+	}
+	d := c.Diagnostics()[0]
+	if want := "at '': false schema"; d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+	if d.Line != 1 {
+		t.Errorf("Line = %d, want 1 — a whole-document violation still needs a line", d.Line)
+	}
+}
+
+// yaml.v3 resolves an unquoted 2027-01-01 into a time.Time, which is not a
+// JSON type: the validator reported "invalid jsonType time.Time" — library
+// internals, and unactionable — for the spec's own documented example.
+func TestValidateAcceptsAnUnquotedDate(t *testing.T) {
+	in := good + `  exemptions:
+    - check: has-runbook
+      reason: pre-existing service, scheduled for Q1
+      until: 2027-01-01
+`
+	var c diag.Collector
+	if !mustDefault(t).Validate("monorepo", "a/service.yaml", []byte(in), &c) {
+		t.Fatalf("an unquoted date is the spec's own example and must validate: %+v", c.Diagnostics())
+	}
+}
+
+// The same resolution happens anywhere in the file, including inside the
+// free-form string maps.
+func TestValidateAcceptsAnUnquotedDateInAnnotations(t *testing.T) {
+	in := strings.Replace(good, "  lifecycle: production\n",
+		"  lifecycle: production\n  annotations:\n    created: 2027-01-01\n", 1)
+	var c diag.Collector
+	if !mustDefault(t).Validate("monorepo", "a/service.yaml", []byte(in), &c) {
+		t.Fatalf("annotations are strings; a date-like value must not leak a Go type: %+v", c.Diagnostics())
+	}
+}
+
+// "format": "date" is annotation-only in JSON Schema 2020-12 unless the
+// validator is told to assert it. It was not, so the schema advertised a
+// constraint the tool did not apply.
+func TestValidateRejectsAnUntilThatIsNotADate(t *testing.T) {
+	in := good + `  exemptions:
+    - check: has-runbook
+      reason: pre-existing service, scheduled for Q1
+      until: banana
+`
+	var c diag.Collector
+	if mustDefault(t).Validate("monorepo", "a/service.yaml", []byte(in), &c) {
+		t.Fatal("`until: banana` is not a date and must be rejected")
+	}
+	if len(c.Diagnostics()) != 1 {
+		t.Fatalf("want exactly 1 diagnostic, got %d: %+v", len(c.Diagnostics()), c.Diagnostics())
+	}
+	d := c.Diagnostics()[0]
+	if want := "at '/spec/exemptions/0/until': 'banana' is not a valid date"; d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+	if want := "dates are written YYYY-MM-DD, for example 2027-01-01"; d.Hint != want {
+		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, want)
+	}
+	const wantLine = 13 // "      until: banana"
+	if d.Line != wantLine {
+		t.Errorf("Line = %d, want %d", d.Line, wantLine)
+	}
+}
+
 // A violation nested inside an array, several levels below the document
 // root, must still report the line of the offending entry — not line 1 and
 // not the line of some unrelated sibling.
