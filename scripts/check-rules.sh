@@ -21,10 +21,13 @@ report() {
 # 1. Reads take io/fs.FS, writes take io.Writer, and only cmd/ touches the
 #    real filesystem (spec §3.1). This also buys a security property: an
 #    fs.FS rejects absolute paths and "..".
-found=$(grep -rnE '^[[:space:]]*(import[[:space:]]+)?([A-Za-z0-9_.]+[[:space:]]+|_[[:space:]]+)?"os"[[:space:]]*$' \
+#    Trailing comments and os/* subpackages both used to slip past: `"os" //
+#    just this once` defeated the end anchor, and os/exec — the likeliest way
+#    to shell out to git in a fetch adapter — was not matched at all.
+found=$(grep -rnE '^[[:space:]]*(import[[:space:]]+)?([A-Za-z0-9_.]+[[:space:]]+|_[[:space:]]+)?"os(/[A-Za-z0-9_/]+)?"[[:space:]]*(//.*)?$' \
 	internal --include='*.go' --exclude='*_test.go' 2>/dev/null || true)
 if [ -n "$found" ]; then
-	report 'internal/ may not import "os" — reads take io/fs.FS, writes take io.Writer, and only cmd/ touches the filesystem:' "$found"
+	report 'internal/ may not import "os" or any os/* package — reads take io/fs.FS, writes take io.Writer, and only cmd/ touches the filesystem:' "$found"
 fi
 
 # 2. Package-level mutable state means two configurations cannot coexist in
