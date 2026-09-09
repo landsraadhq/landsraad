@@ -50,10 +50,44 @@ func TestValidateRejectsUnknownFields(t *testing.T) {
 	// Without an exact message assertion, a Validate that emitted one
 	// hardcoded "invalid" for every violation would pass every rejection
 	// test in this file.
-	got := c.Diagnostics()[0].Message
-	want := `at '/spec/nonsense': false schema`
-	if got != want {
-		t.Errorf("message =\n%s\nwant   =\n%s", got, want)
+	//
+	// The raw library message for this case is "false schema" — jargon for
+	// "matched a schema that is literally `false`" — so Validate rewrites it
+	// into a sentence naming the field, per the standard that "invalid
+	// input" is worthless and "expected X, got Y" fixes itself.
+	d := c.Diagnostics()[0]
+	wantMsg := `at '/spec/nonsense': unknown field 'nonsense'`
+	if d.Message != wantMsg {
+		t.Errorf("message =\n%s\nwant   =\n%s", d.Message, wantMsg)
+	}
+	wantHint := "this schema rejects fields it doesn't define, rather than silently ignoring them — remove it, or check for a typo"
+	if d.Hint != wantHint {
+		t.Errorf("hint =\n%s\nwant =\n%s", d.Hint, wantHint)
+	}
+}
+
+// The unknown-field rewrite must hold at any depth: the location path is
+// what makes the message actionable in a real file, where the culprit is
+// rarely at the top level.
+func TestValidateRejectsUnknownFieldNestedInArray(t *testing.T) {
+	in := strings.Replace(good, "  language: go\n",
+		"  language: go\n  links:\n    - title: dashboard\n      url: https://example.com\n      bogus: true\n", 1)
+	var c diag.Collector
+	if mustDefault(t).Validate("monorepo", "a/service.yaml", []byte(in), &c) {
+		t.Fatal("links[].bogus is not defined by the schema and must be rejected")
+	}
+	d := c.Diagnostics()[0]
+	wantMsg := `at '/spec/links/0/bogus': unknown field 'bogus'`
+	if d.Message != wantMsg {
+		t.Errorf("message =\n%s\nwant   =\n%s", d.Message, wantMsg)
+	}
+	wantHint := "this schema rejects fields it doesn't define, rather than silently ignoring them — remove it, or check for a typo"
+	if d.Hint != wantHint {
+		t.Errorf("hint =\n%s\nwant =\n%s", d.Hint, wantHint)
+	}
+	const wantLine = 13 // "      bogus: true", the offending key itself
+	if d.Line != wantLine {
+		t.Errorf("line = %d, want %d", d.Line, wantLine)
 	}
 }
 

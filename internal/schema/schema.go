@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/santhosh-tekuri/jsonschema/v6/kind"
 	"gopkg.in/yaml.v3"
 
 	"github.com/landsraadhq/landsraad/internal/diag"
@@ -86,18 +88,46 @@ func (v *Validator) Validate(repo, path string, data []byte, c *diag.Collector) 
 		if line == 0 {
 			line = 1
 		}
+		message, hint := leaf.Error(), ""
+		if _, ok := leaf.ErrorKind.(*kind.FalseSchema); ok {
+			// leaf.Error() renders this as "false schema" — jargon for "this
+			// location matched a schema that is literally `false`". The only
+			// `false` subschemas in service.schema.json are
+			// unevaluatedProperties guards (there are seven, one per object),
+			// so a FalseSchema leaf always means "this field is not defined
+			// here". That mapping breaks if a `false` subschema is ever added
+			// for a different purpose — revisit this special case if so.
+			field := leaf.InstanceLocation[len(leaf.InstanceLocation)-1]
+			message = fmt.Sprintf("at '%s': unknown field '%s'", pointer(leaf.InstanceLocation), field)
+			hint = "this schema rejects fields it doesn't define, rather than silently ignoring them — remove it, or check for a typo"
+		}
 		c.Add(diag.Diagnostic{
 			Severity: diag.SevError,
 			Repo:     repo,
 			File:     path,
 			Line:     line,
 			Check:    "schema",
-			// leaf.Error() already names the instance location, so do not
+			// message already names the instance location (either
+			// leaf.Error()'s own rendering, or ours above), so do not
 			// prefix it again.
-			Message: leaf.Error(),
+			Message: message,
+			Hint:    hint,
 		})
 	}
 	return false
+}
+
+// pointer renders a JSON Pointer the same way jsonschema/v6 does internally
+// (e.g. "/spec/nonsense"), so the unknown-field message below reads
+// consistently with every other diagnostic's "at '<location>': …" prefix.
+func pointer(loc []string) string {
+	esc := strings.NewReplacer("~", "~0", "/", "~1")
+	var sb strings.Builder
+	for _, tok := range loc {
+		sb.WriteByte('/')
+		sb.WriteString(esc.Replace(tok))
+	}
+	return sb.String()
 }
 
 // leaves returns the most specific errors in the tree. The root error is a
