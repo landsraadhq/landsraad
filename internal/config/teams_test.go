@@ -42,6 +42,10 @@ func TestLoadTeamsRejectsUnknownFields(t *testing.T) {
 	if !c.HasErrors() {
 		t.Fatal("a misspelled key in the file that routes alerts must be rejected, not ignored")
 	}
+	d := c.Diagnostics()[0]
+	if want := "teams.yaml is a list under `teams:` with name, members, slack and pagerduty"; d.Hint != want {
+		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, want)
+	}
 }
 
 func TestLoadTeamsReportsRealLineNumbers(t *testing.T) {
@@ -51,8 +55,12 @@ func TestLoadTeamsReportsRealLineNumbers(t *testing.T) {
 	if !c.HasErrors() {
 		t.Fatal("a duplicate team must be an error")
 	}
-	if got := c.Diagnostics()[0].Line; got != 3 {
+	d := c.Diagnostics()[0]
+	if got := d.Line; got != 3 {
 		t.Errorf("the duplicate is on line 3, diagnostic points at line %d", got)
+	}
+	if want := `team "team-a" is defined twice`; d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
 	}
 }
 
@@ -81,6 +89,19 @@ func TestValidateOwnersRejectsUnknownTeam(t *testing.T) {
 	}
 }
 
+func TestLoadTeamsRejectsNamelessTeam(t *testing.T) {
+	in := "teams:\n  - members: [alice]\n    slack: \"#team\"\n"
+	var c diag.Collector
+	LoadTeams("teams.yaml", []byte(in), &c)
+	if !c.HasErrors() {
+		t.Fatal("a nameless team must be an error")
+	}
+	d := c.Diagnostics()[0]
+	if want := "a team entry has no name"; d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+}
+
 func TestValidateOwnersAcceptsKnownTeam(t *testing.T) {
 	var c diag.Collector
 	teams := LoadTeams("teams.yaml", []byte(teamsYAML), &c)
@@ -96,5 +117,31 @@ func TestValidateOwnersAcceptsKnownTeam(t *testing.T) {
 
 	if c.HasErrors() {
 		t.Errorf("a known owner must pass: %+v", c.Diagnostics())
+	}
+}
+
+func TestValidateOwnersHintsWhenNoCloseMatch(t *testing.T) {
+	var c diag.Collector
+	teams := LoadTeams("teams.yaml", []byte(teamsYAML), &c)
+
+	e := &catalog.Entity{Kind: catalog.KindService}
+	e.Metadata.Name = "api"
+	e.Metadata.Owner = "xyz" // completely different, no close match
+	e.SourcePath = "services/api/service.yaml"
+	e.NameLine = 4
+	cat := catalog.NewCatalog([]*catalog.Entity{e}, &c)
+
+	teams.ValidateOwners(cat, &c)
+
+	if !c.HasErrors() {
+		t.Fatal("an unknown owner must be an error")
+	}
+	d := c.Diagnostics()[0]
+	if want := `owner "xyz" is not defined in teams.yaml`; d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+	// When there's no close match, hint lists all known teams
+	if want := "known teams: [team-payments team-sre]"; d.Hint != want {
+		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, want)
 	}
 }
