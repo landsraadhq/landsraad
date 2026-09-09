@@ -22,7 +22,12 @@
 - **Every diagnostic carries `File` and `Line`.** A diagnostic without a line number is a bug.
 - **Exit codes:** `0` clean, `1` usage/config error, `2` validation error. (`3`, the scorecard gate, arrives in Plan 2.)
 - **Entity names are flat and globally unique.** References are `kind:name`. A collision is a hard error naming both file paths.
-- **Strict schema:** `additionalProperties: false` everywhere. Unknown fields are rejected, never ignored.
+- **Strict schema:** `unevaluatedProperties: false` everywhere unknown keys are
+  guarded (spec D7 — `additionalProperties` at the root would reject any field
+  introduced inside an `if`/`then` branch). Unknown fields are rejected, never
+  ignored. The separate `"additionalProperties": {"type": "string"}` form used for
+  `labels`, `annotations` and `runtime.selector` constrains map *values* and is
+  unrelated.
 - **Composition, per spec §3.1 — these are hard rules, not preferences:**
   - All file access goes through `io/fs.FS`. No `os.Stat`, `os.ReadFile` or
     `filepath.Glob` against a path string anywhere below `cmd/`. The command
@@ -1842,7 +1847,7 @@ func TestValidateRejectsUnknownFields(t *testing.T) {
 	in := strings.Replace(good, "  language: go\n", "  language: go\n  nonsense: yes\n", 1)
 	var c diag.Collector
 	if mustDefault(t).Validate("monorepo", "a/service.yaml", []byte(in), &c) {
-		t.Fatal("additionalProperties is false — an unknown field must be rejected, not ignored")
+		t.Fatal("unevaluatedProperties is false — an unknown field must be rejected, not ignored")
 	}
 	if !c.HasErrors() {
 		t.Fatal("rejection must produce an error diagnostic")
