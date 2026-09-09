@@ -403,12 +403,16 @@ Stages are pure functions where practical, each independently testable.
 | `landsraad validate` | 1, 3, 4, 5* | none | every service repo's PR CI |
 | `landsraad build` | 1–8 | yes | platform repo, on merge to main |
 
-Stage 6 (INGEST) is deliberately **not** part of `validate` in v1. Structurally
-validating `.landsraad/checks/*.yaml` would be hermetic and would belong here,
-but the schema defining that file's shape arrives with the scorecard in Plan 2,
-and validating a shape that is not yet specified is premature. The consequence
-is recorded rather than hidden: until Plan 2 ships, a malformed check-results
-file is first caught by the platform build, not by the PR that introduced it.
+Stage 6 (INGEST) is **not** part of `validate`: resolving entities, applying
+precedence and ageing results need the merged catalog and a clock, and
+`validate` is hermetic and offline so it can run in every service repo's PR CI
+with no tokens.
+
+Its *structural* half is. Plan 2 shipped the `CheckResults` schema, so
+`validate` checks the shape of every `.landsraad/checks/*.yaml` — which is
+hermetic, and closes the gap this section previously recorded: a malformed
+results file is now caught by the PR that introduced it rather than by the
+platform build days later.
 
 `*` — refs pointing outside the current repo are **recorded, not resolved**.
 Cross-repo references resolve at merge time only. A service repo's CI therefore

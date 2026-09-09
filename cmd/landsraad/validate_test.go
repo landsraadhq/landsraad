@@ -491,3 +491,44 @@ func TestPluralRendersTheRightNoun(t *testing.T) {
 		}
 	}
 }
+
+// Ruling R8, closing the gap spec §7.1 flagged: until Plan 2 shipped the
+// CheckResults schema, a malformed results file was first caught by the
+// platform build rather than by the PR that introduced it. That is the
+// exit-0-over-something-unexamined shape this project keeps finding.
+func TestValidateRejectsAMalformedCheckResultsFile(t *testing.T) {
+	fsys := genFS()
+	fsys[".landsraad/checks/scan.yaml"] = &fstest.MapFile{Data: []byte(
+		"apiVersion: landsraad/v1\nkind: CheckResults\ngeneratedAt: not-a-date\nresults:\n  - { entity: service:api, check: x, status: pass }\n")}
+
+	var out, errOut bytes.Buffer
+	if code := Validate(fsys, &out, &errOut, diagText()); code != exitValidation {
+		t.Fatalf("exit = %d, want %d — a malformed results file must fail the PR", code, exitValidation)
+	}
+}
+
+// validate stays hermetic: it checks the document's shape and says nothing
+// about whether the entities exist or which producer wins. Those need the
+// merged catalog and a clock, and belong to score.
+func TestValidateDoesNotResolveCheckResultEntities(t *testing.T) {
+	fsys := genFS()
+	fsys[".landsraad/checks/scan.yaml"] = &fstest.MapFile{Data: []byte(
+		"apiVersion: landsraad/v1\nkind: CheckResults\nproducer: ci/x\ngeneratedAt: 2026-09-08T14:00:00Z\nresults:\n  - { entity: service:ghost, check: x, status: pass }\n")}
+
+	var out, errOut bytes.Buffer
+	if code := Validate(fsys, &out, &errOut, diagText()); code != exitOK {
+		t.Fatalf("exit = %d, want %d — a well-formed file naming an unknown entity is score's problem, not validate's; stderr:\n%s",
+			code, exitOK, errOut.String())
+	}
+}
+
+func TestValidateAcceptsAWellFormedCheckResultsFile(t *testing.T) {
+	fsys := genFS()
+	fsys[".landsraad/checks/scan.yaml"] = &fstest.MapFile{Data: []byte(
+		"apiVersion: landsraad/v1\nkind: CheckResults\nproducer: ci/x\ngeneratedAt: 2026-09-08T14:00:00Z\nresults:\n  - { entity: service:api, check: image-scanned, status: pass }\n")}
+
+	var out, errOut bytes.Buffer
+	if code := Validate(fsys, &out, &errOut, diagText()); code != exitOK {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitOK, errOut.String())
+	}
+}

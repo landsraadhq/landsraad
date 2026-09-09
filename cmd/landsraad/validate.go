@@ -15,6 +15,7 @@ import (
 	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/discover"
 	"github.com/landsraadhq/landsraad/internal/schema"
+	"github.com/landsraadhq/landsraad/internal/scorecard"
 )
 
 // Validate is the hermetic pipeline: an explicit composition of the typed
@@ -58,6 +59,7 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter) int {
 	for _, file := range files {
 		validator.Validate("", file.Path, file.Data, &c)
 	}
+	validateCheckResults(fsys, &c)
 
 	// 3. parse and merge — pure, no IO
 	cat := catalog.NewCatalog(catalog.ParseAll(localRepoName(fsys), files, &c), &c)
@@ -83,6 +85,51 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter) int {
 	}
 	fmt.Fprintf(errOut, "ok: %s validated, no problems found\n", plural(len(cat.Entities()), "entity", "entities"))
 	return exitOK
+}
+
+// validateCheckResults structurally validates every .landsraad/checks/*.yaml.
+//
+// Spec §7.1 excluded this while the shape was unspecified, and said so: "until
+// Plan 2 ships, a malformed check-results file is first caught by the platform
+// build, not by the PR that introduced it." Plan 2 shipped the schema, so the
+// PR catches it now.
+//
+// Structure only. Resolving entities, applying precedence and ageing results
+// need the merged catalog and a clock, which would make validate neither
+// hermetic nor offline — and being both is what lets it run in every service
+// repo's PR CI with no tokens and no network.
+func validateCheckResults(fsys fs.FS, c *diag.Collector) {
+	entries, err := fs.ReadDir(fsys, scorecard.ChecksDir)
+	if err != nil {
+		// No directory is not a problem: most repositories report no external
+		// results.
+		return
+	}
+	v, err := schema.New(scorecard.CheckResultsSchema)
+	if err != nil {
+		c.Add(diag.Diagnostic{
+			Severity: diag.SevError, File: scorecard.ChecksDir, Line: 1,
+			Check:   "checks-schema",
+			Message: fmt.Sprintf("cannot compile the check-results schema: %v", err),
+		})
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".yaml") && !strings.HasSuffix(e.Name(), ".yml")) {
+			continue
+		}
+		path := scorecard.ChecksDir + "/" + e.Name()
+		data, err := fs.ReadFile(fsys, path)
+		if err != nil {
+			c.Add(diag.Diagnostic{
+				Severity: diag.SevError, File: path, Line: 1,
+				Check:   "checks-unreadable",
+				Message: fmt.Sprintf("cannot read %s", path),
+			})
+			continue
+		}
+		v.Validate("", path, data, c)
+	}
 }
 
 // localRepoName names the repo being validated, for provenance in diagnostics.
