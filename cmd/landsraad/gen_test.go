@@ -32,7 +32,7 @@ spec:
 func TestGenWritesNothingToStdoutWhenClean(t *testing.T) {
 	var out, errOut bytes.Buffer
 
-	code := Gen(genFS(), "", &out, &errOut, diagText(), false)
+	code := Gen(genFS(), t.TempDir(), &out, &errOut, diagText(), false)
 
 	if code != exitOK {
 		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitOK, errOut.String())
