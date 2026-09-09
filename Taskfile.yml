@@ -1,0 +1,43 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build the landsraad binary
+    cmds:
+      - go build -o bin/landsraad ./cmd/landsraad
+
+  test:
+    desc: Run all tests
+    cmds:
+      - go test ./...
+
+  lint:
+    desc: Vet and check formatting
+    cmds:
+      - go vet ./...
+      - test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+
+  release:
+    desc: Build tagged, checksummed binaries for every platform
+    cmds:
+      - goreleaser release --clean
+
+  install:
+    desc: Build and symlink the lsr alias alongside the binary
+    deps: [build]
+    cmds:
+      - ln -sf landsraad bin/lsr
+
+  schema:
+    desc: Export the JSON Schema to schema/ for editor autocompletion
+    cmds:
+      - mkdir -p schema
+      - go run ./cmd/landsraad schema > schema/service.schema.json
+
+  ci:
+    desc: Everything CI runs
+    deps: [lint, test]
+
+  default:
+    cmds:
+      - task: ci
