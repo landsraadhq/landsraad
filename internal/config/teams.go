@@ -27,6 +27,7 @@ type Team struct {
 // Teams is the loaded teams.yaml.
 type Teams struct {
 	byName map[string]*Team
+	loaded bool // true if teams.yaml parsed successfully; false if it had syntax/field errors
 }
 
 type teamsFile struct {
@@ -51,7 +52,7 @@ func LoadTeams(path string, data []byte, c *diag.Collector) *Teams {
 			Message: fmt.Sprintf("cannot parse teams file: %v", err),
 			Hint:    "teams.yaml is a list under `teams:` with name, members, slack and pagerduty",
 		})
-		return t
+		return t // loaded remains false
 	}
 
 	lines := teamLines(data, len(f.Teams))
@@ -77,6 +78,7 @@ func LoadTeams(path string, data []byte, c *diag.Collector) *Teams {
 		}
 		t.byName[team.Name] = team
 	}
+	t.loaded = true
 	return t
 }
 
@@ -141,7 +143,26 @@ func (t *Teams) Names() []string {
 // ValidateOwners checks that every entity's owner exists, suggesting the
 // closest real team when the owner looks like a typo.
 func (t *Teams) ValidateOwners(cat *catalog.Catalog, c *diag.Collector) {
+	// If teams.yaml did not parse, skip owner validation. The parse error
+	// has already been reported; owner validation must not generate false
+	// "not defined" diagnostics for valid owners on a broken teams.yaml.
+	if !t.loaded {
+		c.Add(diag.Diagnostic{
+			Severity: diag.SevError,
+			File:     "teams.yaml",
+			Check:    "teams-parse",
+			Message:  "owner validation skipped: teams.yaml could not be read",
+		})
+		return
+	}
+
 	for _, e := range cat.Entities {
+		// Skip entities with no owner. The schema already requires owner with
+		// minLength: 1, so this is the schema's diagnostic to make, not ours.
+		if e.Metadata.Owner == "" {
+			continue
+		}
+
 		if _, ok := t.Get(e.Metadata.Owner); ok {
 			continue
 		}
