@@ -59,6 +59,53 @@ Recorded because the *why* is the part that gets lost.
 | D8 | Everything starts in `internal/` | `internal → pkg` is additive; `pkg → internal` is breaking. Catalog types get promoted when someone actually asks to import them. |
 | D9 | Dune naming on user-facing surfaces only | Project, binary and deployed components carry Dune names; Go packages are literal (`catalog`, `scorecard`, `render`). Themed package names tax every future contributor with a glossary. |
 | D10 | Named `landsraad`, not `sietch` | `sietch` was the first choice and failed an availability check on 2026-09-08: `danprince/sietch` is an existing **Go Markdown static site generator** — same language, same niche — alongside a 141-star storage project, three Go modules, and sietch.dev/.io/.sh/.org all registered. `landsraad` has zero Go modules and no namesake above one star, and is semantically closer: the assembly of the Great Houses is a federated register of who owns what. `apiVersion` needs no domain (k8s uses `apps/v1`), so no domain sits on the critical path. |
+| D11 | Composition over a monolithic pipeline | File access goes through `io/fs.FS`, output formats through a `Formatter` registry, and each pipeline stage is a typed pure function that two commands compose differently. See §3.1. |
+
+### 3.1 Composition principles
+
+Three properties are required of this codebase, and each is bought by a
+specific mechanism rather than by good intentions.
+
+**Flexibility — parts are replaceable without rewriting their caller.**
+
+- All file access is `io/fs.FS`, never `os` calls against a path string.
+  `os.DirFS(root)` reads a local checkout, a tar reader reads a fetched
+  remote repo, and `fstest.MapFS` reads a test fixture. Discovery, parsing
+  and file checks are written once and work against all three.
+- Schema validation is a `*schema.Validator` value, not a package-level
+  function over `sync.Once` global state. Two schema versions can coexist
+  during a migration, and a test can validate against its own schema.
+
+**Loose coupling — a change in one part does not propagate.**
+
+- Each pipeline stage (§7) is a typed pure function: `Discover` takes an
+  `fs.FS` and returns paths; `ParseAll` takes paths and returns entities;
+  `New` takes entities and returns a `Catalog`. A stage knows its input and
+  its output type and nothing else — not the command that runs it, not the
+  stage before it.
+- `validate` and `build` are two explicit compositions of those same
+  functions. Adding a stage to one does not touch the other, and Go's type
+  checker refuses a composition that runs `New` before `ParseAll` — an
+  ordering bug is a compile error, not a nil dereference at runtime.
+- Nothing does its own IO or its own printing. Stages take an `fs.FS` and a
+  `*diag.Collector`; rendering happens once, at the edge.
+
+**Reusability — one component serves unrelated callers.**
+
+- `Discover`, `ParseAll` and `CheckFiles` are used by `validate` against a
+  local checkout and by `build` against every fetched repo. One
+  implementation, three filesystems, no branching on which.
+- Output formats implement `diag.Formatter` and live in a `diag.Registry`.
+  The four the spec requires (text, JSON, GitHub annotations, GitLab Code
+  Quality) are four small types; a fifth is a new file, not an edit to a
+  switch statement.
+
+**What this deliberately is not.** "Replaceable at runtime" means the
+composition is *selected* at startup from configuration — not that code is
+loaded dynamically. Go's `plugin` package and subprocess plugins are both
+out of scope, consistent with the no-plugin-system non-goal in §2.
+Abstractions are added when a second implementation exists or is already
+committed to in a later plan, never in anticipation of one.
 
 ---
 
@@ -351,18 +398,24 @@ that failed. Degraded mode must be visible in the artifact, not only in a log.
 ## 13. Package layout
 
 ```
-cmd/landsraad/            cobra commands
-internal/catalog/      Entity types, parse, merge, refs, graph
-internal/schema/       go:embed'd JSON Schema, strict validation
-internal/fetch/        Fetcher interface; github/, gitlab/ adapters
+cmd/landsraad/         cobra commands; each command is one explicit
+                       composition of the stages below
+internal/diag/         Diagnostic, Collector, Formatter interface + Registry
+internal/discover/     Find(fs.FS, patterns) — stage 1
+internal/catalog/      Entity types, ParseAll, merge, refs, graph, CheckFiles
+internal/schema/       embedded JSON Schema; *Validator value, no globals
+internal/fetch/        Fetcher interface returning an fs.FS; github/, gitlab/
 internal/scorecard/    checks, ingest, scoring, history
 internal/render/       site generation, goldmark pipeline, search index
 internal/render/md/    admonition extension
 internal/generate/     CODEOWNERS, alert routing, Slack map
 internal/config/       repos / teams / standards loading
 web/                   go:embed templates, CSS, search JS
-schema/                service.schema.json
 testdata/              fixture repos
+
+The canonical JSON Schema lives at internal/schema/service.schema.json so
+go:embed can reach it; schema/service.schema.json at the repo root is
+generated from it by `task schema` for editor autocompletion.
 ```
 
 ---

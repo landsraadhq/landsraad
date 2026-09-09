@@ -23,6 +23,19 @@
 - **Exit codes:** `0` clean, `1` usage/config error, `2` validation error. (`3`, the scorecard gate, arrives in Plan 2.)
 - **Entity names are flat and globally unique.** References are `kind:name`. A collision is a hard error naming both file paths.
 - **Strict schema:** `additionalProperties: false` everywhere. Unknown fields are rejected, never ignored.
+- **Composition, per spec §3.1 — these are hard rules, not preferences:**
+  - All file access goes through `io/fs.FS`. No `os.Stat`, `os.ReadFile` or
+    `filepath.Glob` against a path string anywhere below `cmd/`. The command
+    layer builds the `fs.FS` (`os.DirFS(root)`); everything else receives one.
+  - Every pipeline stage is a **typed pure function** — it takes its input
+    type and a `*diag.Collector`, and returns its output type. A stage never
+    knows which command runs it or what ran before it.
+  - Commands are **explicit compositions** of those functions. Ordering is
+    enforced by the type checker, not by convention.
+  - **No package-level mutable state.** No `sync.Once` singletons, no `init()`
+    registration. Things that need configuring are values you construct.
+  - Output formats implement `diag.Formatter` and live in a `diag.Registry`.
+    Adding one is a new type, never an edit to a `switch`.
 - **Task boundaries are commit boundaries.** Every task ends with a passing `task test` and a commit.
 
 ---
@@ -36,19 +49,20 @@
 | `cmd/landsraad/main.go` | entry point, exit codes |
 | `cmd/landsraad/validate.go` | the `validate` cobra command |
 | `internal/diag/diag.go` | `Severity`, `Diagnostic`, `Collector` |
-| `internal/diag/format.go` | text, JSON and CI-annotation output |
+| `internal/diag/format.go` | `Formatter` interface, `Registry`, and the four formats |
 | `internal/catalog/entity.go` | `Kind`, `Entity`, `Metadata`, `Spec` |
 | `internal/catalog/parse.go` | YAML → `Entity`, preserving line numbers |
 | `internal/catalog/ref.go` | `Ref` parse and format |
 | `internal/catalog/merge.go` | `Catalog`, merge, collision detection |
 | `internal/catalog/graph.go` | reference resolution, cycle detection |
-| `internal/catalog/files.go` | referenced-file existence checks |
-| `internal/schema/schema.go` | embedded JSON Schema, structural validation |
+| `internal/catalog/files.go` | referenced-file existence checks, over an `fs.FS` |
+| `internal/catalog/load.go` | `ParseAll` — read and parse every discovered file from an `fs.FS` |
+| `internal/schema/schema.go` | embedded schema; `*Validator` value, no globals |
 | `internal/schema/service.schema.json` | the schema — canonical, embedded in the binary |
 | `schema/service.schema.json` | generated copy for editors, written by `task schema` |
 | `internal/config/teams.go` | `teams.yaml` |
 | `internal/config/repos.go` | `repos.yaml` |
-| `internal/discover/discover.go` | glob `service.yaml` from configured paths |
+| `internal/discover/discover.go` | `Find(fs.FS, patterns)` — stage 1, no `os` |
 | `testdata/` | fixture repos: one valid, one per diagnostic |
 
 ---
@@ -1102,7 +1116,8 @@ git commit -m "feat: entity references and catalog merge with collision detectio
 **Interfaces:**
 - Consumes: `Catalog`, `Ref`, `diag.Collector`.
 - Produces:
-  - `func (c *Catalog) Resolve(local bool, col *diag.Collector)` — resolves every `dependsOn`; when `local` is true, references to entities absent from the catalog are recorded rather than reported (a service repo cannot see other repos)
+  - `type Scope int` with `FullCatalog` and `LocalOnly`
+  - `func (c *Catalog) Resolve(scope Scope, col *diag.Collector)` — resolves every `dependsOn`; under `LocalOnly`, references to entities absent from the catalog are recorded rather than reported (a service repo cannot see other repos)
   - `func (c *Catalog) Dependents(r Ref) []Ref` — reverse edges, sorted
   - `type Cycle []Ref`; `func (c *Catalog) Cycles() []Cycle`
 
@@ -1131,7 +1146,7 @@ func TestResolveReportsDanglingRefs(t *testing.T) {
 	cat := NewCatalog([]*Entity{
 		entDeps("a", KindService, "service:nowhere"),
 	}, &c)
-	cat.Resolve(false, &c)
+	cat.Resolve(FullCatalog, &c)
 
 	if !c.HasErrors() {
 		t.Fatal("a dangling reference must be an error when resolving the full catalog")
@@ -1147,7 +1162,7 @@ func TestResolveToleratesDanglingRefsWhenLocal(t *testing.T) {
 	cat := NewCatalog([]*Entity{
 		entDeps("a", KindService, "service:in-another-repo"),
 	}, &c)
-	cat.Resolve(true, &c)
+	cat.Resolve(LocalOnly, &c)
 
 	if c.HasErrors() {
 		t.Errorf("`landsraad validate` runs on one repo and cannot see the others; "+
@@ -1158,7 +1173,7 @@ func TestResolveToleratesDanglingRefsWhenLocal(t *testing.T) {
 func TestResolveReportsMalformedRefs(t *testing.T) {
 	var c diag.Collector
 	cat := NewCatalog([]*Entity{entDeps("a", KindService, "noprefix")}, &c)
-	cat.Resolve(true, &c)
+	cat.Resolve(LocalOnly, &c)
 
 	if !c.HasErrors() {
 		t.Fatal("a malformed reference is an error even in local mode — it can never resolve")
@@ -1171,7 +1186,7 @@ func TestCyclesDetectsASimpleCycle(t *testing.T) {
 		entDeps("a", KindService, "service:b"),
 		entDeps("b", KindService, "service:a"),
 	}, &c)
-	cat.Resolve(false, &c)
+	cat.Resolve(FullCatalog, &c)
 
 	cycles := cat.Cycles()
 	if len(cycles) == 0 {
@@ -1187,7 +1202,7 @@ func TestCyclesIgnoresADiamond(t *testing.T) {
 		entDeps("c", KindService, "service:d"),
 		entDeps("d", KindService),
 	}, &c)
-	cat.Resolve(false, &c)
+	cat.Resolve(FullCatalog, &c)
 
 	if cycles := cat.Cycles(); len(cycles) != 0 {
 		t.Errorf("a diamond is not a cycle, got %v", cycles)
@@ -1201,7 +1216,7 @@ func TestDependentsReturnsReverseEdges(t *testing.T) {
 		entDeps("b", KindService, "topic:t"),
 		ent("monorepo", "topics/t/service.yaml", "t", KindTopic, 4),
 	}, &c)
-	cat.Resolve(false, &c)
+	cat.Resolve(FullCatalog, &c)
 
 	got := cat.Dependents(Ref{Kind: KindTopic, Name: "t"})
 	if len(got) != 2 {
@@ -1235,14 +1250,26 @@ import (
 // Cycle is a dependency loop, listed in traversal order.
 type Cycle []Ref
 
+// Scope says how much of the world the caller can see.
+type Scope int
+
+const (
+	// FullCatalog means every entity is present, so an unresolvable
+	// reference is a real error. The platform build uses this.
+	FullCatalog Scope = iota
+	// LocalOnly means the caller is validating a single repo and cannot see
+	// entities defined elsewhere. `landsraad validate` uses this.
+	LocalOnly
+)
+
 // Resolve walks every dependsOn entry and builds the forward and reverse edge
 // maps.
 //
-// When local is true the caller is validating a single repo and cannot see
-// entities defined elsewhere, so an unresolvable reference is recorded and
-// skipped rather than reported. Malformed references are always errors: they
-// could never resolve in any repo.
-func (c *Catalog) Resolve(local bool, col *diag.Collector) {
+// Under LocalOnly an unresolvable reference is recorded and skipped rather
+// than reported, because the target may simply live in another repo.
+// Malformed references are errors under either scope: they could never
+// resolve anywhere.
+func (c *Catalog) Resolve(scope Scope, col *diag.Collector) {
 	c.edges = make(map[Ref][]Ref, len(c.Entities))
 	c.reverse = make(map[Ref][]Ref, len(c.Entities))
 
@@ -1264,7 +1291,7 @@ func (c *Catalog) Resolve(local bool, col *diag.Collector) {
 				continue
 			}
 			if _, found := c.Lookup(to); !found {
-				if !local {
+				if scope == FullCatalog {
 					col.Add(diag.Diagnostic{
 						Severity: diag.SevError,
 						Repo:     e.SourceRepo,
@@ -1277,8 +1304,8 @@ func (c *Catalog) Resolve(local bool, col *diag.Collector) {
 						Hint: "check the spelling, or add the missing entity",
 					})
 				}
-				// In local mode the target lives in another repo. Record no
-				// edge: the platform build resolves it.
+				// Under LocalOnly the target lives in another repo. Record
+				// no edge: the platform build resolves it.
 				continue
 			}
 			c.edges[from] = append(c.edges[from], to)
@@ -1406,19 +1433,29 @@ git commit -m "feat: dependency graph resolution and cycle detection"
 
 ---
 
-## Task 7: JSON Schema
+## Task 7: JSON Schema validation
 
-The schema is the single source of truth for structure, and it ships to editors. Validating against it — rather than hand-writing field checks in Go — is what stops the schema and the behaviour from drifting apart.
+The schema is the single source of truth for structure, and it ships to editors.
+Validating against it — rather than hand-writing field checks in Go — is what
+stops the schema and the tool's behaviour from drifting apart.
+
+Per spec §3.1, validation is a method on a `*Validator` **value**, not a package
+function over `sync.Once` state. Two schema versions can coexist during a
+migration, a test can validate against a schema of its own, and there is no
+process-wide state to reason about.
 
 **Files:**
 - Create: `internal/schema/service.schema.json`, `internal/schema/schema.go`
 - Test: `internal/schema/schema_test.go`
 
 **Interfaces:**
-- Consumes: `diag.Collector`, `catalog.AllKinds`.
+- Consumes: `diag.Collector` (Task 2), `catalog.AllKinds` (Task 3).
 - Produces:
-  - `func Validate(repo, path string, data []byte, c *diag.Collector) bool`
   - `var Raw []byte` — the embedded schema, printed by `landsraad schema`
+  - `type Validator struct{ ... }`
+  - `func New(schemaJSON []byte) (*Validator, error)` — compile any schema
+  - `func Default() (*Validator, error)` — compile the embedded schema
+  - `func (v *Validator) Validate(repo, path string, data []byte, c *diag.Collector) bool`
 
 - [ ] **Step 1: Add the dependency**
 
@@ -1539,9 +1576,18 @@ spec:
   language: go
 `
 
+func mustDefault(t *testing.T) *Validator {
+	t.Helper()
+	v, err := Default()
+	if err != nil {
+		t.Fatalf("the embedded schema must compile: %v", err)
+	}
+	return v
+}
+
 func TestValidateAcceptsAGoodFile(t *testing.T) {
 	var c diag.Collector
-	if !Validate("monorepo", "a/service.yaml", []byte(good), &c) {
+	if !mustDefault(t).Validate("monorepo", "a/service.yaml", []byte(good), &c) {
 		t.Fatalf("a valid file must pass: %+v", c.Diagnostics())
 	}
 }
@@ -1549,7 +1595,7 @@ func TestValidateAcceptsAGoodFile(t *testing.T) {
 func TestValidateRejectsUnknownFields(t *testing.T) {
 	in := strings.Replace(good, "  language: go\n", "  language: go\n  nonsense: yes\n", 1)
 	var c diag.Collector
-	if Validate("monorepo", "a/service.yaml", []byte(in), &c) {
+	if mustDefault(t).Validate("monorepo", "a/service.yaml", []byte(in), &c) {
 		t.Fatal("additionalProperties is false — an unknown field must be rejected, not ignored")
 	}
 	if !c.HasErrors() {
@@ -1563,7 +1609,7 @@ func TestValidateRejectsUnknownFields(t *testing.T) {
 func TestValidateRejectsBadTier(t *testing.T) {
 	in := strings.Replace(good, "tier: 1", "tier: 9", 1)
 	var c diag.Collector
-	if Validate("monorepo", "a/service.yaml", []byte(in), &c) {
+	if mustDefault(t).Validate("monorepo", "a/service.yaml", []byte(in), &c) {
 		t.Fatal("tier 9 is not one of 1, 2, 3")
 	}
 }
@@ -1571,7 +1617,7 @@ func TestValidateRejectsBadTier(t *testing.T) {
 func TestValidateRejectsMissingOwner(t *testing.T) {
 	in := strings.Replace(good, "  owner: team-payments\n", "", 1)
 	var c diag.Collector
-	if Validate("monorepo", "a/service.yaml", []byte(in), &c) {
+	if mustDefault(t).Validate("monorepo", "a/service.yaml", []byte(in), &c) {
 		t.Fatal("owner is required")
 	}
 }
@@ -1579,8 +1625,27 @@ func TestValidateRejectsMissingOwner(t *testing.T) {
 func TestValidateRejectsWrongAPIVersion(t *testing.T) {
 	in := strings.Replace(good, "landsraad/v1", "platform/v1", 1)
 	var c diag.Collector
-	if Validate("monorepo", "a/service.yaml", []byte(in), &c) {
+	if mustDefault(t).Validate("monorepo", "a/service.yaml", []byte(in), &c) {
 		t.Fatal("only landsraad/v1 is accepted")
+	}
+}
+
+// A Validator is a value, so a caller can supply its own schema. This is the
+// flexibility requirement in spec §3.1, asserted rather than assumed.
+func TestNewAcceptsACallerSuppliedSchema(t *testing.T) {
+	v, err := New([]byte(`{"type":"object","required":["kind"]}`))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	var c diag.Collector
+	if !v.Validate("", "a.yaml", []byte("kind: Anything\n"), &c) {
+		t.Errorf("the caller's schema must be the one applied: %+v", c.Diagnostics())
+	}
+}
+
+func TestNewRejectsBrokenSchema(t *testing.T) {
+	if _, err := New([]byte("{not json")); err == nil {
+		t.Fatal("a schema that is not JSON must return an error, not panic")
 	}
 }
 
@@ -1598,25 +1663,25 @@ func TestSchemaKindsMatchGoKinds(t *testing.T) {
 - [ ] **Step 4: Run it to verify it fails**
 
 Run: `go test ./internal/schema/ -v`
-Expected: FAIL — `undefined: Validate`
+Expected: FAIL — `undefined: Validator`
 
 - [ ] **Step 5: Write the implementation**
 
 Create `internal/schema/schema.go`:
 
 ```go
-// Package schema validates catalog files against the JSON Schema that ships
-// with the binary. The schema is the single source of truth for structure:
-// validating against it, rather than hand-written Go checks, is what keeps
-// the shipped schema and the tool's behaviour from drifting apart.
+// Package schema validates catalog files against a JSON Schema. The schema
+// shipped with the binary is the single source of truth for structure:
+// validating against it, rather than with hand-written Go checks, is what
+// keeps the published schema and the tool's behaviour from drifting apart.
 package schema
 
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"gopkg.in/yaml.v3"
@@ -1627,93 +1692,90 @@ import (
 //go:embed service.schema.json
 var Raw []byte
 
-var (
-	compileOnce sync.Once
-	compiled    *jsonschema.Schema
-	compileErr  error
-)
-
-func schema() (*jsonschema.Schema, error) {
-	compileOnce.Do(func() {
-		var doc any
-		if err := json.Unmarshal(Raw, &doc); err != nil {
-			compileErr = fmt.Errorf("embedded schema is not valid JSON: %w", err)
-			return
-		}
-		c := jsonschema.NewCompiler()
-		if err := c.AddResource("service.schema.json", doc); err != nil {
-			compileErr = fmt.Errorf("cannot add embedded schema: %w", err)
-			return
-		}
-		compiled, compileErr = c.Compile("service.schema.json")
-	})
-	return compiled, compileErr
+// Validator validates catalog files against one compiled schema.
+//
+// It is a value rather than package state so that two schema versions can
+// coexist during a migration, and so a test can supply its own schema. See
+// spec §3.1.
+type Validator struct {
+	sch *jsonschema.Schema
 }
 
-// Validate checks one file's bytes against the schema. It returns true when
-// the file is structurally valid, and adds one diagnostic per violation.
-func Validate(repo, path string, data []byte, c *diag.Collector) bool {
-	sch, err := schema()
-	if err != nil {
-		// A broken embedded schema is a build defect, not user error.
-		c.Add(diag.Diagnostic{
-			Severity: diag.SevError, Repo: repo, File: path, Line: 1,
-			Check: "schema-internal", Message: err.Error(),
-		})
-		return false
-	}
+const schemaID = "service.schema.json"
 
+// New compiles the given JSON Schema document.
+func New(schemaJSON []byte) (*Validator, error) {
+	var doc any
+	if err := json.Unmarshal(schemaJSON, &doc); err != nil {
+		return nil, fmt.Errorf("schema is not valid JSON: %w", err)
+	}
+	c := jsonschema.NewCompiler()
+	if err := c.AddResource(schemaID, doc); err != nil {
+		return nil, fmt.Errorf("cannot add schema resource: %w", err)
+	}
+	sch, err := c.Compile(schemaID)
+	if err != nil {
+		return nil, fmt.Errorf("cannot compile schema: %w", err)
+	}
+	return &Validator{sch: sch}, nil
+}
+
+// Default compiles the schema embedded in the binary.
+func Default() (*Validator, error) { return New(Raw) }
+
+// Validate checks one file's bytes. It returns true when the file is
+// structurally valid, and adds one diagnostic per violation.
+//
+// It reports nothing for bytes that are not YAML at all: that is
+// catalog.ParseFile's diagnostic to make, and two errors for one cause is
+// noise.
+func (v *Validator) Validate(repo, path string, data []byte, c *diag.Collector) bool {
 	var root yaml.Node
 	if err := yaml.Unmarshal(data, &root); err != nil {
-		// Parsing is reported by catalog.ParseFile; stay silent here.
 		return false
 	}
 	var inst any
 	if err := root.Decode(&inst); err != nil {
 		return false
 	}
-	// yaml.v3 produces map[string]any for string keys, which the validator
-	// accepts directly.
-	if err := sch.Validate(inst); err != nil {
-		var ve *jsonschema.ValidationError
-		if ok := asValidationError(err, &ve); ok {
-			for _, leaf := range leaves(ve) {
-				loc := strings.TrimPrefix(leaf.InstanceLocation, "/")
-				keys := splitLocation(loc)
-				line := fieldLine(&root, keys...)
-				if line == 0 {
-					line = 1
-				}
-				c.Add(diag.Diagnostic{
-					Severity: diag.SevError,
-					Repo:     repo,
-					File:     path,
-					Line:     line,
-					Check:    "schema",
-					Message:  describe(loc, leaf),
-				})
-			}
-		} else {
-			c.Add(diag.Diagnostic{
-				Severity: diag.SevError, Repo: repo, File: path, Line: 1,
-				Check: "schema", Message: err.Error(),
-			})
-		}
+
+	err := v.sch.Validate(inst)
+	if err == nil {
+		return true
+	}
+
+	var ve *jsonschema.ValidationError
+	if !errors.As(err, &ve) {
+		c.Add(diag.Diagnostic{
+			Severity: diag.SevError, Repo: repo, File: path, Line: 1,
+			Check: "schema", Message: err.Error(),
+		})
 		return false
 	}
-	return true
-}
-
-func describe(loc string, ve *jsonschema.ValidationError) string {
-	where := loc
-	if where == "" {
-		where = "document root"
+	for _, leaf := range leaves(ve) {
+		loc := strings.TrimPrefix(leaf.InstanceLocation, "/")
+		line := fieldLine(&root, splitLocation(loc)...)
+		if line == 0 {
+			line = 1
+		}
+		where := loc
+		if where == "" {
+			where = "document root"
+		}
+		c.Add(diag.Diagnostic{
+			Severity: diag.SevError,
+			Repo:     repo,
+			File:     path,
+			Line:     line,
+			Check:    "schema",
+			Message:  fmt.Sprintf("%s: %s", where, leaf.Error()),
+		})
 	}
-	return fmt.Sprintf("%s: %s", where, ve.ErrorKind.LocalizedString(nil))
+	return false
 }
 
 // leaves returns the most specific errors in the tree. The root error is a
-// generic "doesn't validate"; the causes carry the useful detail.
+// generic "does not validate"; the causes carry the useful detail.
 func leaves(ve *jsonschema.ValidationError) []*jsonschema.ValidationError {
 	if len(ve.Causes) == 0 {
 		return []*jsonschema.ValidationError{ve}
@@ -1732,8 +1794,10 @@ func splitLocation(loc string) []string {
 	return strings.Split(loc, "/")
 }
 
-// fieldLine walks a document node down a key path. Numeric path segments are
-// array indices. Returns 0 when the path is not found.
+// fieldLine walks a document node down a key path and returns the 1-indexed
+// line of the value it lands on. Numeric segments are array indices. It
+// returns the nearest enclosing node's line when the path runs out, so a
+// diagnostic always points somewhere useful.
 func fieldLine(root *yaml.Node, path ...string) int {
 	node := root
 	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
@@ -1767,30 +1831,21 @@ func fieldLine(root *yaml.Node, path ...string) int {
 }
 ```
 
-Add `asValidationError` in the same file:
-
-```go
-func asValidationError(err error, target **jsonschema.ValidationError) bool {
-	ve, ok := err.(*jsonschema.ValidationError)
-	if ok {
-		*target = ve
-	}
-	return ok
-}
-```
-
 - [ ] **Step 6: Run it to verify it passes**
 
 Run: `go test ./internal/schema/ -v`
-Expected: PASS — all six tests
+Expected: PASS — all eight tests
 
-If the `jsonschema/v6` API differs from the calls above (`AddResource`, `Compile`, `ValidationError.ErrorKind`, `InstanceLocation`), fix the calls against the pinned version's godoc before moving on. Do not change the tests — they encode the required behaviour, not the library's shape.
+If the `jsonschema/v6` API differs from the calls above (`NewCompiler`,
+`AddResource`, `Compile`, `ValidationError.InstanceLocation`, `.Causes`), fix
+the calls against the pinned version's godoc. **Do not change the tests** —
+they encode the required behaviour, not the library's shape.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add internal/schema/ go.mod go.sum
-git commit -m "feat: JSON Schema validation with line-accurate diagnostics"
+git commit -m "feat: JSON Schema validation as a Validator value"
 ```
 
 ---
@@ -2069,18 +2124,32 @@ git commit -m "feat: teams.yaml loading and owner validation with typo hints"
 
 ---
 
-## Task 9: Discovery and referenced-file checks
+## Task 9: Discovery, loading, and file checks — the `fs.FS` seam
+
+This is where spec §3.1 becomes code. Nothing below `cmd/` touches `os`;
+everything reads through an `io/fs.FS`. That buys three things at once:
+
+1. Plan 3 points these same functions at a **fetched remote repo** — no second
+   implementation, no refactor of this plan.
+2. Tests run against `fstest.MapFS`, so the suite touches neither the network
+   nor the disk.
+3. `catalog` becomes **pure** — `ParseAll` takes bytes and returns entities,
+   with no IO anywhere in the package except `CheckFiles`, which is inherently
+   a filesystem question.
 
 **Files:**
-- Create: `internal/discover/discover.go`, `internal/catalog/files.go`
-- Test: `internal/discover/discover_test.go`, `internal/catalog/files_test.go`
+- Create: `internal/discover/discover.go`, `internal/catalog/load.go`, `internal/catalog/files.go`
+- Test: `internal/discover/discover_test.go`, `internal/catalog/load_test.go`, `internal/catalog/files_test.go`
 - Create: `testdata/monorepo-ok/` fixtures
 
 **Interfaces:**
-- Consumes: `diag.Collector`, `Catalog`.
+- Consumes: `diag.Collector` (Task 2), `Entity` (Task 3), `ParseFile` (Task 4), `Catalog` (Task 5).
 - Produces:
-  - `func Find(root string, patterns []string) ([]string, error)` — repo-relative paths of every `service.yaml` under the given glob patterns, sorted
-  - `func CheckFiles(root string, cat *Catalog, c *diag.Collector)` — verifies `spec.runbook`, `spec.docs`, `spec.alerts` exist on disk
+  - `type discover.File struct { Path string; Data []byte }`
+  - `func discover.Find(fsys fs.FS, patterns []string) ([]string, error)` — sorted, slash-separated
+  - `func discover.Load(fsys fs.FS, paths []string, c *diag.Collector) []File`
+  - `func catalog.ParseAll(files []discover.File, c *diag.Collector) []*Entity` — pure, no IO
+  - `func catalog.CheckFiles(fsys fs.FS, cat *Catalog, c *diag.Collector)`
 
 - [ ] **Step 1: Create the fixture repo**
 
@@ -2175,17 +2244,34 @@ Create `internal/discover/discover_test.go`:
 ```go
 package discover
 
-import "testing"
+import (
+	"os"
+	"testing"
+	"testing/fstest"
+
+	"github.com/landsraadhq/landsraad/internal/diag"
+)
+
+// The whole point of the fs.FS seam: these tests touch no disk at all.
+func mem() fstest.MapFS {
+	return fstest.MapFS{
+		"services/a/service.yaml":     {Data: []byte("kind: Service\n")},
+		"services/b/service.yaml":     {Data: []byte("kind: Service\n")},
+		"services/b/docs/index.md":    {Data: []byte("# b\n")},
+		"topics/t/service.yaml":       {Data: []byte("kind: Topic\n")},
+		"libs/nocatalog/README.md":    {Data: []byte("no service.yaml here\n")},
+	}
+}
 
 func TestFindMatchesGlobPatterns(t *testing.T) {
-	got, err := Find("../../testdata/monorepo-ok", []string{"services/*", "topics/*"})
+	got, err := Find(mem(), []string{"services/*", "topics/*"})
 	if err != nil {
-		t.Fatalf("Find returned error: %v", err)
+		t.Fatalf("Find: %v", err)
 	}
 	want := []string{
-		"services/ledger-api/service.yaml",
-		"services/payments-worker/service.yaml",
-		"topics/payments-events/service.yaml",
+		"services/a/service.yaml",
+		"services/b/service.yaml",
+		"topics/t/service.yaml",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d files, want %d: %v", len(got), len(want), got)
@@ -2197,23 +2283,81 @@ func TestFindMatchesGlobPatterns(t *testing.T) {
 	}
 }
 
-func TestFindDotMeansRepoRoot(t *testing.T) {
-	got, err := Find("../../testdata/monorepo-ok/services/ledger-api", []string{"."})
+func TestFindSkipsDirectoriesWithoutServiceYAML(t *testing.T) {
+	got, err := Find(mem(), []string{"libs/*"})
 	if err != nil {
-		t.Fatalf("Find returned error: %v", err)
+		t.Fatalf("Find: %v", err)
 	}
-	if len(got) != 1 || got[0] != "service.yaml" {
-		t.Errorf(`Find with pattern "." must find the root service.yaml, got %v`, got)
+	if len(got) != 0 {
+		t.Errorf("a directory with no service.yaml must be skipped, got %v", got)
 	}
 }
 
-func TestFindIgnoresDirectoriesWithoutServiceYAML(t *testing.T) {
-	got, err := Find("../../testdata/monorepo-ok", []string{"nonexistent/*"})
+func TestFindPatternMatchingNothingIsNotAnError(t *testing.T) {
+	got, err := Find(mem(), []string{"nonexistent/*"})
 	if err != nil {
-		t.Fatalf("a pattern matching nothing is not an error, got: %v", err)
+		t.Fatalf("a pattern matching nothing must not error: %v", err)
 	}
 	if len(got) != 0 {
-		t.Errorf("got %v, want no results", got)
+		t.Errorf("got %v, want none", got)
+	}
+}
+
+func TestFindDotMeansRoot(t *testing.T) {
+	root := fstest.MapFS{"service.yaml": {Data: []byte("kind: Service\n")}}
+	got, err := Find(root, []string{"."})
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if len(got) != 1 || got[0] != "service.yaml" {
+		t.Errorf(`pattern "." must find the root service.yaml, got %v`, got)
+	}
+}
+
+func TestFindDeduplicatesOverlappingPatterns(t *testing.T) {
+	got, err := Find(mem(), []string{"services/*", "services/a"})
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("overlapping patterns must not yield duplicates, got %v", got)
+	}
+}
+
+func TestLoadReadsBytes(t *testing.T) {
+	var c diag.Collector
+	files := Load(mem(), []string{"services/a/service.yaml"}, &c)
+	if c.HasErrors() {
+		t.Fatalf("unexpected errors: %+v", c.Diagnostics())
+	}
+	if len(files) != 1 || string(files[0].Data) != "kind: Service\n" {
+		t.Errorf("Load did not return the file bytes: %+v", files)
+	}
+}
+
+func TestLoadReportsUnreadableFile(t *testing.T) {
+	var c diag.Collector
+	files := Load(mem(), []string{"services/gone/service.yaml"}, &c)
+	if len(files) != 0 {
+		t.Errorf("a missing file must not be returned, got %+v", files)
+	}
+	if !c.HasErrors() {
+		t.Fatal("a missing file must produce an error diagnostic")
+	}
+	if c.Diagnostics()[0].Line == 0 {
+		t.Error("every diagnostic carries a line, even this one")
+	}
+}
+
+// The same functions must work against a real directory, because that is what
+// the command does. os.DirFS is the only place `os` appears.
+func TestFindWorksOverOsDirFS(t *testing.T) {
+	got, err := Find(os.DirFS("../../testdata/monorepo-ok"), []string{"services/*", "topics/*"})
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if len(got) != 3 {
+		t.Errorf("got %d entries from the fixture repo, want 3: %v", len(got), got)
 	}
 }
 ```
@@ -2225,51 +2369,67 @@ Expected: FAIL — `undefined: Find`
 
 - [ ] **Step 4: Write `discover.go`**
 
+Create `internal/discover/discover.go`:
+
 ```go
-// Package discover locates service.yaml files under a repository root.
+// Package discover locates and reads the catalog files in a repository.
+//
+// It works against any io/fs.FS: os.DirFS for a local checkout, a tar reader
+// for a fetched remote repo, fstest.MapFS in tests. Nothing here calls os.
 package discover
 
 import (
-	"os"
-	"path/filepath"
+	"fmt"
+	"io/fs"
+	"path"
 	"sort"
+
+	"github.com/landsraadhq/landsraad/internal/diag"
 )
 
 // Filename is the fixed name of a catalog file.
 const Filename = "service.yaml"
 
-// Find returns repo-relative paths of every service.yaml matching the given
-// glob patterns, sorted. A pattern of "." means the repository root itself.
-// A pattern that matches nothing is not an error: a repo may legitimately
-// have no services under some configured path.
-func Find(root string, patterns []string) ([]string, error) {
+// File is one catalog file's bytes with the path it came from. Parsing and
+// validation take these, so neither of those stages does any IO.
+type File struct {
+	Path string
+	Data []byte
+}
+
+// Find returns the paths of every service.yaml matching the given glob
+// patterns, sorted and deduplicated. Paths are slash-separated and relative to
+// the filesystem root, as io/fs requires.
+//
+// A pattern of "." means the root itself. A pattern matching nothing is not an
+// error: a repo may legitimately have no services under a configured path.
+func Find(fsys fs.FS, patterns []string) ([]string, error) {
 	seen := map[string]bool{}
 	for _, pattern := range patterns {
 		var dirs []string
-		if pattern == "." {
-			dirs = []string{root}
+		if pattern == "." || pattern == "" {
+			dirs = []string{"."}
 		} else {
-			matches, err := filepath.Glob(filepath.Join(root, filepath.FromSlash(pattern)))
+			matches, err := fs.Glob(fsys, pattern)
 			if err != nil {
-				// Only ErrBadPattern is possible here, and that is a config bug.
-				return nil, err
+				// Only ErrBadPattern is possible, and that is a config bug.
+				return nil, fmt.Errorf("bad path pattern %q: %w", pattern, err)
 			}
 			dirs = matches
 		}
 		for _, dir := range dirs {
-			info, err := os.Stat(dir)
+			info, err := fs.Stat(fsys, dir)
 			if err != nil || !info.IsDir() {
 				continue
 			}
-			candidate := filepath.Join(dir, Filename)
-			if _, err := os.Stat(candidate); err != nil {
+			candidate := Filename
+			if dir != "." {
+				candidate = path.Join(dir, Filename)
+			}
+			if _, err := fs.Stat(fsys, candidate); err != nil {
 				continue
 			}
-			rel, err := filepath.Rel(root, candidate)
-			if err != nil {
-				continue
-			}
-			seen[filepath.ToSlash(rel)] = true
+			seen[candidate] = true
 		}
 	}
 	out := make([]string, 0, len(seen))
@@ -2279,16 +2439,38 @@ func Find(root string, patterns []string) ([]string, error) {
 	sort.Strings(out)
 	return out, nil
 }
+
+// Load reads each path, reporting a diagnostic for any it cannot read and
+// omitting it from the result. Never fails fast: one unreadable file does not
+// hide problems in the rest.
+func Load(fsys fs.FS, paths []string, c *diag.Collector) []File {
+	out := make([]File, 0, len(paths))
+	for _, p := range paths {
+		data, err := fs.ReadFile(fsys, p)
+		if err != nil {
+			c.Add(diag.Diagnostic{
+				Severity: diag.SevError,
+				File:     p,
+				Line:     1,
+				Check:    "unreadable",
+				Message:  fmt.Sprintf("cannot read file: %v", err),
+			})
+			continue
+		}
+		out = append(out, File{Path: p, Data: data})
+	}
+	return out
+}
 ```
 
 - [ ] **Step 5: Run it to verify it passes**
 
 Run: `go test ./internal/discover/ -v`
-Expected: PASS — all three tests
+Expected: PASS — all eight tests
 
-- [ ] **Step 6: Write the failing file-check test**
+- [ ] **Step 6: Write the failing `ParseAll` test**
 
-Create `internal/catalog/files_test.go`:
+Create `internal/catalog/load_test.go`:
 
 ```go
 package catalog
@@ -2297,7 +2479,107 @@ import (
 	"testing"
 
 	"github.com/landsraadhq/landsraad/internal/diag"
+	"github.com/landsraadhq/landsraad/internal/discover"
 )
+
+func TestParseAllIsPureAndOrdered(t *testing.T) {
+	var c diag.Collector
+	files := []discover.File{
+		{Path: "services/b/service.yaml", Data: []byte("apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: b\n  owner: t\n  tier: 1\n  lifecycle: production\n")},
+		{Path: "services/a/service.yaml", Data: []byte("apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: a\n  owner: t\n  tier: 1\n  lifecycle: production\n")},
+	}
+	got := ParseAll(files, &c)
+	if c.HasErrors() {
+		t.Fatalf("valid files must parse: %+v", c.Diagnostics())
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d entities, want 2", len(got))
+	}
+	// ParseAll preserves input order; sorting is NewCatalog's job.
+	if got[0].Metadata.Name != "b" || got[1].Metadata.Name != "a" {
+		t.Errorf("ParseAll must preserve input order, got %q then %q",
+			got[0].Metadata.Name, got[1].Metadata.Name)
+	}
+	if got[0].SourcePath != "services/b/service.yaml" {
+		t.Errorf("provenance not attached: %q", got[0].SourcePath)
+	}
+}
+
+func TestParseAllSkipsBrokenFilesAndKeepsGoing(t *testing.T) {
+	var c diag.Collector
+	files := []discover.File{
+		{Path: "broken/service.yaml", Data: []byte("kind: Service\n  bad indent\n")},
+		{Path: "services/a/service.yaml", Data: []byte("apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: a\n  owner: t\n  tier: 1\n  lifecycle: production\n")},
+	}
+	got := ParseAll(files, &c)
+	if len(got) != 1 {
+		t.Fatalf("the good file must still be parsed, got %d entities", len(got))
+	}
+	if !c.HasErrors() {
+		t.Error("the broken file must still be reported")
+	}
+}
+```
+
+- [ ] **Step 7: Run it to verify it fails**
+
+Run: `go test ./internal/catalog/ -run TestParseAll -v`
+Expected: FAIL — `undefined: ParseAll`
+
+- [ ] **Step 8: Write `load.go`**
+
+Create `internal/catalog/load.go`:
+
+```go
+package catalog
+
+import (
+	"github.com/landsraadhq/landsraad/internal/diag"
+	"github.com/landsraadhq/landsraad/internal/discover"
+)
+
+// ParseAll turns loaded bytes into entities. It is pure: no filesystem, no
+// network, no globals — which is what makes it reusable across a local
+// checkout, a fetched remote repo and a test fixture without changing.
+//
+// Files that cannot be parsed are reported and skipped; the rest still parse,
+// so one broken file never hides problems in the others.
+func ParseAll(files []discover.File, c *diag.Collector) []*Entity {
+	out := make([]*Entity, 0, len(files))
+	for _, f := range files {
+		if e, ok := ParseFile("", f.Path, f.Data, c); ok {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+```
+
+- [ ] **Step 9: Run it to verify it passes**
+
+Run: `go test ./internal/catalog/ -run TestParseAll -v`
+Expected: PASS — both tests
+
+- [ ] **Step 10: Write the failing file-check test**
+
+Create `internal/catalog/files_test.go`:
+
+```go
+package catalog
+
+import (
+	"testing"
+	"testing/fstest"
+
+	"github.com/landsraadhq/landsraad/internal/diag"
+)
+
+func repoFS() fstest.MapFS {
+	return fstest.MapFS{
+		"services/payments-worker/docs/runbook.md": {Data: []byte("# runbook\n")},
+		"services/payments-worker/docs/index.md":   {Data: []byte("# docs\n")},
+	}
+}
 
 func TestCheckFilesAcceptsExistingPaths(t *testing.T) {
 	var c diag.Collector
@@ -2306,7 +2588,7 @@ func TestCheckFilesAcceptsExistingPaths(t *testing.T) {
 	e.Spec.Docs = "services/payments-worker/docs"
 	cat := NewCatalog([]*Entity{e}, &c)
 
-	CheckFiles("../../testdata/monorepo-ok", cat, &c)
+	CheckFiles(repoFS(), cat, &c)
 
 	if c.HasErrors() {
 		t.Errorf("existing paths must pass: %+v", c.Diagnostics())
@@ -2319,13 +2601,30 @@ func TestCheckFilesReportsMissingRunbook(t *testing.T) {
 	e.Spec.Runbook = "services/payments-worker/docs/nope.md"
 	cat := NewCatalog([]*Entity{e}, &c)
 
-	CheckFiles("../../testdata/monorepo-ok", cat, &c)
+	CheckFiles(repoFS(), cat, &c)
 
 	if !c.HasErrors() {
 		t.Fatal("a runbook path that does not exist must be an error")
 	}
-	if got := c.Diagnostics()[0].Check; got != "missing-file" {
-		t.Errorf("Check = %q, want %q", got, "missing-file")
+	d := c.Diagnostics()[0]
+	if d.Check != "missing-file" {
+		t.Errorf("Check = %q, want %q", d.Check, "missing-file")
+	}
+	if d.Line != 4 {
+		t.Errorf("the diagnostic must point at the entity's line, got %d", d.Line)
+	}
+}
+
+func TestCheckFilesRejectsFileWhereDirectoryExpected(t *testing.T) {
+	var c diag.Collector
+	e := ent("monorepo", "services/payments-worker/service.yaml", "payments-worker", KindService, 4)
+	e.Spec.Docs = "services/payments-worker/docs/index.md" // a file, not a dir
+	cat := NewCatalog([]*Entity{e}, &c)
+
+	CheckFiles(repoFS(), cat, &c)
+
+	if !c.HasErrors() {
+		t.Fatal("spec.docs must be a directory")
 	}
 }
 
@@ -2334,7 +2633,7 @@ func TestCheckFilesIgnoresEmptyPaths(t *testing.T) {
 	e := ent("monorepo", "services/ledger-api/service.yaml", "ledger-api", KindService, 4)
 	cat := NewCatalog([]*Entity{e}, &c)
 
-	CheckFiles("../../testdata/monorepo-ok", cat, &c)
+	CheckFiles(repoFS(), cat, &c)
 
 	if c.HasErrors() {
 		t.Errorf("an unset optional path is not a missing file: %+v", c.Diagnostics())
@@ -2342,12 +2641,12 @@ func TestCheckFilesIgnoresEmptyPaths(t *testing.T) {
 }
 ```
 
-- [ ] **Step 7: Run it to verify it fails**
+- [ ] **Step 11: Run it to verify it fails**
 
 Run: `go test ./internal/catalog/ -run TestCheckFiles -v`
 Expected: FAIL — `undefined: CheckFiles`
 
-- [ ] **Step 8: Write `files.go`**
+- [ ] **Step 12: Write `files.go`**
 
 Create `internal/catalog/files.go`:
 
@@ -2356,16 +2655,18 @@ package catalog
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
+	"io/fs"
 
 	"github.com/landsraadhq/landsraad/internal/diag"
 )
 
-// CheckFiles verifies that every path an entity points at actually exists.
-// Empty paths are skipped: these fields are optional, and "not set" is a
-// scorecard question, not a validation error.
-func CheckFiles(root string, cat *Catalog, c *diag.Collector) {
+// CheckFiles verifies that every path an entity points at exists in the given
+// filesystem. Empty paths are skipped: these fields are optional, and "not
+// set" is a scorecard question, not a validation error.
+//
+// Taking an fs.FS rather than a root path is what lets the platform build run
+// this against a fetched remote repo with no change.
+func CheckFiles(fsys fs.FS, cat *Catalog, c *diag.Collector) {
 	for _, e := range cat.Entities {
 		for _, f := range []struct {
 			field string
@@ -2379,8 +2680,7 @@ func CheckFiles(root string, cat *Catalog, c *diag.Collector) {
 			if f.path == "" {
 				continue
 			}
-			full := filepath.Join(root, filepath.FromSlash(f.path))
-			info, err := os.Stat(full)
+			info, err := fs.Stat(fsys, f.path)
 			if err != nil {
 				c.Add(diag.Diagnostic{
 					Severity: diag.SevError,
@@ -2390,7 +2690,7 @@ func CheckFiles(root string, cat *Catalog, c *diag.Collector) {
 					Entity:   e.Metadata.Name,
 					Check:    "missing-file",
 					Message:  fmt.Sprintf("%s points at %q, which does not exist", f.field, f.path),
-					Hint:     "paths are relative to the repository root",
+					Hint:     "paths are relative to the repository root, slash-separated",
 				})
 				continue
 			}
@@ -2410,38 +2710,44 @@ func CheckFiles(root string, cat *Catalog, c *diag.Collector) {
 }
 ```
 
-- [ ] **Step 9: Run everything to verify it passes**
+- [ ] **Step 13: Run everything to verify it passes**
 
 Run: `task test`
 Expected: PASS — every package
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 14: Commit**
 
 ```bash
-git add internal/discover/ internal/catalog/files.go internal/catalog/files_test.go testdata/
-git commit -m "feat: service.yaml discovery and referenced-file checks"
+git add internal/discover/ internal/catalog/load.go internal/catalog/load_test.go internal/catalog/files.go internal/catalog/files_test.go testdata/
+git commit -m "feat: fs.FS-based discovery and loading, pure ParseAll"
 ```
 
 ---
 
 ## Task 10: The `validate` command
 
-Wires the pipeline together behind a CLI, with the output formats and exit codes from the spec.
+The payoff task. `Validate` is an **explicit composition** of the typed stages
+built above — you can read the whole pipeline in twelve lines, the compiler
+refuses an ordering that makes no sense, and `build` in Plan 3 reuses every one
+of these stages against a fetched repo rather than reimplementing them.
+
+`os` appears exactly once in the codebase, in the cobra layer, where
+`os.DirFS(root)` turns a path into the `fs.FS` everything else consumes.
 
 **Files:**
 - Create: `internal/diag/format.go`, `internal/config/repos.go`, `cmd/landsraad/validate.go`
-- Modify: `cmd/landsraad/main.go`
+- Modify: `cmd/landsraad/main.go` — replace with the cobra root
 - Test: `internal/diag/format_test.go`, `cmd/landsraad/validate_test.go`
 - Create: `testdata/monorepo-broken/` fixtures
 
 **Interfaces:**
 - Consumes: everything above.
 - Produces:
-  - `func diag.WriteText(w io.Writer, ds []Diagnostic) error`
-  - `func diag.WriteJSON(w io.Writer, ds []Diagnostic) error`
-  - `func diag.WriteGitHub(w io.Writer, ds []Diagnostic) error`
-  - `func config.LoadRepos(path string, data []byte, c *diag.Collector) *Repos` with `func (*Repos) LocalPatterns() []string`
-  - `func runValidate(root string, out io.Writer, format string) int` — returns the exit code
+  - `type diag.Formatter interface { Name() string; Write(io.Writer, []Diagnostic) error }`
+  - `type diag.Registry`; `func diag.NewRegistry(...Formatter) *Registry`; `func diag.DefaultRegistry() *Registry`; `(*Registry).Get(string) (Formatter, bool)`; `(*Registry).Names() []string`
+  - `type diag.Text`, `diag.JSON`, `diag.GitHub`, `diag.GitLab` — the four formats
+  - `func config.LoadRepos(path string, data []byte, c *diag.Collector) *Repos`; `(*Repos).LocalPatterns() []string`
+  - `func Validate(fsys fs.FS, out io.Writer, f diag.Formatter) int`
 
 - [ ] **Step 1: Add cobra**
 
@@ -2449,7 +2755,7 @@ Wires the pipeline together behind a CLI, with the output formats and exit codes
 go get github.com/spf13/cobra@v1.8.1
 ```
 
-- [ ] **Step 2: Write the failing format test**
+- [ ] **Step 2: Write the failing formatter test**
 
 Create `internal/diag/format_test.go`:
 
@@ -2471,18 +2777,15 @@ var sample = []Diagnostic{
 		Check: "missing-file", Message: `spec.runbook points at "nope.md", which does not exist`},
 }
 
-func TestWriteTextIncludesFileLineAndHint(t *testing.T) {
+func TestTextIncludesFileLineAndHint(t *testing.T) {
 	var buf bytes.Buffer
-	if err := WriteText(&buf, sample); err != nil {
-		t.Fatalf("WriteText: %v", err)
+	if err := (Text{}).Write(&buf, sample); err != nil {
+		t.Fatalf("Write: %v", err)
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"services/a/service.yaml:4",
-		"error",
-		"unknown-owner",
-		`did you mean "team-payments"?`,
-		"services/b/service.yaml:9",
+		"services/a/service.yaml:4", "error", "unknown-owner",
+		`did you mean "team-payments"?`, "services/b/service.yaml:9",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("text output missing %q:\n%s", want, out)
@@ -2490,10 +2793,10 @@ func TestWriteTextIncludesFileLineAndHint(t *testing.T) {
 	}
 }
 
-func TestWriteJSONRoundTrips(t *testing.T) {
+func TestJSONRoundTrips(t *testing.T) {
 	var buf bytes.Buffer
-	if err := WriteJSON(&buf, sample); err != nil {
-		t.Fatalf("WriteJSON: %v", err)
+	if err := (JSON{}).Write(&buf, sample); err != nil {
+		t.Fatalf("Write: %v", err)
 	}
 	var back []Diagnostic
 	if err := json.Unmarshal(buf.Bytes(), &back); err != nil {
@@ -2504,10 +2807,10 @@ func TestWriteJSONRoundTrips(t *testing.T) {
 	}
 }
 
-func TestWriteGitHubUsesAnnotationSyntax(t *testing.T) {
+func TestGitHubUsesAnnotationSyntax(t *testing.T) {
 	var buf bytes.Buffer
-	if err := WriteGitHub(&buf, sample); err != nil {
-		t.Fatalf("WriteGitHub: %v", err)
+	if err := (GitHub{}).Write(&buf, sample); err != nil {
+		t.Fatalf("Write: %v", err)
 	}
 	out := buf.String()
 	if !strings.Contains(out, "::error file=services/a/service.yaml,line=4::") {
@@ -2517,12 +2820,67 @@ func TestWriteGitHubUsesAnnotationSyntax(t *testing.T) {
 		t.Errorf("missing GitHub warning annotation:\n%s", out)
 	}
 }
+
+func TestGitLabEmitsCodeQualityShape(t *testing.T) {
+	var buf bytes.Buffer
+	if err := (GitLab{}).Write(&buf, sample); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	var out []map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("got %d issues, want 2", len(out))
+	}
+	if out[0]["severity"] != "major" {
+		t.Errorf("an error must map to GitLab severity major, got %v", out[0]["severity"])
+	}
+	if out[1]["severity"] != "minor" {
+		t.Errorf("a warning must map to minor, got %v", out[1]["severity"])
+	}
+	if out[0]["fingerprint"] == "" || out[0]["fingerprint"] == nil {
+		t.Error("GitLab requires a fingerprint per issue")
+	}
+	loc, _ := out[0]["location"].(map[string]any)
+	if loc == nil || loc["path"] != "services/a/service.yaml" {
+		t.Errorf("location.path missing or wrong: %v", out[0]["location"])
+	}
+}
+
+// Adding a format must be a new type, never an edit to a switch (spec §3.1).
+func TestRegistryIsOpenForExtension(t *testing.T) {
+	r := DefaultRegistry()
+	for _, name := range []string{"text", "json", "github", "gitlab"} {
+		if _, ok := r.Get(name); !ok {
+			t.Errorf("built-in format %q is not registered", name)
+		}
+	}
+	if _, ok := r.Get("nope"); ok {
+		t.Error("an unregistered name must not resolve")
+	}
+
+	custom := NewRegistry(Text{}, quietFormat{})
+	if _, ok := custom.Get("quiet"); !ok {
+		t.Error("a caller-supplied formatter must be usable without touching diag")
+	}
+	if _, ok := custom.Get("gitlab"); ok {
+		t.Error("a custom registry must contain only what the caller passed")
+	}
+}
+
+type quietFormat struct{}
+
+func (quietFormat) Name() string                            { return "quiet" }
+func (quietFormat) Write(io.Writer, []Diagnostic) error     { return nil }
 ```
+
+Add `"io"` to that file's imports.
 
 - [ ] **Step 3: Run it to verify it fails**
 
-Run: `go test ./internal/diag/ -run TestWrite -v`
-Expected: FAIL — `undefined: WriteText`
+Run: `go test ./internal/diag/ -run 'TestText|TestJSON|TestGitHub|TestGitLab|TestRegistry' -v`
+Expected: FAIL — `undefined: Text`
 
 - [ ] **Step 4: Write `format.go`**
 
@@ -2532,14 +2890,62 @@ Create `internal/diag/format.go`:
 package diag
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
+	"sort"
 	"strings"
 )
 
-// WriteText renders diagnostics for a human terminal, one block each.
-func WriteText(w io.Writer, ds []Diagnostic) error {
+// Formatter renders diagnostics for one destination. Adding a destination is
+// a new type implementing this interface — never an edit to a switch
+// statement (spec §3.1).
+type Formatter interface {
+	Name() string
+	Write(w io.Writer, ds []Diagnostic) error
+}
+
+// Registry maps format names to formatters. It is a value, not package state:
+// a caller can build a registry containing whatever it likes.
+type Registry struct{ m map[string]Formatter }
+
+func NewRegistry(fs ...Formatter) *Registry {
+	r := &Registry{m: make(map[string]Formatter, len(fs))}
+	for _, f := range fs {
+		r.m[f.Name()] = f
+	}
+	return r
+}
+
+func (r *Registry) Get(name string) (Formatter, bool) {
+	f, ok := r.m[name]
+	return f, ok
+}
+
+// Names returns the registered format names, sorted, for help text.
+func (r *Registry) Names() []string {
+	out := make([]string, 0, len(r.m))
+	for n := range r.m {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// DefaultRegistry returns a registry holding the four built-in formats. It
+// returns a fresh value each call; there is no shared global to mutate.
+func DefaultRegistry() *Registry {
+	return NewRegistry(Text{}, JSON{}, GitHub{}, GitLab{})
+}
+
+// Text renders diagnostics for a human terminal.
+type Text struct{}
+
+func (Text) Name() string { return "text" }
+
+func (Text) Write(w io.Writer, ds []Diagnostic) error {
 	for _, d := range ds {
 		if _, err := fmt.Fprintf(w, "%s: %s:%d", d.Severity, d.File, d.Line); err != nil {
 			return err
@@ -2561,8 +2967,12 @@ func WriteText(w io.Writer, ds []Diagnostic) error {
 	return nil
 }
 
-// WriteJSON renders diagnostics as a JSON array for machine consumption.
-func WriteJSON(w io.Writer, ds []Diagnostic) error {
+// JSON renders diagnostics as an array for machine consumption.
+type JSON struct{}
+
+func (JSON) Name() string { return "json" }
+
+func (JSON) Write(w io.Writer, ds []Diagnostic) error {
 	if ds == nil {
 		ds = []Diagnostic{}
 	}
@@ -2571,9 +2981,13 @@ func WriteJSON(w io.Writer, ds []Diagnostic) error {
 	return enc.Encode(ds)
 }
 
-// WriteGitHub renders GitHub Actions workflow commands so problems appear as
+// GitHub renders GitHub Actions workflow commands, so problems appear as
 // inline annotations on the pull request.
-func WriteGitHub(w io.Writer, ds []Diagnostic) error {
+type GitHub struct{}
+
+func (GitHub) Name() string { return "github" }
+
+func (GitHub) Write(w io.Writer, ds []Diagnostic) error {
 	for _, d := range ds {
 		level := "notice"
 		switch d.Severity {
@@ -2586,7 +3000,7 @@ func WriteGitHub(w io.Writer, ds []Diagnostic) error {
 		if d.Hint != "" {
 			msg += " (" + d.Hint + ")"
 		}
-		// Newlines and commas would break the annotation syntax.
+		// A newline would terminate the workflow command early.
 		msg = strings.ReplaceAll(msg, "\n", " ")
 		if _, err := fmt.Fprintf(w, "::%s file=%s,line=%d::%s\n", level, d.File, d.Line, msg); err != nil {
 			return err
@@ -2594,12 +3008,59 @@ func WriteGitHub(w io.Writer, ds []Diagnostic) error {
 	}
 	return nil
 }
+
+// GitLab renders GitLab Code Quality report JSON.
+type GitLab struct{}
+
+func (GitLab) Name() string { return "gitlab" }
+
+func (GitLab) Write(w io.Writer, ds []Diagnostic) error {
+	type qlines struct {
+		Begin int `json:"begin"`
+	}
+	type qlocation struct {
+		Path  string `json:"path"`
+		Lines qlines `json:"lines"`
+	}
+	type qissue struct {
+		Description string    `json:"description"`
+		CheckName   string    `json:"check_name"`
+		Fingerprint string    `json:"fingerprint"`
+		Severity    string    `json:"severity"`
+		Location    qlocation `json:"location"`
+	}
+
+	out := make([]qissue, 0, len(ds))
+	for _, d := range ds {
+		severity := "info"
+		switch d.Severity {
+		case SevError:
+			severity = "major"
+		case SevWarn:
+			severity = "minor"
+		}
+		// GitLab dedupes by fingerprint across pipeline runs, so it must be
+		// stable for the same problem in the same place.
+		h := fnv.New64a()
+		fmt.Fprintf(h, "%s:%d:%s:%s", d.File, d.Line, d.Check, d.Message)
+		out = append(out, qissue{
+			Description: d.Message,
+			CheckName:   d.Check,
+			Fingerprint: hex.EncodeToString(h.Sum(nil)),
+			Severity:    severity,
+			Location:    qlocation{Path: d.File, Lines: qlines{Begin: d.Line}},
+		})
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
+}
 ```
 
 - [ ] **Step 5: Run it to verify it passes**
 
 Run: `go test ./internal/diag/ -v`
-Expected: PASS
+Expected: PASS — every test in the package
 
 - [ ] **Step 6: Write `repos.go`**
 
@@ -2627,6 +3088,9 @@ type Repos struct {
 	Repos []Repo `yaml:"repos"`
 }
 
+// DefaultPatterns is where entities live when repos.yaml says nothing.
+var DefaultPatterns = []string{"services/*", "workers/*", "libs/*"}
+
 // LoadRepos reads repos.yaml, always returning a usable value.
 func LoadRepos(path string, data []byte, c *diag.Collector) *Repos {
 	r := &Repos{}
@@ -2640,12 +3104,12 @@ func LoadRepos(path string, data []byte, c *diag.Collector) *Repos {
 	return r
 }
 
-// LocalPatterns returns the glob patterns for the first repo entry, which is
-// by convention the repository the command is running in. `landsraad validate`
+// LocalPatterns returns the glob patterns for the first repo entry, which by
+// convention is the repository the command is running in. `landsraad validate`
 // is hermetic and never fetches the others; that is the platform build's job.
 func (r *Repos) LocalPatterns() []string {
-	if len(r.Repos) == 0 {
-		return []string{"services/*", "workers/*", "libs/*"}
+	if len(r.Repos) == 0 || len(r.Repos[0].Paths) == 0 {
+		return DefaultPatterns
 	}
 	return r.Repos[0].Paths
 }
@@ -2710,36 +3174,38 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
+	"testing/fstest"
+
+	"github.com/landsraadhq/landsraad/internal/diag"
 )
 
-func TestRunValidateOnGoodRepoExitsZero(t *testing.T) {
+func TestValidateOnGoodRepoExitsZero(t *testing.T) {
 	var out bytes.Buffer
-	code := runValidate("../../testdata/monorepo-ok", &out, "text")
+	code := Validate(os.DirFS("../../testdata/monorepo-ok"), &out, diag.Text{})
 	if code != exitOK {
 		t.Errorf("exit code = %d, want %d\noutput:\n%s", code, exitOK, out.String())
 	}
 }
 
-func TestRunValidateOnBrokenRepoExitsTwo(t *testing.T) {
+func TestValidateOnBrokenRepoExitsTwo(t *testing.T) {
 	var out bytes.Buffer
-	code := runValidate("../../testdata/monorepo-broken", &out, "text")
-	if code != exitValidation {
+	if code := Validate(os.DirFS("../../testdata/monorepo-broken"), &out, diag.Text{}); code != exitValidation {
 		t.Errorf("exit code = %d, want %d", code, exitValidation)
 	}
 }
 
 // The point of the collector: one run reports every problem, not the first.
-func TestRunValidateReportsAllProblemsAtOnce(t *testing.T) {
+func TestValidateReportsAllProblemsAtOnce(t *testing.T) {
 	var out bytes.Buffer
-	runValidate("../../testdata/monorepo-broken", &out, "text")
+	Validate(os.DirFS("../../testdata/monorepo-broken"), &out, diag.Text{})
 	got := out.String()
-
 	for _, want := range []string{
-		"unknown-owner",     // owner: team-payment
-		"duplicate-name",    // two entities named api
-		"missing-file",      // runbook does not exist
+		"unknown-owner",  // owner: team-payment
+		"duplicate-name", // two entities named api
+		"missing-file",   // runbook does not exist
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("a single run must report %q; output was:\n%s", want, got)
@@ -2748,18 +3214,51 @@ func TestRunValidateReportsAllProblemsAtOnce(t *testing.T) {
 }
 
 // validate is hermetic: a reference to another repo is not an error here.
-func TestRunValidateToleratesCrossRepoRefs(t *testing.T) {
+func TestValidateToleratesCrossRepoRefs(t *testing.T) {
 	var out bytes.Buffer
-	runValidate("../../testdata/monorepo-ok", &out, "text")
+	Validate(os.DirFS("../../testdata/monorepo-ok"), &out, diag.Text{})
 	if strings.Contains(out.String(), "dangling-ref") {
-		t.Errorf("validate runs on one repo and must not report cross-repo refs:\n%s", out.String())
+		t.Errorf("validate sees one repo and must not report cross-repo refs:\n%s", out.String())
 	}
 }
 
-func TestRunValidateMissingRootExitsUsage(t *testing.T) {
+// The whole pipeline runs against an in-memory filesystem with no disk at all.
+// This is the fs.FS seam from spec §3.1, asserted rather than assumed — and it
+// is what lets Plan 3 point these same stages at a fetched remote repo.
+func TestValidateRunsEntirelyInMemory(t *testing.T) {
+	repo := fstest.MapFS{
+		"teams.yaml": {Data: []byte("teams:\n  - name: team-a\n    members: [alice]\n")},
+		"services/api/service.yaml": {Data: []byte(
+			"apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: api\n" +
+				"  owner: team-a\n  tier: 1\n  lifecycle: production\nspec:\n  language: go\n")},
+	}
 	var out bytes.Buffer
-	if code := runValidate("../../testdata/does-not-exist", &out, "text"); code != exitUsage {
-		t.Errorf("exit code = %d, want %d for a missing root", code, exitUsage)
+	if code := Validate(repo, &out, diag.Text{}); code != exitOK {
+		t.Errorf("exit code = %d, want %d\noutput:\n%s", code, exitOK, out.String())
+	}
+}
+
+func TestValidateRequiresTeamsFile(t *testing.T) {
+	repo := fstest.MapFS{
+		"services/api/service.yaml": {Data: []byte(
+			"apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: api\n" +
+				"  owner: team-a\n  tier: 1\n  lifecycle: production\n")},
+	}
+	var out bytes.Buffer
+	if code := Validate(repo, &out, diag.Text{}); code != exitValidation {
+		t.Errorf("a missing teams.yaml must fail validation, got exit %d", code)
+	}
+	if !strings.Contains(out.String(), "teams.yaml") {
+		t.Errorf("the diagnostic must name teams.yaml:\n%s", out.String())
+	}
+}
+
+// Any Formatter works, because Validate depends on the interface, not a switch.
+func TestValidateAcceptsAnyFormatter(t *testing.T) {
+	var out bytes.Buffer
+	Validate(os.DirFS("../../testdata/monorepo-broken"), &out, diag.JSON{})
+	if !strings.HasPrefix(strings.TrimSpace(out.String()), "[") {
+		t.Errorf("JSON formatter must produce a JSON array:\n%s", out.String())
 	}
 }
 ```
@@ -2767,7 +3266,7 @@ func TestRunValidateMissingRootExitsUsage(t *testing.T) {
 - [ ] **Step 9: Run it to verify it fails**
 
 Run: `go test ./cmd/landsraad/ -v`
-Expected: FAIL — `undefined: runValidate`
+Expected: FAIL — `undefined: Validate`
 
 - [ ] **Step 10: Write `validate.go`**
 
@@ -2779,8 +3278,8 @@ package main
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -2791,7 +3290,107 @@ import (
 	"github.com/landsraadhq/landsraad/internal/schema"
 )
 
-func newValidateCmd() *cobra.Command {
+// Validate is the hermetic pipeline: an explicit composition of the typed
+// stages, in the only order the types permit. Compare spec §7 — this function
+// is that table, and nothing more.
+//
+// It takes an fs.FS rather than a path, so the same pipeline runs against a
+// local checkout, a fetched remote repo, or a test fixture in memory.
+func Validate(fsys fs.FS, out io.Writer, f diag.Formatter) int {
+	var c diag.Collector
+
+	// 1. discover — which files are we looking at
+	paths, err := discover.Find(fsys, patternsFor(fsys, &c))
+	if err != nil {
+		fmt.Fprintf(out, "error: %v\n", err)
+		return exitUsage
+	}
+	files := discover.Load(fsys, paths, &c)
+
+	// 2. schema — structural validation, the precise messages
+	validator, err := schema.Default()
+	if err != nil {
+		fmt.Fprintf(out, "error: %v\n", err)
+		return exitUsage
+	}
+	for _, file := range files {
+		validator.Validate("", file.Path, file.Data, &c)
+	}
+
+	// 3. parse and merge — pure, no IO
+	cat := catalog.NewCatalog(catalog.ParseAll(files, &c), &c)
+
+	// 4. resolve — LocalOnly: this repo cannot see entities defined elsewhere
+	cat.Resolve(catalog.LocalOnly, &c)
+	reportCycles(cat, &c)
+
+	// 5. semantic checks
+	checkOwners(fsys, cat, &c)
+	catalog.CheckFiles(fsys, cat, &c)
+
+	// 6. report
+	if err := f.Write(out, c.Diagnostics()); err != nil {
+		fmt.Fprintf(out, "error: cannot write output: %v\n", err)
+		return exitUsage
+	}
+	if c.HasErrors() {
+		return exitValidation
+	}
+	fmt.Fprintf(out, "ok: %d entities validated, no problems found\n", len(cat.Entities))
+	return exitOK
+}
+
+// patternsFor reads repos.yaml if present, falling back to the conventional
+// layout. A repo without repos.yaml still works out of the box.
+func patternsFor(fsys fs.FS, c *diag.Collector) []string {
+	data, err := fs.ReadFile(fsys, "repos.yaml")
+	if err != nil {
+		return config.DefaultPatterns
+	}
+	return config.LoadRepos("repos.yaml", data, c).LocalPatterns()
+}
+
+func checkOwners(fsys fs.FS, cat *catalog.Catalog, c *diag.Collector) {
+	data, err := fs.ReadFile(fsys, "teams.yaml")
+	if err != nil {
+		c.Add(diag.Diagnostic{
+			Severity: diag.SevError, File: "teams.yaml", Line: 1,
+			Check:   "missing-teams",
+			Message: "teams.yaml not found at the repository root",
+			Hint:    "every entity's owner must resolve to a team defined there",
+		})
+		return
+	}
+	config.LoadTeams("teams.yaml", data, c).ValidateOwners(cat, c)
+}
+
+func reportCycles(cat *catalog.Catalog, c *diag.Collector) {
+	for _, cyc := range cat.Cycles() {
+		d := diag.Diagnostic{
+			Severity: diag.SevError, Line: 1,
+			Check:   "dependency-cycle",
+			Message: fmt.Sprintf("dependency cycle: %s", joinRefs(cyc)),
+			Hint:    "break the loop, or model one direction as a shared library",
+		}
+		if e, ok := cat.Lookup(cyc[0]); ok {
+			d.File, d.Line, d.Entity = e.SourcePath, e.NameLine, e.Metadata.Name
+		}
+		c.Add(d)
+	}
+}
+
+func joinRefs(rs []catalog.Ref) string {
+	if len(rs) == 0 {
+		return ""
+	}
+	out := ""
+	for _, r := range rs {
+		out += r.String() + " -> "
+	}
+	return out + rs[0].String()
+}
+
+func newValidateCmd(reg *diag.Registry) *cobra.Command {
 	var format string
 	cmd := &cobra.Command{
 		Use:   "validate [root]",
@@ -2805,135 +3404,40 @@ func newValidateCmd() *cobra.Command {
 			if len(args) == 1 {
 				root = args[0]
 			}
-			code := runValidate(root, cmd.OutOrStdout(), format)
-			if code != exitOK {
-				// Suppress cobra's usage dump; the diagnostics are the message.
-				cmd.SilenceUsage = true
-				cmd.SilenceErrors = true
+			info, err := os.Stat(root)
+			if err != nil || !info.IsDir() {
+				return fmt.Errorf("%s is not a directory", root)
+			}
+			name := format
+			if name == "auto" {
+				name = "text"
+				if os.Getenv("GITHUB_ACTIONS") == "true" {
+					name = "github"
+				} else if os.Getenv("GITLAB_CI") == "true" {
+					name = "gitlab"
+				}
+			}
+			f, ok := reg.Get(name)
+			if !ok {
+				return fmt.Errorf("unknown format %q, want one of %v", name, reg.Names())
+			}
+			cmd.SilenceUsage = true
+			// os.DirFS is the single place this program touches os for reading.
+			if code := Validate(os.DirFS(root), cmd.OutOrStdout(), f); code != exitOK {
 				os.Exit(code)
 			}
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&format, "format", "auto", "output format: auto, text, json, github")
+	cmd.Flags().StringVar(&format, "format", "auto",
+		"output format: auto, "+strings.Join(reg.Names(), ", "))
 	return cmd
-}
-
-// runValidate executes the hermetic pipeline and returns the process exit code.
-func runValidate(root string, out io.Writer, format string) int {
-	if info, err := os.Stat(root); err != nil || !info.IsDir() {
-		fmt.Fprintf(out, "error: %s is not a directory\n", root)
-		return exitUsage
-	}
-
-	var c diag.Collector
-
-	// repos.yaml is optional; without it the conventional paths are used.
-	patterns := (&config.Repos{}).LocalPatterns()
-	if data, err := os.ReadFile(filepath.Join(root, "repos.yaml")); err == nil {
-		patterns = config.LoadRepos("repos.yaml", data, &c).LocalPatterns()
-	}
-
-	paths, err := discover.Find(root, patterns)
-	if err != nil {
-		fmt.Fprintf(out, "error: cannot search for %s files: %v\n", discover.Filename, err)
-		return exitUsage
-	}
-
-	var entities []*catalog.Entity
-	for _, rel := range paths {
-		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
-		if err != nil {
-			c.Add(diag.Diagnostic{
-				Severity: diag.SevError, File: rel, Line: 1,
-				Check: "unreadable", Message: fmt.Sprintf("cannot read file: %v", err),
-			})
-			continue
-		}
-		// Schema first: it produces the precise structural messages.
-		schema.Validate("", rel, data, &c)
-		if e, ok := catalog.ParseFile("", rel, data, &c); ok {
-			entities = append(entities, e)
-		}
-	}
-
-	cat := catalog.NewCatalog(entities, &c)
-	// local=true: this repo cannot see entities defined in other repos.
-	cat.Resolve(true, &c)
-
-	for _, cyc := range cat.Cycles() {
-		e, _ := cat.Lookup(cyc[0])
-		d := diag.Diagnostic{
-			Severity: diag.SevError, Line: 1,
-			Check: "dependency-cycle", Message: fmt.Sprintf("dependency cycle: %s", joinRefs(cyc)),
-			Hint: "break the loop, or model one direction as a shared library",
-		}
-		if e != nil {
-			d.File, d.Line, d.Entity = e.SourcePath, e.NameLine, e.Metadata.Name
-		}
-		c.Add(d)
-	}
-
-	if data, err := os.ReadFile(filepath.Join(root, "teams.yaml")); err == nil {
-		config.LoadTeams("teams.yaml", data, &c).ValidateOwners(cat, &c)
-	} else {
-		c.Add(diag.Diagnostic{
-			Severity: diag.SevError, File: "teams.yaml", Line: 1,
-			Check:   "missing-teams",
-			Message: "teams.yaml not found at the repository root",
-			Hint:    "every entity's owner must resolve to a team defined there",
-		})
-	}
-
-	catalog.CheckFiles(root, cat, &c)
-
-	ds := c.Diagnostics()
-	if err := write(out, ds, format); err != nil {
-		fmt.Fprintf(out, "error: cannot write output: %v\n", err)
-		return exitUsage
-	}
-
-	if c.HasErrors() {
-		return exitValidation
-	}
-	fmt.Fprintf(out, "ok: %d entities validated, no problems found\n", len(cat.Entities))
-	return exitOK
-}
-
-func write(out io.Writer, ds []diag.Diagnostic, format string) error {
-	if format == "auto" {
-		if os.Getenv("GITHUB_ACTIONS") == "true" {
-			format = "github"
-		} else {
-			format = "text"
-		}
-	}
-	switch format {
-	case "json":
-		return diag.WriteJSON(out, ds)
-	case "github":
-		return diag.WriteGitHub(out, ds)
-	default:
-		return diag.WriteText(out, ds)
-	}
-}
-
-func joinRefs(rs []catalog.Ref) string {
-	out := ""
-	for i, r := range rs {
-		if i > 0 {
-			out += " -> "
-		}
-		out += r.String()
-	}
-	if len(rs) > 0 {
-		out += " -> " + rs[0].String()
-	}
-	return out
 }
 ```
 
-- [ ] **Step 11: Rewrite `main.go` to use cobra**
+Add `"strings"` to that file's imports.
+
+- [ ] **Step 11: Rewrite `main.go`**
 
 Replace `cmd/landsraad/main.go`:
 
@@ -2946,6 +3450,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/schema"
 )
 
@@ -2960,20 +3465,22 @@ const (
 )
 
 func main() {
+	// The registry is built here and injected. Nothing registers itself.
+	reg := diag.DefaultRegistry()
+
 	root := &cobra.Command{
-		Use:           "landsraad",
-		Short:         "A lightweight developer portal for small teams",
-		SilenceUsage:  false,
-		SilenceErrors: false,
+		Use:   "landsraad",
+		Short: "A lightweight developer portal for small teams",
 	}
-	root.AddCommand(newValidateCmd())
+	root.AddCommand(newValidateCmd(reg))
 	root.AddCommand(&cobra.Command{
 		Use:   "schema",
 		Short: "Print the JSON Schema for service.yaml",
 		Long: "Print the embedded JSON Schema. Redirect it to schema/service.schema.json " +
 			"and point yaml-language-server at that file for editor autocompletion.",
-		Run: func(cmd *cobra.Command, args []string) {
-			cmd.OutOrStdout().Write(schema.Raw)
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, err := cmd.OutOrStdout().Write(schema.Raw)
+			return err
 		},
 	})
 	root.AddCommand(&cobra.Command{
@@ -2989,31 +3496,56 @@ func main() {
 }
 ```
 
-- [ ] **Step 12: Run everything to verify it passes**
+- [ ] **Step 12: Run everything**
 
 Run: `task ci`
-Expected: PASS — lint clean, every test green including the five command tests
+Expected: PASS — lint clean, every test green
 
-- [ ] **Step 13: Verify by hand**
+- [ ] **Step 13: Prove the `os` boundary holds**
+
+```bash
+grep -rn '"os"' internal/ | grep -v _test.go
+```
+
+Expected: **no output.** `os` appears only in `cmd/` and in tests. If any
+`internal/` package imports `os`, the fs.FS seam is already leaking and Plan 3
+will pay for it.
+
+- [ ] **Step 14: Verify by hand**
 
 ```bash
 task build
 ./bin/landsraad validate testdata/monorepo-ok
 ./bin/landsraad validate testdata/monorepo-broken; echo "exit=$?"
+./bin/landsraad validate testdata/monorepo-broken --format gitlab | head -20
 ```
 
-Expected: the first prints `ok: 3 entities validated, no problems found`. The second lists the unknown owner with a `did you mean "team-payments"?` hint, the duplicate name naming both files, and the missing runbook — then `exit=2`.
+Expected: the first prints `ok: 3 entities validated, no problems found`. The
+second lists the unknown owner with a `did you mean "team-payments"?` hint, the
+duplicate name naming both files, and the missing runbook — then `exit=2`. The
+third prints Code Quality JSON.
 
-- [ ] **Step 14: Commit**
+- [ ] **Step 15: Commit**
 
 ```bash
 git add cmd/landsraad/ internal/diag/format.go internal/diag/format_test.go internal/config/repos.go testdata/
-git commit -m "feat: landsraad validate command with text, json and CI output"
+git commit -m "feat: validate command composed from typed stages, four output formats"
 ```
 
 ---
 
 ## Definition of done
+
+**Composition (spec §3.1) — these are pass/fail, not aspirations:**
+
+- [ ] `grep -rn '"os"' internal/ | grep -v _test.go` returns **nothing**
+- [ ] `grep -rn 'sync.Once\|^func init(' internal/` returns **nothing** — no package-level mutable state
+- [ ] Every stage function takes its input type and a `*diag.Collector`, and returns its output type. None takes a root path string.
+- [ ] `Validate` reads top to bottom as the stage list in spec §7, with no branching on where the files came from
+- [ ] `catalog.ParseAll` does no IO — the package imports `io/fs` only in `files.go`
+- [ ] A new output format can be added without editing any existing file
+
+**Function:**
 
 - [ ] `task ci` passes from a clean checkout
 - [ ] `landsraad validate testdata/monorepo-ok` exits 0
@@ -3022,6 +3554,8 @@ git commit -m "feat: landsraad validate command with text, json and CI output"
 - [ ] `task schema` leaves `schema/service.schema.json` byte-identical to the committed copy
 - [ ] No test reaches the network
 - [ ] `go.mod` requires exactly: `yaml.v3`, `jsonschema/v6`, `cobra`
+- [ ] The full pipeline runs against `fstest.MapFS` with no disk access (`TestValidateRunsEntirelyInMemory`)
+- [ ] All four output formats work: text, json, github, gitlab
 
 ## What this plan deliberately leaves out
 
