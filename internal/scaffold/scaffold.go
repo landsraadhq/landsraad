@@ -9,28 +9,23 @@
 // them on disk. Deciding it here, with one producer, is cheaper than
 // discovering it with three.
 //
-// File is deliberately local. Plan 2's generators will produce the same shape,
-// and *that* is the moment to promote it to a shared type: two examples are
-// not three, and discover.File is the read side, documented as the bytes a
-// catalog file came from.
+// File was local to this package in Plan 1, pending a second producer. Plan 2's
+// generators are that producer, so the type now lives in internal/emit and
+// cmd/ runs one write loop for all of them.
 package scaffold
 
-import "github.com/landsraadhq/landsraad/internal/schema"
-
-// File is one file to write: a slash-separated path relative to the target
-// root, and its contents.
-type File struct {
-	Path string
-	Data []byte
-}
+import (
+	"github.com/landsraadhq/landsraad/internal/emit"
+	"github.com/landsraadhq/landsraad/internal/schema"
+)
 
 // Files returns the starter catalog, in the order it should be created.
 //
 // Every file is valid on the first run: the acceptance test for init is that
 // `landsraad validate` passes immediately afterwards. Pure, so that property
 // is checked in memory rather than against a temporary directory.
-func Files() []File {
-	return []File{
+func Files() []emit.File {
+	return []emit.File{
 		{Path: "teams.yaml", Data: []byte(teamsYAML)},
 		{Path: "repos.yaml", Data: []byte(reposYAML)},
 		// The modeline in service.yaml below points here. Writing it is what
