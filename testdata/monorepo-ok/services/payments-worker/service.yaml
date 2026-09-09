@@ -1,0 +1,17 @@
+apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: payments-worker
+  description: Consumes payment events and settles them.
+  owner: team-payments
+  tier: 1
+  lifecycle: production
+  tags: [go, kafka]
+spec:
+  language: go
+  path: services/payments-worker
+  docs: services/payments-worker/docs
+  runbook: services/payments-worker/docs/runbook.md
+  dependsOn:
+    - topic:payments.events
+    - service:ledger-api

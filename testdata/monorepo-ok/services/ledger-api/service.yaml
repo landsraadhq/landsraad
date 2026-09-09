@@ -1,0 +1,11 @@
+apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: ledger-api
+  owner: team-payments
+  tier: 1
+  lifecycle: production
+spec:
+  language: go
+  path: services/ledger-api
+  docs: services/ledger-api/docs

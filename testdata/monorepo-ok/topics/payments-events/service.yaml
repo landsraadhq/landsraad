@@ -1,0 +1,9 @@
+apiVersion: landsraad/v1
+kind: Topic
+metadata:
+  name: payments.events
+  owner: team-payments
+  tier: 1
+  lifecycle: production
+spec:
+  path: topics/payments-events
