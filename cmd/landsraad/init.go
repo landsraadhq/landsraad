@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/landsraadhq/landsraad/internal/diag"
+	"github.com/landsraadhq/landsraad/internal/schema"
 )
 
 // diagText exists so tests can name the default formatter without importing
@@ -32,6 +33,10 @@ repos:
   - url: https://github.com/your-org/your-repo
     paths: [services/*, workers/*, libs/*]
 `},
+	// The modeline in service.yaml below points here. Writing it is what
+	// makes editor autocompletion work in a fresh repository without a second
+	// manual step; `landsraad schema` regenerates it after an upgrade.
+	{"schema/service.schema.json", string(schema.Raw)},
 	{"services/example/service.yaml", `# yaml-language-server: $schema=../../schema/service.schema.json
 apiVersion: landsraad/v1
 kind: Service
@@ -62,8 +67,8 @@ func runInit(root string, out io.Writer) error {
 		}
 		fmt.Fprintf(out, "  created %s\n", f.path)
 	}
-	fmt.Fprintf(out, "\nNext: run `landsraad schema > schema/service.schema.json` for editor\n"+
-		"autocompletion, then `landsraad validate`.\n")
+	fmt.Fprintf(out, "\nNext: run `landsraad validate`. Editor autocompletion is already wired up:\n"+
+		"service.yaml points at schema/service.schema.json, written above.\n")
 	return nil
 }
 

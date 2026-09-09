@@ -130,12 +130,15 @@ a problem in the catalog — script off the exit code, not the output.
 
 ## Editor autocompletion
 
+`landsraad init` writes `schema/service.schema.json` — the schema the binary
+validates against — so this works in a fresh repository with no extra step.
+After upgrading landsraad, refresh it:
+
 ```sh
-task schema   # or: go run ./cmd/landsraad schema > schema/service.schema.json
+landsraad schema > schema/service.schema.json
 ```
 
-writes the JSON Schema landsraad validates against. Each file `init`
-generates already carries:
+Each file `init` generates already carries:
 
 ```yaml
 # yaml-language-server: $schema=../../schema/service.schema.json
