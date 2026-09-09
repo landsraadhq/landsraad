@@ -109,18 +109,34 @@ func patternsFor(fsys fs.FS, c *diag.Collector) []string {
 		// Not an error — but not silent either. Spec §12: degraded mode must
 		// be visible in the artifact, not only in a log. Compare checkOwners,
 		// which errors loudly for a missing teams.yaml.
-		c.Add(diag.Diagnostic{
-			Severity: diag.SevInfo,
-			File:     "repos.yaml",
-			Line:     1,
-			Check:    "default-patterns",
-			Message: fmt.Sprintf("no repos.yaml found; using default paths (%s)",
-				strings.Join(config.DefaultPatterns, ", ")),
-			Hint: "add repos.yaml if your services live elsewhere",
-		})
+		c.Add(defaultPatternsNote("no repos.yaml found"))
 		return config.DefaultPatterns
 	}
-	return config.LoadRepos("repos.yaml", data, c).LocalPatterns()
+	r := config.LoadRepos("repos.yaml", data, c)
+	patterns, defaulted := r.LocalPatterns()
+	// A file that failed to parse has already produced a loud error, and its
+	// fallback to defaults is a consequence of that error, not a separate
+	// thing to report: two diagnostics for one cause is noise.
+	if defaulted && r.Loaded() {
+		// Present, parsed, and lists no paths. Same degraded mode as an absent
+		// file, and it used to be the half of it nobody was told about.
+		c.Add(defaultPatternsNote("repos.yaml lists no paths"))
+	}
+	return patterns
+}
+
+// defaultPatternsNote is the one place the conventional-layout fallback is
+// announced, so the two ways of reaching it cannot drift apart.
+func defaultPatternsNote(reason string) diag.Diagnostic {
+	return diag.Diagnostic{
+		Severity: diag.SevInfo,
+		File:     "repos.yaml",
+		Line:     1,
+		Check:    "default-patterns",
+		Message: fmt.Sprintf("%s; using default paths (%s)",
+			reason, strings.Join(config.DefaultPatterns, ", ")),
+		Hint: "add repos.yaml if your services live elsewhere",
+	}
 }
 
 func checkOwners(fsys fs.FS, cat *catalog.Catalog, c *diag.Collector) {

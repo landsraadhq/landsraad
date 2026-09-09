@@ -442,3 +442,40 @@ metadata:
 		t.Errorf("a file whose second half was never validated must not report a clean pass:\n%s", errOut)
 	}
 }
+
+// The present-but-empty half of the degraded mode, which used to be silent
+// while the absent-file half announced itself.
+func TestPatternsForAnnouncesDefaultsWhenReposYAMLListsNoPaths(t *testing.T) {
+	fsys := fstest.MapFS{
+		"repos.yaml": {Data: []byte("repos:\n  - url: https://x/y\n    paths: []\n")},
+	}
+	var c diag.Collector
+	got := patternsFor(fsys, &c)
+	if len(got) != len(config.DefaultPatterns) {
+		t.Fatalf("patternsFor = %v, want DefaultPatterns %v", got, config.DefaultPatterns)
+	}
+	if c.Len() != 1 {
+		t.Fatalf("expected exactly one diagnostic, got %d: %+v", c.Len(), c.Diagnostics())
+	}
+	d := c.Diagnostics()[0]
+	if d.Check != "default-patterns" {
+		t.Errorf("Check = %q, want %q", d.Check, "default-patterns")
+	}
+	want := "repos.yaml lists no paths; using default paths (., services/*, workers/*, libs/*, topics/*)"
+	if d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+}
+
+// A malformed repos.yaml gets exactly one diagnostic: the parse error. The
+// fallback to DefaultPatterns is a consequence of it, not a second finding.
+func TestPatternsForDoesNotStackANoteOnAParseError(t *testing.T) {
+	fsys := fstest.MapFS{
+		"repos.yaml": {Data: []byte("kind: Service\n  bad: indent\n")},
+	}
+	var c diag.Collector
+	patternsFor(fsys, &c)
+	if c.Len() != 1 {
+		t.Fatalf("expected exactly one diagnostic for one cause, got %d: %+v", c.Len(), c.Diagnostics())
+	}
+}

@@ -16,7 +16,10 @@ func TestLoadReposParsesEntries(t *testing.T) {
 	if len(r.Repos) != 1 || r.Repos[0].URL != "https://github.com/org/monorepo" {
 		t.Fatalf("Repos not read: %+v", r.Repos)
 	}
-	got := r.LocalPatterns()
+	got, defaulted := r.LocalPatterns()
+	if defaulted {
+		t.Error("LocalPatterns() reported a fallback for a file that lists paths")
+	}
 	want := []string{"services/*", "topics/*"}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("LocalPatterns() = %v, want %v", got, want)
@@ -64,7 +67,7 @@ func TestLoadReposReportsMalformedYAML(t *testing.T) {
 	// callers need no nil checks — and that value must fall back to the
 	// conventional layout so the rest of the run can still say something
 	// useful about the repo, rather than aborting outright.
-	if got := r.LocalPatterns(); len(got) != len(DefaultPatterns) {
+	if got, _ := r.LocalPatterns(); len(got) != len(DefaultPatterns) {
 		t.Errorf("LocalPatterns() after a parse failure = %v, want DefaultPatterns %v", got, DefaultPatterns)
 	}
 }
@@ -75,7 +78,10 @@ func TestLocalPatternsFallsBackToDefaultsWhenEmpty(t *testing.T) {
 	if c.HasErrors() {
 		t.Fatalf("an empty repos list is not an error: %+v", c.Diagnostics())
 	}
-	got := r.LocalPatterns()
+	got, defaulted := r.LocalPatterns()
+	if !defaulted {
+		t.Error("LocalPatterns() fell back to defaults but did not say so")
+	}
 	if len(got) != len(DefaultPatterns) {
 		t.Fatalf("LocalPatterns() = %v, want DefaultPatterns %v", got, DefaultPatterns)
 	}
@@ -118,7 +124,7 @@ func TestLoadReposReportsAScalarWhereTheRepoListBelongs(t *testing.T) {
 	if d.Hint != reposParseHint {
 		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, reposParseHint)
 	}
-	if got := r.LocalPatterns(); len(got) != len(DefaultPatterns) {
+	if got, _ := r.LocalPatterns(); len(got) != len(DefaultPatterns) {
 		t.Errorf("LocalPatterns() after a parse failure = %v, want DefaultPatterns %v", got, DefaultPatterns)
 	}
 }
@@ -138,5 +144,63 @@ func TestLoadReposReportsTheLineOfAScalarPaths(t *testing.T) {
 	want := `expected a list of strings, found a string ("services/*")`
 	if d.Message != want {
 		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+}
+
+// Finding 1, the highest-cost defect the pre-merge audit found: `path:` for
+// `paths:` silently dropped to DefaultPatterns, which happen to cover
+// services/*, so a repo whose services live in apps/ validated one directory,
+// reported "no problems found", and exited 0 having never opened the other.
+//
+// teams.yaml already rejects unknown keys, and its reason (teams.go) is
+// strictly stronger here: repos.yaml decides what the tool looks at at all.
+func TestLoadReposRejectsAnUnknownKey(t *testing.T) {
+	var c diag.Collector
+	LoadRepos("repos.yaml", []byte("repos:\n  - url: https://x/y\n    path: [apps/*]\n"), &c)
+	if !c.HasErrors() {
+		t.Fatal("an unknown key in repos.yaml must be an error, not a silent fallback")
+	}
+	d := c.Diagnostics()[0]
+	if d.Check != "repos-parse" {
+		t.Errorf("Check = %q, want %q", d.Check, "repos-parse")
+	}
+	if d.Line != 3 {
+		t.Errorf("Line = %d, want 3 — the line the unknown key is on", d.Line)
+	}
+	want := `unknown key "path" in repos.yaml`
+	if d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+	if d.Hint != reposParseHint {
+		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, reposParseHint)
+	}
+}
+
+// Every rejected key is reported in one run, so fixing them is not a
+// one-per-rerun crawl.
+func TestLoadReposReportsEveryUnknownKey(t *testing.T) {
+	var c diag.Collector
+	LoadRepos("repos.yaml", []byte("repos:\n  - url: https://x/y\n    path: [a]\n    branch: main\n"), &c)
+	if c.Len() != 2 {
+		t.Fatalf("expected one diagnostic per rejected key, got %d: %+v", c.Len(), c.Diagnostics())
+	}
+}
+
+// A repos.yaml that exists but lists no paths used to fall back to
+// DefaultPatterns emitting nothing, while an absent repos.yaml announced it.
+// Same degraded mode, half of it invisible. The second return value is what
+// makes the caller unable to forget.
+func TestLocalPatternsSaysWhenItDefaulted(t *testing.T) {
+	var c diag.Collector
+	r := LoadRepos("repos.yaml", []byte("repos:\n  - url: https://x/y\n    paths: []\n"), &c)
+	if c.HasErrors() {
+		t.Fatalf("an empty paths list is not a parse error: %+v", c.Diagnostics())
+	}
+	got, defaulted := r.LocalPatterns()
+	if !defaulted {
+		t.Fatal("LocalPatterns() used DefaultPatterns without reporting it")
+	}
+	if len(got) != len(DefaultPatterns) {
+		t.Errorf("LocalPatterns() = %v, want DefaultPatterns %v", got, DefaultPatterns)
 	}
 }
