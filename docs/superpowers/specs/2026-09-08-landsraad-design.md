@@ -587,8 +587,22 @@ untrusted input and should not be described as one.
 
 **Path handling.** All catalog file access goes through `io/fs.FS`, which
 rejects absolute paths and any path containing `..`. A `service.yaml` cannot
-point `spec.runbook` outside its own repository. That is a security property of
-the seam in §3.1, not only a testing convenience.
+name a file outside its own repository *by path*. That is a security property
+of the seam in §3.1, not only a testing convenience.
+
+The rejection is checked before the filesystem is touched, and it is reported
+as what it is — `invalid-path`, naming the specific mistake — rather than as
+`missing-file`. Telling someone a file they are looking at does not exist is
+a false statement about their repository, and the distinction matters because
+a shared runbook one directory up is an ordinary monorepo layout: the answer
+is "move it or point at a copy", not "it is missing".
+
+The qualifier *by path* is deliberate. `os.DirFS` does not resolve symlinks,
+so a symlink committed into a repository can still reach outside it. Given the
+trust boundary above — same-organisation content, not a sandbox — that is
+accepted rather than defended against; `os.Root` (Go 1.24) is the mechanism if
+the boundary ever changes. It is only material from Plan 3, where the renderer
+reads runbook *contents*; `CheckFiles` today only stats.
 
 **Rendering** (Plan 3, decided now rather than under pressure): goldmark runs
 *without* `WithUnsafe`, so raw HTML in a runbook is escaped rather than injected

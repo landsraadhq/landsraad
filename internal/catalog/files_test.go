@@ -174,3 +174,75 @@ func TestCheckFilesAcceptsAPathThatNamesAFile(t *testing.T) {
 		t.Errorf("spec.path may name a file: %+v", c.Diagnostics())
 	}
 }
+
+// Audit finding 4. fs.Stat rejects a path that is not a valid io/fs path
+// before it ever looks at the filesystem, and CheckFiles reported that
+// rejection as absence — telling the user a file is missing while they are
+// looking straight at it. A shared runbook one directory up is an ordinary
+// monorepo layout, and "/etc" demonstrably exists.
+//
+// The blocking is correct and is spec §14.1's security property. Only the
+// diagnosis was wrong.
+func TestCheckFilesNamesWhyAPathIsInvalid(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		set   func(*Entity)
+		want  string
+		check string
+	}{
+		{"absolute", func(e *Entity) { e.Spec.Runbook = "/etc/passwd" },
+			`spec.runbook points at "/etc/passwd", which is an absolute path; write it relative to the repository root, for example "etc/passwd"`,
+			"invalid-path"},
+		{"escapes the repo", func(e *Entity) { e.Spec.Runbook = "../shared/runbook.md" },
+			`spec.runbook points at "../shared/runbook.md", which escapes the repository root via ".."; a service.yaml can only point at files in its own repository`,
+			"invalid-path"},
+		{"trailing slash", func(e *Entity) { e.Spec.Docs = "services/payments-worker/docs/" },
+			`spec.docs points at "services/payments-worker/docs/", which has a trailing slash; write "services/payments-worker/docs" instead`,
+			"invalid-path"},
+		{"redundant dot", func(e *Entity) { e.Spec.Docs = "./services/payments-worker/docs" },
+			`spec.docs points at "./services/payments-worker/docs", which contains a redundant "." element; write it without that segment`,
+			"invalid-path"},
+		{"doubled slash", func(e *Entity) { e.Spec.Alerts = "services//alerts.yaml" },
+			`spec.alerts points at "services//alerts.yaml", which contains an empty path element (a doubled "/"); remove it`,
+			"invalid-path"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var c diag.Collector
+			e := ent("monorepo", "services/payments-worker/service.yaml", "payments-worker", KindService, 4)
+			tc.set(e)
+			cat := NewCatalog([]*Entity{e}, &c)
+
+			CheckFiles(repoFS(), cat, &c)
+
+			if !c.HasErrors() {
+				t.Fatal("an invalid path must be an error")
+			}
+			d := c.Diagnostics()[0]
+			if d.Check != tc.check {
+				t.Errorf("Check = %q, want %q", d.Check, tc.check)
+			}
+			if d.Line != 4 {
+				t.Errorf("the diagnostic must point at the entity's line, got %d", d.Line)
+			}
+			if d.Message != tc.want {
+				t.Errorf("Message\n got: %s\nwant: %s", d.Message, tc.want)
+			}
+		})
+	}
+}
+
+// "." is a valid io/fs path: a single-service repository whose service.yaml
+// sits at the root says `path: .`, and that must not be mistaken for a
+// redundant element.
+func TestCheckFilesAcceptsDotAsAWholePath(t *testing.T) {
+	var c diag.Collector
+	e := ent("monorepo", "service.yaml", "root-service", KindService, 4)
+	e.Spec.Path = "."
+	cat := NewCatalog([]*Entity{e}, &c)
+
+	CheckFiles(repoFS(), cat, &c)
+
+	if c.HasErrors() {
+		t.Errorf("`path: .` is the single-service repo shape: %+v", c.Diagnostics())
+	}
+}

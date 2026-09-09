@@ -3,6 +3,7 @@ package catalog
 import (
 	"fmt"
 	"io/fs"
+	"strings"
 
 	"github.com/landsraadhq/landsraad/internal/diag"
 )
@@ -34,6 +35,30 @@ func CheckFiles(fsys fs.FS, cat *Catalog, c *diag.Collector) {
 			if f.path == "" {
 				continue
 			}
+			// fs.Stat rejects a path that is not a valid io/fs path before it
+			// ever reaches the filesystem, so without this the answer for
+			// "/etc" or "../shared/runbook.md" would be "does not exist" — a
+			// statement about the user's repository that is simply false.
+			// Rejecting them is spec §14.1's security property and is correct;
+			// only the diagnosis was wrong.
+			//
+			// The classification below is the second instance of the one in
+			// discover.invalidPatternReason, phrased for a service.yaml field
+			// rather than a repos.yaml pattern. Two examples, not three: they
+			// stay separate until a third caller shows what to share.
+			if !fs.ValidPath(f.path) {
+				c.Add(diag.Diagnostic{
+					Severity: diag.SevError,
+					Repo:     e.SourceRepo,
+					File:     e.SourcePath,
+					Line:     e.NameLine,
+					Entity:   e.Metadata.Name,
+					Check:    "invalid-path",
+					Message:  invalidPathReason(f.field, f.path),
+					Hint:     "paths are relative to the repository root, slash-separated",
+				})
+				continue
+			}
 			info, err := fs.Stat(fsys, f.path)
 			if err != nil {
 				c.Add(diag.Diagnostic{
@@ -61,4 +86,38 @@ func CheckFiles(fsys fs.FS, cat *Catalog, c *diag.Collector) {
 			}
 		}
 	}
+}
+
+// invalidPathReason names the actual mistake in a path field rather than
+// saying "invalid". Checked in the order fs.ValidPath itself would hit them:
+// a leading slash makes the whole path absolute, so it is reported before
+// anything about individual elements.
+func invalidPathReason(field, p string) string {
+	switch {
+	case strings.HasPrefix(p, "/"):
+		return fmt.Sprintf(
+			"%s points at %q, which is an absolute path; write it relative to the repository root, for example %q",
+			field, p, strings.TrimPrefix(p, "/"))
+	case strings.HasSuffix(p, "/"):
+		return fmt.Sprintf(
+			"%s points at %q, which has a trailing slash; write %q instead",
+			field, p, strings.TrimSuffix(p, "/"))
+	}
+	for _, elem := range strings.Split(p, "/") {
+		switch elem {
+		case "..":
+			return fmt.Sprintf(
+				"%s points at %q, which escapes the repository root via %q; a service.yaml can only point at files in its own repository",
+				field, p, "..")
+		case ".":
+			return fmt.Sprintf(
+				"%s points at %q, which contains a redundant %q element; write it without that segment",
+				field, p, ".")
+		case "":
+			return fmt.Sprintf(
+				"%s points at %q, which contains an empty path element (a doubled %q); remove it",
+				field, p, "/")
+		}
+	}
+	return fmt.Sprintf("%s points at %q, which is not a valid relative path", field, p)
 }
