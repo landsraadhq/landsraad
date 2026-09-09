@@ -75,9 +75,10 @@ func (c *Collector) Add(d Diagnostic) { c.diags = append(c.diags, d) }
 
 func (c *Collector) Len() int { return len(c.diags) }
 
-// Diagnostics returns the collected diagnostics sorted by file, then line,
-// then check. Output order must not depend on filesystem walk order, or
-// tests and CI logs become unstable.
+// Diagnostics returns the collected diagnostics sorted deterministically by
+// (file, line, check, message, severity, entity, repo, hint). Output order
+// is independent of insertion order and filesystem walk order, so tests and
+// CI logs remain stable.
 func (c *Collector) Diagnostics() []Diagnostic {
 	out := make([]Diagnostic, len(c.diags))
 	copy(out, c.diags)
@@ -89,7 +90,22 @@ func (c *Collector) Diagnostics() []Diagnostic {
 		if a.Line != b.Line {
 			return a.Line < b.Line
 		}
-		return a.Check < b.Check
+		if a.Check != b.Check {
+			return a.Check < b.Check
+		}
+		if a.Message != b.Message {
+			return a.Message < b.Message
+		}
+		if a.Severity != b.Severity {
+			return a.Severity < b.Severity
+		}
+		if a.Entity != b.Entity {
+			return a.Entity < b.Entity
+		}
+		if a.Repo != b.Repo {
+			return a.Repo < b.Repo
+		}
+		return a.Hint < b.Hint
 	})
 	return out
 }
