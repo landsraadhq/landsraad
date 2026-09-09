@@ -18,6 +18,7 @@ func repoFS() fstest.MapFS {
 func TestCheckFilesAcceptsExistingPaths(t *testing.T) {
 	var c diag.Collector
 	e := ent("monorepo", "services/payments-worker/service.yaml", "payments-worker", KindService, 4)
+	e.Spec.Path = "services/payments-worker"
 	e.Spec.Runbook = "services/payments-worker/docs/runbook.md"
 	e.Spec.Docs = "services/payments-worker/docs"
 	e.Spec.Alerts = "services/payments-worker/alerts.yaml"
@@ -119,5 +120,57 @@ func TestCheckFilesIgnoresEmptyPaths(t *testing.T) {
 
 	if c.HasErrors() {
 		t.Errorf("an unset optional path is not a missing file: %+v", c.Diagnostics())
+	}
+}
+
+// spec.path is the anchor: it says which directory this entity *is*, and it is
+// what CODEOWNERS generation joins against. A typo there does not break a link
+// the way a bad spec.runbook does — it produces a CODEOWNERS line for a
+// directory that does not exist, which git silently ignores, leaving the real
+// directory unowned. Checked for every kind that sets it; an entity whose code
+// is not in this repository omits the field.
+func TestCheckFilesReportsMissingPath(t *testing.T) {
+	var c diag.Collector
+	e := ent("monorepo", "services/payments-worker/service.yaml", "payments-worker", KindService, 4)
+	e.Spec.Path = "services/payments-workr" // the typo this check exists to catch
+	cat := NewCatalog([]*Entity{e}, &c)
+
+	CheckFiles(repoFS(), cat, &c)
+
+	if !c.HasErrors() {
+		t.Fatal("a spec.path that does not exist must be an error")
+	}
+	d := c.Diagnostics()[0]
+	if d.Check != "missing-file" {
+		t.Errorf("Check = %q, want %q", d.Check, "missing-file")
+	}
+	if d.Line != 4 {
+		t.Errorf("the diagnostic must point at the entity's line, got %d", d.Line)
+	}
+	want := `spec.path points at "services/payments-workr", which does not exist`
+	if d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+	wantHint := "paths are relative to the repository root, slash-separated"
+	if d.Hint != wantHint {
+		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, wantHint)
+	}
+}
+
+// spec.path is checked for existence but deliberately not for directory-ness,
+// unlike spec.docs. A Library may name a single file, and CODEOWNERS patterns
+// match files as happily as directories. Requiring a directory stays available
+// as a later tightening; loosening the rule once user repositories depend on
+// it does not.
+func TestCheckFilesAcceptsAPathThatNamesAFile(t *testing.T) {
+	var c diag.Collector
+	e := ent("monorepo", "libs/kafkaclient/service.yaml", "kafkaclient", KindLibrary, 4)
+	e.Spec.Path = "services/payments-worker/alerts.yaml"
+	cat := NewCatalog([]*Entity{e}, &c)
+
+	CheckFiles(repoFS(), cat, &c)
+
+	if c.HasErrors() {
+		t.Errorf("spec.path may name a file: %+v", c.Diagnostics())
 	}
 }

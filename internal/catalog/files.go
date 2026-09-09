@@ -20,6 +20,13 @@ func CheckFiles(fsys fs.FS, cat *Catalog, c *diag.Collector) {
 			path  string
 			dir   bool
 		}{
+			// spec.path first: it is the anchor, the field that says which
+			// directory this entity *is*, and the one CODEOWNERS generation
+			// joins against. A wrong runbook breaks a link; a wrong path
+			// assigns ownership to a directory that does not exist, which git
+			// ignores without complaint. Checked for existence but not for
+			// directory-ness — a Library may name a single file.
+			{"spec.path", e.Spec.Path, false},
 			{"spec.runbook", e.Spec.Runbook, false},
 			{"spec.docs", e.Spec.Docs, true},
 			{"spec.alerts", e.Spec.Alerts, false},

@@ -218,6 +218,24 @@ spec:
     selector: { app.kubernetes.io/name: payments-worker }
 ```
 
+**Paths.** `spec.path`, `docs`, `runbook` and `alerts` are repository-relative
+and slash-separated, and every one that is set must exist. Only `docs` must be
+a directory.
+
+`spec.path` is the anchor — it names the code the entity describes, and it is
+the join key for generated CODEOWNERS (§11). That makes it the one path field
+whose typo is silent rather than visible: a wrong `runbook` breaks a link
+someone notices, while a wrong `path` emits a CODEOWNERS line for a directory
+that does not exist, which git ignores without complaint, leaving the real
+directory unowned. So it is checked for every kind that sets it, and checked
+for existence only — a `Library` may legitimately name a single file, and
+CODEOWNERS patterns match files as happily as directories.
+
+An entity whose code does not live in the repository being validated — an
+externally managed `Database`, a third-party `API` — **omits** `path` rather
+than pointing it at something plausible. The field is optional precisely so
+that "there is no code here" has an honest spelling.
+
 **Backstage compatibility — what is actually true.** `kind`, `metadata`,
 `dependsOn` and `providesApis` borrow Backstage's *field names*. The claim
 stops there, and earlier drafts of this spec overstated it:
