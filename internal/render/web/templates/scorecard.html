@@ -1,6 +1,6 @@
 {{define "content"}}
 <h1>Scorecard</h1>
-<p class="count">Catalog total <span class="mono">{{printf "%.0f%%" (mul .Overall 100)}}</span></p>
+<p class="count">Catalog total {{if .Overall}}<span class="mono">{{pct .Overall}}</span>{{else}}<span class="none">not scored</span>{{end}}</p>
 
 <h2>Trend</h2>
 {{if .Trend.Polyline}}
@@ -10,12 +10,16 @@
 <table class="trend"><thead><tr><th>Date</th><th>Score</th><th>Passed</th><th>Applicable</th></tr></thead><tbody>
 {{range .Trend.Points}}<tr>
   <td class="mono">{{.Date}}</td>
-  <td class="mono">{{printf "%.0f%%" (mul .Score 100)}}</td>
+  <td>{{if .Applicable}}<span class="mono">{{printf "%.0f%%" (mul .Score 100)}}</span>{{else}}<span class="none">not scored</span>{{end}}</td>
   <td>{{.Passed}}</td><td>{{.Applicable}}</td>
 </tr>
 {{end}}</tbody></table>
 {{else if .HasHistory}}
+  {{if eq (len .Trend.Points) 0}}
+<p class="none">No runs have been recorded yet. scorecard-history.csv exists but nothing has been appended to it.</p>
+  {{else}}
 <p class="none">Only one run has been recorded so far. A trend needs at least two.</p>
+  {{end}}
 {{else}}
 <p class="none">No history yet. Run <span class="mono">landsraad score --history</span> in CI to start recording one.</p>
 {{end}}

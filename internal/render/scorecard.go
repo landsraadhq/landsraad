@@ -41,7 +41,12 @@ type TeamScoreRow struct {
 // ScorecardPage is the standards table with the weekly trend (spec §10).
 type ScorecardPage struct {
 	Page
-	Overall float64
+	// Overall is nil when the catalog-wide Applicable sum is 0 — no tiered
+	// entities yet, or every check on every entity exempted. Scorecard.Score
+	// returns 0 for that case for the same reason TeamScore.Score does, and
+	// rendering it as 0% would be the identical ambiguity ruling R1 forbids
+	// for a single entity or team, one level up at the whole catalog.
+	Overall *float64
 	Teams   []TeamScoreRow
 	Checks  []CheckRow
 	Tiers   []int
@@ -65,7 +70,14 @@ func scorecardPage(in Input, c *diag.Collector) (emit.File, bool) {
 		HasHistory: in.History != nil,
 	}
 	if in.Scorecard != nil {
-		view.Overall = in.Scorecard.Score()
+		total := 0
+		for _, e := range in.Scorecard.Entities {
+			total += e.Applicable
+		}
+		if total > 0 {
+			overall := in.Scorecard.Score()
+			view.Overall = &overall
+		}
 	}
 
 	slugs := teamSlugMap(in)

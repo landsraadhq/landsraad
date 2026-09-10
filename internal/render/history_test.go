@@ -57,6 +57,30 @@ func TestParseHistorySkipsAMalformedRow(t *testing.T) {
 	}
 }
 
+// The other malformed-row branch: right column count, wrong content. A row
+// a human mistyped by hand must be just as tolerable as one CI half-wrote.
+func TestParseHistorySkipsARowWithNonNumericCounts(t *testing.T) {
+	var c diag.Collector
+	points := parseHistory([]byte(historyCSV+"2026-09-15,service:api,1,team-payments,three,4,0.750\n"), &c)
+	if len(points) != 2 {
+		t.Errorf("got %d points, want 2 — the malformed row must be skipped: %+v", len(points), points)
+	}
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(ds), ds)
+	}
+	if ds[0].Severity != diag.SevWarn {
+		t.Errorf("Severity = %v, want SevWarn: a bad row is not a build failure", ds[0].Severity)
+	}
+	want := "scorecard-history.csv line 6 has a non-numeric passed or applicable count; skipping it"
+	if ds[0].Message != want {
+		t.Errorf("Message = %q, want %q", ds[0].Message, want)
+	}
+	if ds[0].Line != 6 {
+		t.Errorf("Line = %d, want 6", ds[0].Line)
+	}
+}
+
 func TestParseHistoryOnAHeaderOnlyFile(t *testing.T) {
 	var c diag.Collector
 	points := parseHistory([]byte("date,ref,tier,owner,passed,applicable,score\n"), &c)

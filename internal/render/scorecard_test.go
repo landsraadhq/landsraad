@@ -102,6 +102,42 @@ func TestScorecardPageShowsNotScoredForATeamWithNoApplicableChecks(t *testing.T)
 	}
 }
 
+// The same R1 ambiguity as the team row, one field over: a catalog with no
+// tiered entities yet has nothing applicable catalog-wide, and
+// Scorecard.Score() returns 0 for "nothing counted" the same way
+// TeamScore.Score() does. The page must not show "Catalog total 0%" above a
+// "By team" section that correctly says nothing was scored.
+func TestScorecardPageOverallIsNotScoredRatherThanZero(t *testing.T) {
+	in := input(t, nil, ent("shared", catalog.KindLibrary, "team-payments", 0))
+	var c diag.Collector
+	page := string(siteMap(Site(in, &c))["scorecard/index.html"])
+	want := `<p class="count">Catalog total <span class="none">not scored</span></p>`
+	if !strings.Contains(page, want) {
+		t.Errorf("an empty scorecard's total must read not scored, not 0%%:\n%s", page)
+	}
+}
+
+// The same R1 ambiguity again, in the trend table this time: a recorded
+// date where nothing was applicable catalog-wide (every check on every
+// entity exempted that run) leaves TrendPoint.Score at its zero value.
+// TrendPoint.Score stays a plain float64 — it is a contract other tasks
+// consume by name — so this is guarded from the template side using the
+// Applicable int that is already there, rather than by changing the
+// struct.
+func TestScorecardPageTrendPointWithNoApplicableChecksIsNotScored(t *testing.T) {
+	in := twoEntities(t)
+	in.History = []byte("date,ref,tier,owner,passed,applicable,score\n" +
+		"2026-09-01,service:api,1,team-payments,0,0,0.000\n" +
+		"2026-09-08,service:api,1,team-payments,4,4,1.000\n")
+	var c diag.Collector
+	page := string(siteMap(Site(in, &c))["scorecard/index.html"])
+	want := `<td class="mono">2026-09-01</td>
+  <td><span class="none">not scored</span></td>`
+	if !strings.Contains(page, want) {
+		t.Errorf("the 2026-09-01 trend row must read not scored, not 0%%:\n%s", page)
+	}
+}
+
 // A file with only a header is a materially different fact from "no
 // history file at all" (spec §12: distinct states must not collapse) — CI
 // is wired up but has not appended its first run. Pinned here so the
@@ -115,8 +151,11 @@ func TestScorecardPageWithHeaderOnlyHistoryShowsNoChart(t *testing.T) {
 	if strings.Contains(page, "<polyline") {
 		t.Error("zero points is nothing to chart")
 	}
-	if !strings.Contains(page, "Only one run has been recorded so far") {
-		t.Errorf("the page must still say why there is no chart:\n%s", page)
+	if !strings.Contains(page, "No runs have been recorded yet") {
+		t.Errorf("zero runs must say zero, not collapse into the one-run wording:\n%s", page)
+	}
+	if strings.Contains(page, "Only one run has been recorded so far") {
+		t.Errorf("zero recorded runs must not be reported as one:\n%s", page)
 	}
 }
 
@@ -135,6 +174,9 @@ func TestScorecardPageWithExactlyOneHistoryPointShowsNoChart(t *testing.T) {
 	}
 	if !strings.Contains(page, "Only one run has been recorded so far") {
 		t.Errorf("the page must say why there is no chart:\n%s", page)
+	}
+	if strings.Contains(page, "No runs have been recorded yet") {
+		t.Errorf("one recorded run must not be reported as zero:\n%s", page)
 	}
 }
 
