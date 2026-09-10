@@ -394,6 +394,46 @@ func TestIngestUnknownEntityDiagnosticNamesItsRepository(t *testing.T) {
 	}
 }
 
+// Same gap, one step earlier in the pipeline: schema.Validator.Validate also
+// takes a repo, and a CheckResults file that fails schema validation before
+// it is even parsed must still say which repository it came from — File
+// alone is ambiguous under R31 the same way it is for resolveEntity.
+func TestIngestSchemaDiagnosticNamesItsRepository(t *testing.T) {
+	cat := catalogOf(t, svc("api"))
+	alpha := fstest.MapFS{
+		".landsraad/checks/scan.yaml": {Data: resultsFile("2026-09-08T14:00:00Z",
+			"  - { entity: service:api, check: image-scanned, status: pass }\n")},
+	}
+	beta := fstest.MapFS{
+		".landsraad/checks/scan.yaml": {Data: []byte(
+			"apiVersion: landsraad/v1\nkind: CheckResults\nproducer: ci/test\ngeneratedAt: not-a-date\n" +
+				"results:\n  - { entity: service:api, check: image-scanned, status: pass }\n")},
+	}
+	src := catalog.Sources{"alpha": alpha, "beta": beta}
+	var c diag.Collector
+
+	Ingest(src, cat, 14, now, &c)
+
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(ds), ds)
+	}
+	d := ds[0]
+	if d.Check != "schema" {
+		t.Errorf("Check = %q, want %q", d.Check, "schema")
+	}
+	if d.File != ".landsraad/checks/scan.yaml" {
+		t.Errorf("File = %q, want %q — both repositories have a file at this path", d.File, ".landsraad/checks/scan.yaml")
+	}
+	if d.Repo != "beta" {
+		t.Errorf("Repo = %q, want %q — File alone cannot tell alpha's scan.yaml from beta's", d.Repo, "beta")
+	}
+	want := "at '/generatedAt': 'not-a-date' is not a valid date-time"
+	if d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+}
+
 func topic(name string) *catalog.Entity {
 	e := &catalog.Entity{APIVersion: catalog.APIVersion, Kind: catalog.KindTopic}
 	e.Metadata.Name = name

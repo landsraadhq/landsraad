@@ -149,7 +149,7 @@ func ingestRepo(repo string, fsys fs.FS, cat *catalog.Catalog, out map[catalog.R
 			})
 			continue
 		}
-		if !v.Validate("", path, data, c) {
+		if !v.Validate(repo, path, data, c) {
 			continue
 		}
 		var f checkResultsFile
