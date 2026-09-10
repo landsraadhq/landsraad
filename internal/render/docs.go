@@ -53,7 +53,14 @@ type entityDocs struct {
 	Nav   []DocLink
 	// Index is docs/index.md, inlined on the entity page (ruling R18).
 	Index template.HTML
-	Docs  []RenderedDoc
+	// Docs describes the sub-pages this entity emitted, one entry per page
+	// actually written.
+	Docs []RenderedDoc
+	// IndexDoc is docs/index.md's search entry, kept out of Docs because the
+	// page it describes is the ENTITY page, which docsFor does not emit.
+	// entityPages records it only after that page renders, for the same reason
+	// Docs and Nav are only appended to after renderPage succeeds.
+	IndexDoc *RenderedDoc
 	// RunbookURL is where spec.runbook actually rendered, "" when it is
 	// unset or failed to render. This reflects render success, never spec
 	// metadata alone: a link to a page that was not actually emitted is
@@ -200,7 +207,26 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 	ref := e.Ref()
 	entityDir := EntityURL(ref)
 
-	render := func(repoPath, relURL string) (md.Doc, bool) {
+	// render reads and renders one Markdown file, returning the document and
+	// the search-index entry that would describe it.
+	//
+	// It deliberately records NOTHING on out. Every caller places the entry
+	// itself, after the page it points at has actually been emitted: a search
+	// entry or a nav link written before renderPage succeeded points the reader
+	// at a page nothing produced, which is the silent fallback spec §12 forbids
+	// by name. RunbookURL was already guarded for exactly this reason; Docs and
+	// Nav were not, so a document that failed to render still got a doc-nav
+	// link on the entity page and a row in search-index.json.
+	//
+	// relURL is where the page is EMITTED, relative to the entity directory,
+	// and is the point every rewritten link is computed from. searchURL is the
+	// URL the search index should point at. They differ for exactly one
+	// document: ruling R18 hoists docs/index.md onto the entity page, whose
+	// canonical URL is the directory itself — CatalogRow.URL is EntityURL(ref),
+	// with no "index.html" — so recording it at entityDir+"index.html" spelled
+	// one page two ways and put two rows in the index for every documented
+	// entity, one labelled "Service" and one not.
+	render := func(repoPath, relURL, searchURL string) (md.Doc, RenderedDoc, bool) {
 		data, err := fs.ReadFile(in.FS, repoPath)
 		if err != nil {
 			c.Add(diag.Diagnostic{
@@ -210,7 +236,7 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 				Message: fmt.Sprintf("cannot read %s", repoPath),
 				Hint:    "the file is named by spec.docs or spec.runbook",
 			})
-			return md.Doc{}, false
+			return md.Doc{}, RenderedDoc{}, false
 		}
 		linker := docLinker{
 			docsDir: e.Spec.Docs, runbook: e.Spec.Runbook,
@@ -224,13 +250,12 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 				Check:   "docs-render",
 				Message: fmt.Sprintf("cannot render %s: %v", repoPath, err),
 			})
-			return md.Doc{}, false
+			return md.Doc{}, RenderedDoc{}, false
 		}
-		out.Docs = append(out.Docs, RenderedDoc{
-			URL: entityDir + relURL, Title: docTitle(doc, repoPath),
+		return doc, RenderedDoc{
+			URL: searchURL, Title: docTitle(doc, repoPath),
 			Text: doc.Text, Headings: nonNilHeadings(doc.Headings), EntityRef: ref.String(),
-		})
-		return doc, true
+		}, true
 	}
 
 	// 1. The docs directory.
@@ -269,31 +294,37 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 		}
 		if rel == "index.md" {
 			// Inlined on the entity page, and NOT also a sub-page: one
-			// document, one URL (ruling R18).
-			if doc, ok := render(repoPath, "index.html"); ok {
+			// document, one URL (ruling R18). The search entry therefore
+			// carries the entity's own URL, and entityPages decides whether it
+			// is recorded at all.
+			if doc, rd, ok := render(repoPath, "index.html", entityDir); ok {
 				out.Index = mdToHTML(doc)
+				out.IndexDoc = &rd
 			}
 			continue
 		}
 		relURL := "docs/" + htmlSuffix(rel)
 		sitePath := entityDir + relURL
-		doc, ok := render(repoPath, relURL)
+		doc, rd, ok := render(repoPath, relURL, sitePath)
 		if !ok {
 			continue
 		}
-		out.Nav = append(out.Nav, DocLink{Title: docTitle(doc, repoPath), URL: relURL})
 		view := DocPage{
 			Page:       newPage(in, sitePath, docTitle(doc, repoPath), "catalog"),
 			EntityName: e.Metadata.Name,
 			EntityURL:  entityDir,
 			HTML:       mdToHTML(doc),
 		}
-		if f, ok := renderPage(t, sitePath, view, c); ok {
-			out.Files = append(out.Files, f)
-			if repoPath == e.Spec.Runbook {
-				out.RunbookURL = relURL
-				runbookRendered = true
-			}
+		f, ok := renderPage(t, sitePath, view, c)
+		if !ok {
+			continue
+		}
+		out.Files = append(out.Files, f)
+		out.Nav = append(out.Nav, DocLink{Title: docTitle(doc, repoPath), URL: relURL})
+		out.Docs = append(out.Docs, rd)
+		if repoPath == e.Spec.Runbook {
+			out.RunbookURL = relURL
+			runbookRendered = true
 		}
 	}
 
@@ -301,7 +332,7 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 	if e.Spec.Runbook != "" && !underDir(e.Spec.Docs, e.Spec.Runbook) {
 		relURL := "runbook.html"
 		sitePath := entityDir + relURL
-		if doc, ok := render(e.Spec.Runbook, relURL); ok {
+		if doc, rd, ok := render(e.Spec.Runbook, relURL, sitePath); ok {
 			view := DocPage{
 				Page:       newPage(in, sitePath, docTitle(doc, e.Spec.Runbook), "catalog"),
 				EntityName: e.Metadata.Name,
@@ -310,6 +341,7 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 			}
 			if f, ok := renderPage(t, sitePath, view, c); ok {
 				out.Files = append(out.Files, f)
+				out.Docs = append(out.Docs, rd)
 				out.RunbookURL = relURL
 				runbookRendered = true
 			}

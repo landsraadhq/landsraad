@@ -35,6 +35,57 @@ func TestSearchIndexCoversEveryEntity(t *testing.T) {
 	}
 }
 
+// Ruling R18 hoists docs/index.md onto the entity page, so the document and
+// the entity are ONE page. Recording that document at entityDir+"index.html"
+// spelled the same page a second way — CatalogRow.URL has no "index.html" —
+// and searchIndex could not tell they were the same, so every documented
+// entity got two rows: one labelled "Service" carrying no body text, one
+// carrying the body and labelled nothing. A search for a documented service
+// returned it twice.
+func TestADocumentedEntityHasExactlyOneSearchEntryCarryingItsDocumentation(t *testing.T) {
+	e := ent("ledger-api", catalog.KindService, "team-payments", 1)
+	e.Spec.Docs = "services/ledger-api/docs"
+	files := fstest.MapFS{
+		"services/ledger-api/docs/index.md": {Data: []byte(
+			"# ledger-api\n\nSettles the daily ledger against the clearing file.\n")},
+	}
+
+	var c diag.Collector
+	entries := decodeIndex(t, siteMap(Site(input(t, files, e), &c))["search-index.json"])
+
+	var found []SearchEntry
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.URL, "entity/service/ledger-api") {
+			found = append(found, entry)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("a documented entity must have exactly one search entry, got %d: %+v", len(found), found)
+	}
+	got := found[0]
+	if got.URL != "entity/service/ledger-api/" {
+		t.Errorf("URL = %q, want the entity's own URL %q", got.URL, "entity/service/ledger-api/")
+	}
+	// The surviving row must be the labelled one: a reader recognises
+	// "ledger-api, Service", not the H1 of its index.md.
+	if got.Kind != "Service" {
+		t.Errorf("Kind = %q, want %q", got.Kind, "Service")
+	}
+	if got.Title != "ledger-api" {
+		t.Errorf("Title = %q, want %q", got.Title, "ledger-api")
+	}
+	// Folding rather than dropping is what makes the entity findable by the
+	// words in its own documentation, which it was not before: the entity row
+	// carried no text at all.
+	wantText := "ledger-api Settles the daily ledger against the clearing file."
+	if got.Text != wantText {
+		t.Errorf("Text = %q, want %q", got.Text, wantText)
+	}
+	if len(got.Headings) != 1 || got.Headings[0] != "ledger-api" {
+		t.Errorf("Headings = %+v, want [ledger-api]", got.Headings)
+	}
+}
+
 func TestSearchIndexCoversRenderedDocuments(t *testing.T) {
 	e := ent("api", catalog.KindService, "team-payments", 1)
 	e.Spec.Runbook = "services/api/RUNBOOK.md"

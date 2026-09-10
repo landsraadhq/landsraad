@@ -43,7 +43,13 @@ type SearchEntry struct {
 // service called "payments" and the runbook that explains how to drain it.
 func searchIndex(rows []CatalogRow, docs []RenderedDoc) (emit.File, error) {
 	entries := make([]SearchEntry, 0, len(rows)+len(docs))
+	// at maps a URL to the entry already describing it. One URL is one page,
+	// so it is one row: ruling R18 hoists docs/index.md onto the entity page,
+	// which means that document and that entity ARE the same page, and the
+	// index must not claim otherwise.
+	at := make(map[string]int, len(rows)+len(docs))
 	for _, r := range rows {
+		at[r.URL] = len(entries)
 		entries = append(entries, SearchEntry{
 			URL: r.URL, Title: r.Name, Kind: r.Kind,
 			Owner: r.Owner, Description: r.Description,
@@ -53,11 +59,27 @@ func searchIndex(rows []CatalogRow, docs []RenderedDoc) (emit.File, error) {
 		})
 	}
 	for _, d := range docs {
-		e := SearchEntry{URL: d.URL, Title: d.Title, Text: d.Text, Headings: []string{}}
+		headings := make([]string, 0, len(d.Headings))
 		for _, h := range d.Headings {
-			e.Headings = append(e.Headings, h.Text)
+			headings = append(headings, h.Text)
 		}
-		entries = append(entries, e)
+		if i, ok := at[d.URL]; ok {
+			// A document rendered at a URL an entry already covers folds into
+			// it rather than adding a second row. Without this, a search for a
+			// documented service returned it twice — once labelled "Service"
+			// with no body text, once labelled nothing with the body — and the
+			// entity itself was unfindable by the words in its own
+			// documentation, because the entity row carried no text at all.
+			// The entity's own Title, Kind and Owner win: the label a reader
+			// recognises is "ledger-api, Service", not the H1 of its index.md.
+			entries[i].Text = d.Text
+			entries[i].Headings = append(entries[i].Headings, headings...)
+			continue
+		}
+		at[d.URL] = len(entries)
+		entries = append(entries, SearchEntry{
+			URL: d.URL, Title: d.Title, Text: d.Text, Headings: headings,
+		})
 	}
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].URL != entries[j].URL {
