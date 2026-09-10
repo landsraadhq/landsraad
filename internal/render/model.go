@@ -41,6 +41,10 @@ type Mermaid struct {
 	// served from the same origin as the page needs none, and an integrity
 	// attribute on a file the user supplied would block their own override.
 	Integrity string
+	// Data is the bundle's bytes when Src is LocalMermaidPath. cmd/ reads
+	// the file the user named; this package only places it, because nothing
+	// under internal/ touches the filesystem outside an injected fs.FS.
+	Data []byte
 }
 
 // Input is everything Site needs. It is a struct rather than nine parameters

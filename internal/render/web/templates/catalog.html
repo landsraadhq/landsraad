@@ -1,0 +1,24 @@
+{{define "content"}}
+<h1>Catalog</h1>
+<p class="count">{{len .Rows}} entities</p>
+<table class="catalog" id="catalog">
+<thead>
+<tr><th>Entity</th><th>Kind</th><th>Owner</th><th>Tier</th><th>Lifecycle</th><th>Score</th></tr>
+</thead>
+<tbody>
+{{range .Rows}}
+<tr data-kind="{{lower .Kind}}" data-owner="{{.Owner}}" data-tier="{{.Tier}}" data-tags="{{range .Tags}}{{.}} {{end}}">
+  <td>
+    <a href="{{$.Root}}{{.URL}}">{{.Name}}</a>
+    {{with .Description}}<span class="desc">{{.}}</span>{{end}}
+  </td>
+  <td><span class="kind kind-{{lower .Kind}}">{{.Kind}}</span></td>
+  <td>{{if .OwnerURL}}<a href="{{$.Root}}{{.OwnerURL}}">{{.Owner}}</a>{{else}}{{.Owner}}{{end}}</td>
+  <td>{{if .Tier}}{{.Tier}}{{else}}<span class="none">—</span>{{end}}</td>
+  <td>{{.Lifecycle}}</td>
+  <td>{{if .Score}}<span class="mono">{{pct .Score}}</span>{{else}}<span class="none">not scored</span>{{end}}</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+{{end}}
