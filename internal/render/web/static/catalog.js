@@ -41,12 +41,17 @@
 
   function cellValue(row, index, kind) {
     var cell = row.cells[index];
-    if (!cell) { return kind === 'number' ? 0 : ''; }
+    if (!cell) { return kind === 'number' ? null : ''; }
     if (kind === 'number') {
-      // data-value carries the sortable number: "not scored" is -1 so the
-      // unscored entities group at one end rather than sorting between 9%
-      // and 90% as text would.
-      return parseFloat(cell.getAttribute('data-value') || '0');
+      // data-value carries the sortable number, and an EMPTY data-value means
+      // the row has no value for this column at all — "not scored", or an
+      // entity of a kind that carries no tier. That is not the same as zero,
+      // and it used to be spelled -1 so the unscored would clump at one end
+      // instead of sorting between 9% and 90% as text does.
+      var raw = cell.getAttribute('data-value');
+      if (raw === null || raw === '') { return null; }
+      var n = parseFloat(raw);
+      return isNaN(n) ? null : n;
     }
     return (cell.textContent || '').trim().toLowerCase();
   }
@@ -55,6 +60,17 @@
     var sorted = rows().sort(function (a, b) {
       var x = cellValue(a, index, kind);
       var y = cellValue(b, index, kind);
+      // Rows with no value sort last in BOTH directions, because they are
+      // absent from the ordering rather than at the bottom of it. The -1
+      // sentinel this replaces sorted them below 0%, so ascending — "worst
+      // first" — opened the table by naming the unscored services as the
+      // worst ones. Tier had the same bug spelled 0: an entity that carries
+      // no tier led a tier-ascending sort as though it were the most
+      // critical thing in the catalog.
+      if (x === null || y === null) {
+        if (x === null && y === null) { return 0; }
+        return x === null ? 1 : -1;
+      }
       if (x < y) { return ascending ? -1 : 1; }
       if (x > y) { return ascending ? 1 : -1; }
       return 0;

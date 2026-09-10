@@ -45,12 +45,12 @@
   </td>
   <td><span class="kind kind-{{lower .Kind}}">{{.Kind}}</span></td>
   <td>{{if .OwnerURL}}<a href="{{$.Root}}{{.OwnerURL}}">{{.Owner}}</a>{{else}}{{.Owner}}{{end}}</td>
-  <td data-value="{{.Tier}}">{{if .Tier}}{{.Tier}}{{else}}<span class="none">—</span>{{end}}</td>
+  <td data-value="{{if .Tier}}{{.Tier}}{{end}}">{{if .Tier}}{{.Tier}}{{else}}<span class="none">—</span>{{end}}</td>
   <td>{{.Lifecycle}}</td>
   {{if .Score}}
   <td data-value="{{mul .Score 100}}"><span class="mono">{{pct .Score}}</span></td>
   {{else}}
-  <td data-value="-1"><span class="none">not scored</span></td>
+  <td data-value=""><span class="none">not scored</span></td>
   {{end}}
 </tr>
 {{end}}
