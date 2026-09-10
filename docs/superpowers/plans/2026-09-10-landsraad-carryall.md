@@ -72,8 +72,7 @@ Recorded here because an executor who hits one of these mid-task will otherwise 
 
 | Path | Responsibility |
 |---|---|
-| `internal/fetch/tree.go` | `Entry`, `Tree` — a repository's file listing as a value. No IO. |
-| `internal/fetch/fs.go` | `*FS` — an `fs.FS` over a `Tree` with a blob map. Metadata always present, content present only once fetched; reading an unfetched path is `ErrNotFetched`, which is a landsraad bug and not a user's. |
+| `internal/fetch/fs.go` | `Entry` and `*FS` — an `fs.FS` over a listing plus a blob map. Metadata always present, content present only once fetched; reading an unfetched path is `ErrNotFetched`, which is a landsraad bug and not a user's. |
 | `internal/fetch/fetch.go` | `Fetcher` and `Prefetcher` interfaces, `Repo` identity, `Cache` interface, the error types `--allow-partial` switches on. |
 | `internal/fetch/client.go` | `*Client` — auth header injection, retry with backoff, rate-limit reporting, and the token-redaction that keeps a secret out of every error string. |
 | `internal/fetch/github.go` | GitHub adapter: default branch, recursive tree, blob, commits. |
@@ -115,7 +114,7 @@ Recorded here because an executor who hits one of these mid-task will otherwise 
 | 3 | `CheckFiles` takes `Sources` | tree compiles, single-repo behaviour identical |
 | 4 | scorecard takes `Sources` | `Env`, `Ingest` across repositories, `LastEdit(repo, path)` |
 | 5 | `render.Input` takes `Sources` | the renderer reads each entity's own repository |
-| 6 | `fetch.Tree` and `fetch.FS` | an `fs.FS` with metadata now and content later. No HTTP. |
+| 6 | `fetch.Entry` and `fetch.FS` | an `fs.FS` with metadata now and content later. No HTTP. |
 | 7 | `fetch.Client` | auth, typed errors, retry, rate limits, token redaction |
 | 8 | GitHub adapter | default branch, recursive tree, blobs, commits |
 | 9 | GitHub truncated trees | pattern-directed descent |
@@ -145,7 +144,6 @@ Tasks 1–5 are a green-tree refactor: after each one `task ci` passes and `land
   - `func (r *Repo) Identity() string`
   - `func (r *Repo) HostKind() (kind string, known bool)`
   - `func (r *Repos) LocalRepo() (*Repo, bool)`
-  - `func (r *Repos) Remotes() []Repo`
   - `func (r *Repos) LocalPatterns() ([]string, LocalSource)` — **signature change**, the second return is now a three-state value rather than a bool
   - `type LocalSource int` with `LocalMarked`, `LocalAssumedFirst`, `LocalDefaulted`
   - `func HostKinds() []string`
@@ -455,19 +453,6 @@ func (r *Repos) LocalRepo() (*Repo, bool) {
 		return &r.Repos[0], true
 	}
 	return nil, false
-}
-
-// Remotes returns every entry that is not the local one, in file order.
-func (r *Repos) Remotes() []Repo {
-	local, ok := r.LocalRepo()
-	out := make([]Repo, 0, len(r.Repos))
-	for i := range r.Repos {
-		if ok && &r.Repos[i] == local {
-			continue
-		}
-		out = append(out, r.Repos[i])
-	}
-	return out
 }
 
 // LocalPatterns returns the glob patterns for the local repository.
@@ -1654,22 +1639,21 @@ Ruling R23."
 
 ---
 
-### Task 6: `fetch.Tree` and `fetch.FS`
+### Task 6: `fetch.Entry` and `fetch.FS`
 
 An `fs.FS` whose metadata arrives before its content. No HTTP in this task — it is a pure data structure, testable entirely in memory, and it is what makes R24's cost model real: `Stat`, `ReadDir`, `Glob` and `WalkDir` are answered from the listing for zero requests.
 
 It distinguishes **three** answers where a normal filesystem has two. A path can be present, genuinely absent, or *unknown* — the directory that would contain it was never listed, which happens under R28's truncated-tree fallback. Collapsing the third into "absent" would make landsraad tell somebody a file they are looking at does not exist, which is the false statement spec §14.1 forbids by name.
 
 **Files:**
-- Create: `internal/fetch/tree.go`, `internal/fetch/fs.go`
+- Create: `internal/fetch/fs.go`
 - Test: `internal/fetch/fs_test.go`
 
 **Interfaces:**
 - Consumes: nothing.
 - Produces, and relied on by Tasks 8, 9, 10 and 12:
   - `type Entry struct{ Path string; SHA string; Size int64; Dir bool }`
-  - `type Tree struct{ Entries []Entry; Partial bool }`
-  - `func NewFS() *FS`, `func FromTree(t Tree) *FS`
+  - `func NewFS() *FS`, `func FromEntries(entries []Entry) *FS`
   - `func (f *FS) AddDir(dir string, entries []Entry)`
   - `func (f *FS) Put(path string, data []byte)`
   - `func (f *FS) Entries() []Entry` — sorted by path
@@ -1691,20 +1675,20 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-func testTree() Tree {
-	return Tree{Entries: []Entry{
+func testEntries() []Entry {
+	return []Entry{
 		{Path: "service.yaml", SHA: "aaa", Size: 12},
 		{Path: "docs", Dir: true},
 		{Path: "docs/index.md", SHA: "bbb", Size: 30},
 		{Path: "docs/deep", Dir: true},
 		{Path: "docs/deep/more.md", SHA: "ccc", Size: 7},
-	}}
+	}
 }
 
 // Metadata is answerable the moment the tree is listed, before a single blob
 // is fetched. This is ruling R24's cost model: CheckFiles is free.
 func TestStatBeforeAnyContent(t *testing.T) {
-	f := FromTree(testTree())
+	f := FromEntries(testEntries())
 	info, err := fs.Stat(f, "docs/index.md")
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
@@ -1721,7 +1705,7 @@ func TestStatBeforeAnyContent(t *testing.T) {
 }
 
 func TestGlobAndWalkBeforeAnyContent(t *testing.T) {
-	f := FromTree(testTree())
+	f := FromEntries(testEntries())
 
 	got, err := fs.Glob(f, "docs/*")
 	if err != nil {
@@ -1750,7 +1734,7 @@ func TestGlobAndWalkBeforeAnyContent(t *testing.T) {
 // Reading a path that is in the tree but was never fetched is a bug in the
 // content planner, not a missing file. It must not look like one.
 func TestReadUnfetchedIsNotNotExist(t *testing.T) {
-	f := FromTree(testTree())
+	f := FromEntries(testEntries())
 	_, err := fs.ReadFile(f, "docs/index.md")
 	if err == nil {
 		t.Fatal("ReadFile of an unfetched path succeeded")
@@ -1764,7 +1748,7 @@ func TestReadUnfetchedIsNotNotExist(t *testing.T) {
 }
 
 func TestPutThenRead(t *testing.T) {
-	f := FromTree(testTree())
+	f := FromEntries(testEntries())
 	f.Put("docs/index.md", []byte("# Docs\n"))
 	got, err := fs.ReadFile(f, "docs/index.md")
 	if err != nil {
@@ -1778,7 +1762,7 @@ func TestPutThenRead(t *testing.T) {
 // A genuinely absent path in a listed directory is ErrNotExist, which is
 // what CheckFiles must report as a missing file.
 func TestAbsentInAListedDirectoryIsNotExist(t *testing.T) {
-	f := FromTree(testTree())
+	f := FromEntries(testEntries())
 	_, err := fs.Stat(f, "docs/nope.md")
 	if !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("error = %v, want ErrNotExist", err)
@@ -1817,9 +1801,9 @@ func TestAddDirMakesADirectoryKnown(t *testing.T) {
 }
 
 func TestEntriesAreSorted(t *testing.T) {
-	f := FromTree(Tree{Entries: []Entry{
+	f := FromEntries([]Entry{
 		{Path: "z.md", SHA: "1"}, {Path: "a.md", SHA: "2"}, {Path: "m.md", SHA: "3"},
-	}})
+	})
 	var paths []string
 	for _, e := range f.Entries() {
 		paths = append(paths, e.Path)
@@ -1830,7 +1814,7 @@ func TestEntriesAreSorted(t *testing.T) {
 }
 
 func TestInvalidPathIsRejected(t *testing.T) {
-	f := FromTree(testTree())
+	f := FromEntries(testEntries())
 	for _, p := range []string{"/etc/passwd", "../escape", "docs//index.md"} {
 		if _, err := fs.Stat(f, p); !errors.Is(err, fs.ErrInvalid) {
 			t.Errorf("Stat(%q) error = %v, want ErrInvalid", p, err)
@@ -1844,7 +1828,7 @@ func TestInvalidPathIsRejected(t *testing.T) {
 Run: `go test ./internal/fetch/ -v`
 Expected: FAIL — the package does not exist.
 
-- [ ] **Step 3: Implement `tree.go`**
+- [ ] **Step 3: Implement `fs.go` — the package doc and `Entry`**
 
 ```go
 // Package fetch turns a remote repository into an io/fs.FS.
@@ -1871,21 +1855,9 @@ type Entry struct {
 	Size int64
 	Dir  bool
 }
-
-// Tree is a repository's file listing.
-//
-// Partial records that the listing does not cover the whole repository —
-// GitHub truncated the recursive response and only the directories that
-// mattered were walked (ruling R28). It is not a warning to print; it is
-// what makes *FS able to tell "absent" from "never looked", which are
-// different answers and must stay different.
-type Tree struct {
-	Entries []Entry
-	Partial bool
-}
 ```
 
-- [ ] **Step 4: Implement `fs.go`**
+- [ ] **Step 4: Implement `fs.go` — the filesystem**
 
 ```go
 package fetch
@@ -1936,24 +1908,23 @@ func NewFS() *FS {
 	}
 }
 
-// FromTree builds a filesystem from a listing.
+// FromEntries builds a filesystem from a COMPLETE listing — one recursive
+// response that describes the whole repository.
 //
-// A complete listing marks every directory in it — and every *parent* of
-// every entry, whether or not the host returned a row for it: a recursive
-// listing that mentions docs/index.md has told us what is in docs/.
+// It marks every directory in the listing, and every *parent* of every
+// entry whether or not the host returned a row for it: a recursive listing
+// that mentions docs/index.md has told us what is in docs/.
 //
-// A partial listing marks nothing. Knowing that "docs" exists is not knowing
-// what is in it, and treating a directory row as a listing is exactly how
-// "never looked" would start reporting itself as "not there".
-func FromTree(t Tree) *FS {
+// A partial listing never comes through here. GitHub's truncated-tree
+// descent and GitLab's prefix listing both build with NewFS plus AddDir,
+// which marks exactly the directories that were actually walked — and that
+// distinction is the only thing letting *FS tell "absent" from "never
+// looked". A flag on this function would be a second way to express it, and
+// the wrong value would silently turn the second answer into the first.
+func FromEntries(entries []Entry) *FS {
 	f := NewFS()
-	for _, e := range t.Entries {
+	for _, e := range entries {
 		f.entries[e.Path] = e
-	}
-	if t.Partial {
-		return f
-	}
-	for _, e := range t.Entries {
 		if e.Dir {
 			f.listed[e.Path] = true
 		}
@@ -2144,7 +2115,7 @@ Expected: silent, exit 0. `internal/fetch` must import no `os` package — this 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add internal/fetch/tree.go internal/fetch/fs.go internal/fetch/fs_test.go
+git add internal/fetch/fs.go internal/fetch/fs_test.go
 git commit -m "feat(fetch): an fs.FS whose metadata arrives before its content
 
 Stat, ReadDir, Glob and WalkDir are answered from a tree listing for zero
@@ -2165,7 +2136,7 @@ Auth, retries, rate limits and error classification, written once so the two ada
 - Test: `internal/fetch/client_test.go`
 
 **Interfaces:**
-- Consumes: `fetch.FS`, `fetch.Tree` from Task 6.
+- Consumes: `fetch.Entry`, `fetch.FS` from Task 6.
 - Produces, and relied on by Tasks 8, 10, 12 and 13:
   - `type Fetcher interface{ Open; Fetch; Expand; LastEdit }`
   - `type Repo struct{ Name, URL, Ref, Owner, Slug string }`, `func ParseRepo(name, rawURL, ref string) (Repo, error)`
@@ -2777,7 +2748,7 @@ Headers: `Authorization: Bearer <token>`, `X-GitHub-Api-Version: 2026-03-10`, `A
 - Test: `internal/fetch/github_test.go`
 
 **Interfaces:**
-- Consumes: `Client`, `Repo`, `Cache`, `FS`, `Tree` from Tasks 6 and 7.
+- Consumes: `Client`, `Repo`, `Cache`, `Entry`, `FS` from Tasks 6 and 7.
 - Produces:
   - `func NewGitHub(r Repo, c *Client, cache Cache, parallel int) *GitHub` — implements `Fetcher`
   - `func GitHubBaseURL(r Repo) string`
@@ -3282,19 +3253,19 @@ func (g *GitHub) Open(ctx context.Context, patterns []string) (*FS, error) {
 		// with a pattern-directed descent.
 		return nil, errTruncated
 	}
-	var t Tree
+	var entries []Entry
 	for _, e := range payload.Tree {
 		switch e.Type {
 		case "blob":
-			t.Entries = append(t.Entries, Entry{Path: e.Path, SHA: e.SHA, Size: e.Size})
+			entries = append(entries, Entry{Path: e.Path, SHA: e.SHA, Size: e.Size})
 		case "tree":
-			t.Entries = append(t.Entries, Entry{Path: e.Path, Dir: true})
+			entries = append(entries, Entry{Path: e.Path, Dir: true})
 		// "commit" is a submodule: a pointer to another repository, with no
 		// content on this side. Listing it as a file would give CheckFiles a
 		// path that exists and can never be read.
 		}
 	}
-	return FromTree(t), nil
+	return FromEntries(entries), nil
 }
 
 // Expand is a no-op for a complete listing. Task 9 gives it a body.
@@ -6192,8 +6163,8 @@ Three edits to `docs/superpowers/specs/2026-09-08-landsraad-design.md`:
 - **§13, package layout** — replace the one-line `internal/fetch/` entry with the real file list, the way §13 was already corrected once for `internal/render/web/`:
 
 ```
-internal/fetch/        Fetcher interface returning an fs.FS; tree.go and
-                       fs.go are the sparse filesystem, client.go the shared
+internal/fetch/        Fetcher interface returning an fs.FS; fs.go is the
+                       sparse filesystem, client.go the shared
                        HTTP half, github.go/githubwalk.go/gitlab.go the
                        adapters. The only package under internal/ that
                        speaks HTTP, and it makes every request before a
