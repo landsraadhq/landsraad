@@ -33,6 +33,7 @@ func main() {
 	root.AddCommand(newSchemaCmd())
 	root.AddCommand(newScoreCmd())
 	root.AddCommand(newBuildCmd())
+	root.AddCommand(newServeCmd())
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print the version",
