@@ -177,7 +177,7 @@ func ingestRepo(repo string, fsys fs.FS, cat *catalog.Catalog, out map[catalog.R
 		}
 
 		for _, r := range f.Results {
-			ref, ok := resolveEntity(r.Entity, cat, path, c)
+			ref, ok := resolveEntity(repo, r.Entity, cat, path, c)
 			if !ok {
 				continue
 			}
@@ -266,11 +266,16 @@ func applyStaleness(out map[catalog.Ref]map[string]Reported, staleAfterDays int,
 // working CI job starts erroring. That is correct — picking one silently would
 // attach evidence to the wrong entity — so the diagnostic says what to write
 // instead.
-func resolveEntity(s string, cat *catalog.Catalog, path string, c *diag.Collector) (catalog.Ref, bool) {
+//
+// repo identifies which repository's ChecksDir path is being read. Under R31
+// that path is no longer unique on its own — three repositories can each
+// have a .landsraad/checks/scan.yaml — so without Repo a diagnostic's File
+// no longer names one locatable file.
+func resolveEntity(repo, s string, cat *catalog.Catalog, path string, c *diag.Collector) (catalog.Ref, bool) {
 	if ref, err := catalog.ParseRef(s); err == nil {
 		if _, ok := cat.Lookup(ref); !ok {
 			c.Add(diag.Diagnostic{
-				Severity: diag.SevError, File: path, Line: 1,
+				Severity: diag.SevError, Repo: repo, File: path, Line: 1,
 				Entity:  ref.Name,
 				Check:   "checks-unknown-entity",
 				Message: fmt.Sprintf("result reported for %s, which is not in the catalog", ref),
@@ -292,7 +297,7 @@ func resolveEntity(s string, cat *catalog.Catalog, path string, c *diag.Collecto
 	switch len(matches) {
 	case 0:
 		c.Add(diag.Diagnostic{
-			Severity: diag.SevError, File: path, Line: 1,
+			Severity: diag.SevError, Repo: repo, File: path, Line: 1,
 			Check:   "checks-unknown-entity",
 			Message: fmt.Sprintf("result reported for %q, which is not in the catalog", s),
 			Hint:    "entity is a ref, for example service:payments-worker",
@@ -300,7 +305,7 @@ func resolveEntity(s string, cat *catalog.Catalog, path string, c *diag.Collecto
 		return catalog.Ref{}, false
 	case 1:
 		c.Add(diag.Diagnostic{
-			Severity: diag.SevWarn, File: path, Line: 1,
+			Severity: diag.SevWarn, Repo: repo, File: path, Line: 1,
 			Entity:  matches[0].Name,
 			Check:   "checks-bare-name",
 			Message: fmt.Sprintf("entity %q is a bare name; write it as the ref %q", s, matches[0].String()),
@@ -309,7 +314,7 @@ func resolveEntity(s string, cat *catalog.Catalog, path string, c *diag.Collecto
 		return matches[0], true
 	default:
 		c.Add(diag.Diagnostic{
-			Severity: diag.SevError, File: path, Line: 1,
+			Severity: diag.SevError, Repo: repo, File: path, Line: 1,
 			Check: "checks-ambiguous-name",
 			Message: fmt.Sprintf("entity %q is ambiguous: it could be %s or %s",
 				s, matches[0], matches[1]),

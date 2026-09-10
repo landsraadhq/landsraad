@@ -348,6 +348,52 @@ func TestIngestTieAcrossRepositoriesWithTheSameProducer(t *testing.T) {
 	}
 }
 
+// Under R31 a ChecksDir filename is no longer unique across the catalog:
+// two repositories can each have .landsraad/checks/scan.yaml. A
+// resolveEntity diagnostic's File alone cannot say which repository's file
+// named the unknown entity — only Repo can.
+func TestIngestUnknownEntityDiagnosticNamesItsRepository(t *testing.T) {
+	cat := catalogOf(t, svc("api"))
+	alpha := fstest.MapFS{
+		".landsraad/checks/scan.yaml": {Data: resultsFile("2026-09-08T14:00:00Z",
+			"  - { entity: service:api, check: image-scanned, status: pass }\n")},
+	}
+	beta := fstest.MapFS{
+		".landsraad/checks/scan.yaml": {Data: resultsFile("2026-09-08T14:00:00Z",
+			"  - { entity: service:ghost, check: image-scanned, status: pass }\n")},
+	}
+	src := catalog.Sources{"alpha": alpha, "beta": beta}
+	var c diag.Collector
+
+	Ingest(src, cat, 14, now, &c)
+
+	if !c.HasErrors() {
+		t.Fatal("a result for an entity not in the catalog must be reported")
+	}
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(ds), ds)
+	}
+	d := ds[0]
+	if d.Check != "checks-unknown-entity" {
+		t.Errorf("Check = %q, want %q", d.Check, "checks-unknown-entity")
+	}
+	if d.File != ".landsraad/checks/scan.yaml" {
+		t.Errorf("File = %q, want %q — both repositories have a file at this path", d.File, ".landsraad/checks/scan.yaml")
+	}
+	if d.Repo != "beta" {
+		t.Errorf("Repo = %q, want %q — File alone cannot tell alpha's scan.yaml from beta's", d.Repo, "beta")
+	}
+	want := `result reported for service:ghost, which is not in the catalog`
+	if d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+	wantHint := "the entity may have been renamed; metadata.aliases makes a rename additive"
+	if d.Hint != wantHint {
+		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, wantHint)
+	}
+}
+
 func topic(name string) *catalog.Entity {
 	e := &catalog.Entity{APIVersion: catalog.APIVersion, Kind: catalog.KindTopic}
 	e.Metadata.Name = name
