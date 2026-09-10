@@ -270,12 +270,16 @@ func urlLine(item *yaml.Node) int {
 // build. It is the same argument spec §7.1 makes for checking the shape of
 // .landsraad/checks files hermetically.
 func validateRepos(file string, r *Repos, c *diag.Collector) {
+	// firstLocal and local both answer "which entry is local", by design for
+	// two different checks that cannot share one answer. firstLocal tracks
+	// only entries that said local: true, in loop order, so the *second* one
+	// is reportable as a duplicate marker the moment it's seen — LocalRepo()
+	// has no such notion of "second". local is LocalRepo()'s own answer,
+	// including its sole-entry case, computed once before the loop because
+	// the host check below needs to know the effective local entry even when
+	// nothing in the file says so explicitly.
 	var firstLocal *Repo
 	byName := map[string]*Repo{}
-	// The local repository — computed once, by the same rule LocalRepo()
-	// itself uses (marked local: true, or the sole entry) — is exempt from
-	// the "cannot infer a host" check below, but not from "you stated a
-	// host landsraad does not support".
 	local, _ := r.LocalRepo()
 	for i := range r.Repos {
 		e := &r.Repos[i]

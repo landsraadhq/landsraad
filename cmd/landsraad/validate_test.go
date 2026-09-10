@@ -480,6 +480,52 @@ func TestPatternsForDoesNotStackANoteOnAParseError(t *testing.T) {
 	}
 }
 
+// Regression: a multi-entry repos.yaml with no entry marked local: true used
+// to pick the first entry silently, which is exactly what stamped a banner
+// naming the wrong repositories into every page of a generated site (see
+// build.go's partial-notice tests). patternsFor must say so instead of
+// picking silently, and the exact wording — including that %s really does
+// interpolate the first entry's Identity(), not its raw URL — is pinned
+// here rather than left to a review to notice a regression in.
+func TestPatternsForWarnsWhenNoEntryIsMarkedLocal(t *testing.T) {
+	fsys := fstest.MapFS{
+		"repos.yaml": {Data: []byte(
+			"repos:\n" +
+				"  - url: https://github.com/org/monorepo\n    paths: [services/*]\n" +
+				"  - url: https://github.com/org/edge\n    paths: [.]\n")},
+	}
+	var c diag.Collector
+	got := patternsFor(fsys, &c)
+	want := []string{"services/*"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("patternsFor = %v, want %v", got, want)
+	}
+	if c.Len() != 1 {
+		t.Fatalf("expected exactly one diagnostic, got %d: %+v", c.Len(), c.Diagnostics())
+	}
+	d := c.Diagnostics()[0]
+	if d.Severity != diag.SevWarn {
+		t.Errorf("Severity = %v, want SevWarn — an assumption is not an error", d.Severity)
+	}
+	if d.Check != "repos-local-assumed" {
+		t.Errorf("Check = %q, want %q", d.Check, "repos-local-assumed")
+	}
+	if d.File != "repos.yaml" {
+		t.Errorf("File = %q, want %q", d.File, "repos.yaml")
+	}
+	if d.Line != 1 {
+		t.Errorf("Line = %d, want 1", d.Line)
+	}
+	want2 := `no entry in repos.yaml is marked local: true, so the first (monorepo) is assumed to be this repository`
+	if d.Message != want2 {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want2)
+	}
+	wantHint := "add `local: true` to the entry for the repository you are standing in"
+	if d.Hint != wantHint {
+		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, wantHint)
+	}
+}
+
 // "1 entities validated" is the most-read line the tool prints.
 func TestPluralRendersTheRightNoun(t *testing.T) {
 	for _, tc := range []struct {

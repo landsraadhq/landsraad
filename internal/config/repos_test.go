@@ -296,6 +296,18 @@ func TestLoadReposDiagnostics(t *testing.T) {
 			wantMessage: `repository url must begin with https://, got "git@github.com:org/api.git"`,
 			wantHint:    "write it as https://github.com/org/api",
 		},
+		{
+			// Pins the ordering the host-check split depends on: a stated
+			// host: value landsraad does not support is checked before the
+			// local exemption, so marking the entry local: true does not
+			// excuse it.
+			name:        "local entry with an unsupported host still errors",
+			yaml:        "repos:\n  - url: https://bitbucket.org/org/api\n    local: true\n    host: bitbucket\n",
+			wantCheck:   "repos-host",
+			wantLine:    2,
+			wantMessage: `unknown host "bitbucket" for https://bitbucket.org/org/api`,
+			wantHint:    "host must be github or gitlab; landsraad v1 supports no others (design decision D5)",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var c diag.Collector
