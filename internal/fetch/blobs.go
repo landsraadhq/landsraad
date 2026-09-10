@@ -27,6 +27,9 @@ type FetchError struct {
 }
 
 func (e *FetchError) Error() string {
+	if len(e.Paths) == 0 {
+		return fmt.Sprintf("%s: cannot fetch files: %v", e.Repo, e.Err)
+	}
 	if len(e.Paths) == 1 {
 		return fmt.Sprintf("%s: cannot fetch %s: %v", e.Repo, e.Paths[0], e.Err)
 	}
@@ -102,9 +105,11 @@ func fetchBlobs(ctx context.Context, repo string, f *FS, paths []string, paralle
 	}()
 	go func() { wg.Wait(); close(results) }()
 
+	seen := make(map[string]bool)
 	var failed []string
 	var firstErr error
 	for r := range results {
+		seen[r.path] = true
 		if r.err != nil {
 			failed = append(failed, r.path)
 			if firstErr == nil {
@@ -114,6 +119,18 @@ func fetchBlobs(ctx context.Context, repo string, f *FS, paths []string, paralle
 		}
 		f.Put(r.path, r.data)
 	}
+
+	// Check that every requested path was accounted for. If the context was
+	// cancelled, paths the producer never dispatched will be missing.
+	for _, p := range paths {
+		if !seen[p] {
+			failed = append(failed, p)
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+		}
+	}
+
 	if firstErr != nil {
 		// Sorted so the message is the same on every run: the worker pool
 		// finishes in whatever order it finishes.

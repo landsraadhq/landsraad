@@ -3004,7 +3004,9 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -3026,6 +3028,12 @@ type FetchError struct {
 }
 
 func (e *FetchError) Error() string {
+	if len(e.Paths) == 0 {
+		// No construction site produces this today, but the cancellation
+		// accounting above builds a FetchError from a second site, and an
+		// unconditional e.Paths[0] below would panic if one ever did.
+		return fmt.Sprintf("%s: cannot fetch: %v", e.Repo, e.Err)
+	}
 	if len(e.Paths) == 1 {
 		return fmt.Sprintf("%s: cannot fetch %s: %v", e.Repo, e.Paths[0], e.Err)
 	}
@@ -3095,15 +3103,29 @@ func fetchBlobs(ctx context.Context, repo string, f *FS, paths []string, paralle
 			select {
 			case work <- p:
 			case <-ctx.Done():
+				// Stop dispatching, but do NOT return silently: every
+				// abandoned path is accounted for after the results loop.
 				return
 			}
 		}
 	}()
 	go func() { wg.Wait(); close(results) }()
 
+	// Every requested path must be accounted for exactly once. A cancelled
+	// context used to make the producer abandon undispatched paths, which
+	// then produced no outcome at all — so failed stayed empty, firstErr
+	// stayed nil, and fetchBlobs reported success while f was missing
+	// content the caller believed was present. Silent corruption, found by
+	// review. Anything unseen when results closes is a failure.
+	outstanding := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		outstanding[p] = true
+	}
+
 	var failed []string
 	var firstErr error
 	for r := range results {
+		delete(outstanding, r.path)
 		if r.err != nil {
 			failed = append(failed, r.path)
 			if firstErr == nil {
@@ -3112,6 +3134,15 @@ func fetchBlobs(ctx context.Context, repo string, f *FS, paths []string, paralle
 			continue
 		}
 		f.Put(r.path, r.data)
+	}
+	for p := range outstanding {
+		failed = append(failed, p)
+		if firstErr == nil {
+			firstErr = ctx.Err()
+			if firstErr == nil {
+				firstErr = errors.New("the fetch stopped before this file was requested")
+			}
+		}
 	}
 	if firstErr != nil {
 		// Sorted so the message is the same on every run: the worker pool
@@ -3152,8 +3183,6 @@ func gitBlobSHA(data []byte) string {
 }
 ```
 
-Add `"slices"` to the imports.
-
 - [ ] **Step 4: Implement `github.go`**
 
 ```go
@@ -3182,9 +3211,13 @@ type GitHub struct {
 	cache    Cache
 	parallel int
 
-	ref string // resolved on first use
-
+	// mu guards BOTH ref and edits. ref was outside it in an earlier draft
+	// and review caught the race: resolveRef reads and writes it unlocked
+	// while Open and LastEdit both call resolveRef, so two concurrent
+	// LastEdit calls — which the memoisation right below exists to support —
+	// race on it. sync.Once is banned below cmd/, so the mutex covers both.
 	mu    sync.Mutex
+	ref   string          // resolved on first use, under mu
 	edits map[string]edit // memoized LastEdit answers (ruling R35)
 }
 
@@ -3996,9 +4029,9 @@ type GitLab struct {
 	cache    Cache
 	parallel int
 
-	ref string
-
+	// mu guards BOTH ref and edits, for the reason recorded on GitHub.
 	mu    sync.Mutex
+	ref   string
 	edits map[string]edit
 }
 

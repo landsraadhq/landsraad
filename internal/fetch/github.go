@@ -53,33 +53,44 @@ func (g *GitHub) base() string {
 
 // resolveRef asks the host for its default branch when repos.yaml named no
 // ref. Assuming "main" would fetch nothing from every repository that still
-// uses "master" and report it as a repository that does not exist.
-func (g *GitHub) resolveRef(ctx context.Context) error {
+// uses "master" and report it as a repository that does not exist. Returns
+// the resolved ref and any error.
+func (g *GitHub) resolveRef(ctx context.Context) (string, error) {
+	g.mu.Lock()
 	if g.ref != "" {
-		return nil
+		ref := g.ref
+		g.mu.Unlock()
+		return ref, nil
 	}
+	g.mu.Unlock()
+
 	body, _, err := g.c.Get(ctx, g.base(), nil, "")
 	if err != nil {
-		return err
+		return "", err
 	}
 	var payload struct {
 		DefaultBranch string `json:"default_branch"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return fmt.Errorf("cannot read the repository description: %w", err)
+		return "", fmt.Errorf("cannot read the repository description: %w", err)
 	}
 	if payload.DefaultBranch == "" {
-		return errors.New("the host reported no default branch; set `ref:` in repos.yaml")
+		return "", errors.New("the host reported no default branch; set `ref:` in repos.yaml")
 	}
+
+	g.mu.Lock()
 	g.ref = payload.DefaultBranch
-	return nil
+	ref := g.ref
+	g.mu.Unlock()
+	return ref, nil
 }
 
 func (g *GitHub) Open(ctx context.Context, patterns []string) (*FS, error) {
-	if err := g.resolveRef(ctx); err != nil {
+	ref, err := g.resolveRef(ctx)
+	if err != nil {
 		return nil, err
 	}
-	body, _, err := g.c.Get(ctx, g.base()+"/git/trees/"+url.PathEscape(g.ref),
+	body, _, err := g.c.Get(ctx, g.base()+"/git/trees/"+url.PathEscape(ref),
 		url.Values{"recursive": {"1"}}, "")
 	if err != nil {
 		return nil, err
@@ -135,11 +146,12 @@ func (g *GitHub) LastEdit(ctx context.Context, p string) (time.Time, bool, error
 	if seen {
 		return hit.t, hit.ok, nil
 	}
-	if err := g.resolveRef(ctx); err != nil {
+	ref, err := g.resolveRef(ctx)
+	if err != nil {
 		return time.Time{}, false, err
 	}
 	body, _, err := g.c.Get(ctx, g.base()+"/commits", url.Values{
-		"path": {p}, "per_page": {strconv.Itoa(1)}, "sha": {g.ref},
+		"path": {p}, "per_page": {strconv.Itoa(1)}, "sha": {ref},
 	}, "")
 	if err != nil {
 		return time.Time{}, false, err

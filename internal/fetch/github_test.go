@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -215,5 +216,73 @@ func TestGitHubBaseURL(t *testing.T) {
 		if got := GitHubBaseURL(r); got != tt.want {
 			t.Errorf("GitHubBaseURL(%s) = %q, want %q", tt.url, got, tt.want)
 		}
+	}
+}
+
+func TestFetchBlobsCancellationBeforeDispatch(t *testing.T) {
+	// When the context is cancelled before any path is dispatched, fetchBlobs
+	// should return an error naming the undelivered paths, not nil.
+	body := "# Docs\n"
+	sha := gitBlobSHA([]byte(body))
+	srv := githubServer(t, map[string]string{sha: body}, false)
+
+	g := newTestGitHub(t, srv, "main")
+	f, err := g.Open(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	f.AddDir("docs", []Entry{{Path: "docs/index.md", SHA: sha, Size: int64(len(body))}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel before Fetch dispatches any work
+
+	err = g.Fetch(ctx, f, []string{"docs/index.md"})
+	if err == nil {
+		t.Fatal("Fetch with cancelled context returned nil, want a FetchError")
+	}
+	if !strings.Contains(err.Error(), "docs/index.md") {
+		t.Errorf("error = %v, want it to name the undelivered path", err)
+	}
+}
+
+func TestGitHubConcurrentRefAccess(t *testing.T) {
+	// When two methods are called concurrently on the same *GitHub with unset ref,
+	// they should not race on the ref field.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]any{"default_branch": "main"})
+		case strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/trees/"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.URL.Path == "/repos/org/repo/commits":
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"commit": map[string]any{"committer": map[string]any{"date": "2026-08-01T09:30:00Z"}}},
+			})
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	g := newTestGitHub(t, srv, "") // no ref configured, will race on resolution
+
+	var wg sync.WaitGroup
+	var errOpen, errLastEdit error
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, errOpen = g.Open(context.Background(), nil)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _, errLastEdit = g.LastEdit(context.Background(), "file.txt")
+	}()
+
+	wg.Wait()
+
+	if errOpen != nil {
+		t.Errorf("Open: %v", errOpen)
+	}
+	if errLastEdit != nil {
+		t.Errorf("LastEdit: %v", errLastEdit)
 	}
 }
