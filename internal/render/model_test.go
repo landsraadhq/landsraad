@@ -170,3 +170,33 @@ func TestAnUnknownOwnerGetsNoTeamLink(t *testing.T) {
 		t.Errorf("the owner name is still shown, got %q", rows[0].Owner)
 	}
 }
+
+// The losing side of a team-name collision must not silently share the
+// winning name's slug: that would point the entity's OwnerURL at a page that
+// was actually rendered with the other team's members and on-call. No link
+// is honest; a link to the wrong team is corruption a reader would not
+// notice. This pins the defect directly — a version that only checks the
+// winning team still links correctly (TestCatalogRowsCarryTheirTeamURL)
+// would pass against the bug this test catches.
+func TestALosingTeamNameCollisionGetsNoOwnerLink(t *testing.T) {
+	in := input(t, nil, ent("api", catalog.KindService, "team-payments", 1))
+	var c diag.Collector
+	in.Teams = config.LoadTeams("teams.yaml", []byte(
+		"teams:\n"+
+			"  - name: payments-team\n"+
+			"    members: [alice]\n"+
+			"  - name: Payments Team\n"+
+			"    members: [bob]\n"), &c)
+	// config.Teams.Names() sorts, and "Payments Team" (capital P, 0x50)
+	// sorts before "payments-team" (0x70), so it claims the slug
+	// "payments-team" first; "payments-team" itself is the losing name.
+	in.Catalog.Entities()[0].Metadata.Owner = "payments-team"
+
+	rows := catalogRows(in)
+	if rows[0].OwnerURL != "" {
+		t.Errorf("OwnerURL = %q, want empty for the losing side of a slug collision", rows[0].OwnerURL)
+	}
+	if rows[0].Owner != "payments-team" {
+		t.Errorf("the owner name is still shown, got %q", rows[0].Owner)
+	}
+}
