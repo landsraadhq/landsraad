@@ -42,6 +42,10 @@ func siteFrom(fsys fs.FS, in Input, c *diag.Collector) []emit.File {
 	TeamSlugs(in.Teams, c)
 	files = append(files, entityPages(in, c)...)
 
+	if f, ok := mapPage(in, c); ok {
+		files = append(files, f)
+	}
+
 	files = append(files, assetsFrom(fsys, in, c)...)
 	return files
 }

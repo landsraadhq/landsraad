@@ -61,6 +61,9 @@ type EntityView struct {
 	Results    []ResultView
 	DependsOn  []RefLink
 	Dependents []RefLink
+	// Diagram is Mermaid source, empty when the entity has no edges. The
+	// "Depends on" lists above are the navigation; this only shows shape.
+	Diagram string
 }
 
 // Pair is a sorted key/value, so labels and annotations render in a stable
@@ -150,6 +153,7 @@ func entityView(in Input, e *catalog.Entity, slugs map[string]string, scores map
 			})
 		}
 	}
+	out.Diagram = neighbourhood(in, ref)
 	return out
 }
 

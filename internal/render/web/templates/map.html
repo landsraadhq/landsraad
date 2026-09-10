@@ -1,0 +1,20 @@
+{{define "content"}}
+<h1>Dependencies</h1>
+{{if .Capped}}
+<p class="notice" role="status">This catalog has {{.Count}} entities, above the {{.Cap}}-entity limit for a readable diagram. The edges are listed below instead.</p>
+{{else if .Diagram}}
+<pre class="mermaid">{{.Diagram}}</pre>
+{{else}}
+<p class="none">No entity declares a dependency yet.</p>
+{{end}}
+
+{{with .Edges}}
+<h2>Edges</h2>
+<table><thead><tr><th>From</th><th>To</th></tr></thead><tbody>
+{{range .}}<tr>
+  <td><a href="{{$.Root}}{{.From.URL}}">{{.From.Ref}}</a></td>
+  <td><a href="{{$.Root}}{{.To.URL}}">{{.To.Ref}}</a></td>
+</tr>
+{{end}}</tbody></table>
+{{end}}
+{{end}}

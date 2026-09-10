@@ -55,6 +55,7 @@
 
 {{if or .DependsOn .Dependents}}
 <h2>Dependencies</h2>
+{{with .Diagram}}<pre class="mermaid">{{.}}</pre>{{end}}
 <div class="deps">
   <div>
     <h3>Depends on</h3>
