@@ -59,6 +59,14 @@ type Input struct {
 	// nil and empty are different: no file means no trend was ever recorded,
 	// an empty file means the header is there and no run has appended yet.
 	History []byte
+	// HistoryUnreadable is set when scorecard-history.csv is there and could
+	// not be read — a permission problem, an EISDIR, a truncated read. That is
+	// a third answer, not the same as History being nil: "no history yet, run
+	// `landsraad score --history` in CI to start recording one" tells somebody
+	// to set up a job they already set up, about a file sitting right there.
+	// It follows the same rule as entityDocs.DocsUnreadable one file over
+	// (spec §12: different answers must render differently).
+	HistoryUnreadable bool
 	// FS is the repository, for reading docs/ and runbooks.
 	FS          fs.FS
 	Mermaid     Mermaid

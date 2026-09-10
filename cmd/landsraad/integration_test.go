@@ -395,9 +395,15 @@ func TestIntegrationExpiredExemptionDoesNotShrinkDenominatorAndWarns(t *testing.
 	if got := applicableFor(t, doc, "service:api"); got != baseApplicable {
 		t.Errorf("applicable = %d, want %d — an expired exemption must not shrink the denominator", got, baseApplicable)
 	}
-	wantWarn := "warn: exemption for slo-defined on service:api expired on 2020-01-01 and no longer waives anything"
+	// The whole diagnostic, not just its first line: score now renders through
+	// diag.Text, so the file, the line, the check name and the hint reach the
+	// terminal instead of being thrown away by a "%s: %s" that kept only the
+	// severity and the message.
+	wantWarn := "warn: services/api/service.yaml:4 [exemption-expired]\n" +
+		"  exemption for slo-defined on service:api expired on 2020-01-01 and no longer waives anything\n" +
+		"  hint: renew it with a new `until`, or fix the check and remove the exemption\n"
 	if !strings.Contains(r.stderr, wantWarn) {
-		t.Errorf("stderr must warn about the expired exemption, got %q", r.stderr)
+		t.Errorf("stderr must warn about the expired exemption in full, want:\n%s\ngot:\n%s", wantWarn, r.stderr)
 	}
 }
 

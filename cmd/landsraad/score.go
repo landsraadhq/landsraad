@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -40,9 +41,7 @@ func standardsFor(fsys fs.FS, errOut io.Writer) *config.Standards {
 	}
 	var c diag.Collector
 	std := config.LoadStandards("standards.yaml", data, &c)
-	for _, d := range c.Diagnostics() {
-		fmt.Fprintf(errOut, "%s: %s\n", d.Severity, d.Message)
-	}
+	reportDiagnostics(errOut, c.Diagnostics())
 	if !std.Loaded() {
 		fmt.Fprintf(errOut, "standards.yaml did not parse; scoring against the published defaults\n")
 		return config.DefaultStandards()
@@ -57,7 +56,18 @@ func scoreHistoryFiles(fsys fs.FS, out, errOut io.Writer, opts ScoreOptions) []e
 	if !ok || !opts.History {
 		return nil
 	}
-	existing, _ := fs.ReadFile(fsys, scorecard.HistoryPath)
+	// Discarding this error was destructive, not merely lossy: AppendHistory
+	// given no existing bytes produces a fresh file with one row, and the
+	// caller writes it straight over the real one. A history file that exists
+	// and cannot be read is therefore the case in which every recorded run is
+	// silently replaced by today's. Absent is the only readable-as-empty
+	// answer.
+	existing, err := fs.ReadFile(fsys, scorecard.HistoryPath)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		fmt.Fprintf(errOut, "error: cannot read %s: %v\n", scorecard.HistoryPath, err)
+		fmt.Fprintf(errOut, "  not appending this run: writing a fresh file would replace the history already recorded there\n")
+		return nil
+	}
 	return []emit.File{scorecard.AppendHistory(existing, sc, opts.Now)}
 }
 
@@ -113,9 +123,7 @@ func Score(fsys fs.FS, out, errOut io.Writer, opts ScoreOptions) int {
 	// Diagnostics from ingest and exemptions go to stderr in text mode and are
 	// part of the payload's siblings in JSON mode; either way they are never
 	// interleaved with a JSON document on stdout.
-	for _, d := range c.Diagnostics() {
-		fmt.Fprintf(errOut, "%s: %s\n", d.Severity, d.Message)
-	}
+	reportDiagnostics(errOut, c.Diagnostics())
 
 	gated := 0
 	for _, e := range sc.Entities {

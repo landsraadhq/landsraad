@@ -246,3 +246,31 @@ func TestScoreWritesHistoryOnlyWhenAsked(t *testing.T) {
 		t.Errorf("history row missing:\n%s", files[0].Data)
 	}
 }
+
+// The same discarded-error shape as build's history read, one command over,
+// and destructive rather than merely misleading: AppendHistory given no
+// existing bytes produces a fresh file with one row, and newScoreCmd writes it
+// straight over the real one. A history file that is present and unreadable
+// was therefore the case in which every run ever recorded was silently
+// replaced by today's.
+func TestScoreRefusesToReplaceAHistoryFileItCannotRead(t *testing.T) {
+	base := scoreFS()
+	base[scorecard.HistoryPath] = &fstest.MapFile{Data: []byte(
+		"date,ref,tier,owner,passed,applicable,score\n2026-01-01,service:api,1,team-payments,5,7,0.71\n")}
+	fsys := unreadableFS{MapFS: base, path: scorecard.HistoryPath}
+
+	var out, errOut bytes.Buffer
+	opts := scoreOpts()
+	opts.History = true
+
+	files := scoreHistoryFiles(fsys, &out, &errOut, opts)
+
+	if len(files) != 0 {
+		t.Fatalf("nothing may be written over a history file that could not be read, got %+v", files)
+	}
+	want := "error: cannot read " + scorecard.HistoryPath + ": open " + scorecard.HistoryPath + ": permission denied\n" +
+		"  not appending this run: writing a fresh file would replace the history already recorded there\n"
+	if !strings.Contains(errOut.String(), want) {
+		t.Errorf("stderr:\n%s\nmust contain:\n%s", errOut.String(), want)
+	}
+}

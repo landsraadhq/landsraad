@@ -14,6 +14,8 @@
   <td>{{.Passed}}</td><td>{{.Applicable}}</td>
 </tr>
 {{end}}</tbody></table>
+{{else if .HistoryUnreadable}}
+<p class="none">scorecard-history.csv is present but could not be read, so no trend is shown. The build log says why.</p>
 {{else if .HasHistory}}
   {{if eq (len .Trend.Points) 0}}
 <p class="none">No runs have been recorded yet. scorecard-history.csv exists but nothing has been appended to it.</p>

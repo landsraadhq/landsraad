@@ -1,11 +1,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
-	"path"
 	"strings"
 	"time"
 
@@ -45,9 +45,7 @@ func Build(fsys fs.FS, errOut io.Writer, opts BuildOptions) ([]emit.File, int) {
 	// so a dangling reference is a hard failure (spec §7.1).
 	cat, g, teams := loadCatalogScoped(fsys, catalog.FullCatalog, &c)
 	if cat == nil || c.HasErrors() {
-		for _, d := range c.Diagnostics() {
-			fmt.Fprintf(errOut, "%s: %s\n", d.Severity, d.Message)
-		}
+		reportDiagnostics(errOut, c.Diagnostics())
 		fmt.Fprintf(errOut, "refusing to build a portal from a catalog with errors; it would publish the broken state as if it were the truth\n")
 		return nil, exitValidation
 	}
@@ -61,20 +59,35 @@ func Build(fsys fs.FS, errOut io.Writer, opts BuildOptions) ([]emit.File, int) {
 		LastEdit:       opts.LastEdit,
 	}, &c)
 
-	history, _ := fs.ReadFile(fsys, scorecard.HistoryPath)
+	// nil History and unreadable History are different answers, and the
+	// scorecard page renders them differently. Discarding the error collapsed
+	// a permission problem, an EISDIR and a truncated read into "no file",
+	// which renders as "No history yet. Run `landsraad score --history` in CI
+	// to start recording one" — telling somebody to set up a job they already
+	// set up, about a file that is sitting right there.
+	history, historyErr := fs.ReadFile(fsys, scorecard.HistoryPath)
+	if historyErr != nil && !errors.Is(historyErr, fs.ErrNotExist) {
+		history = nil
+		c.Add(diag.Diagnostic{
+			Severity: diag.SevWarn, File: scorecard.HistoryPath, Line: 1,
+			Check:   "history-unreadable",
+			Message: fmt.Sprintf("cannot read %s: %v", scorecard.HistoryPath, historyErr),
+			Hint: "the portal is built without a trend; fix the file's permissions or " +
+				"delete it and let `landsraad score --history` write a fresh one",
+		})
+	}
 
 	in := render.Input{
 		Catalog: cat, Graph: g, Teams: teams,
 		Scorecard: sc, Standards: std, History: history,
-		FS: fsys, Mermaid: opts.Mermaid,
+		HistoryUnreadable: historyErr != nil && !errors.Is(historyErr, fs.ErrNotExist),
+		FS:                fsys, Mermaid: opts.Mermaid,
 		GeneratedAt: opts.Now, Version: opts.Version,
 		Notice: partialNotice(fsys, errOut),
 	}
 	files := render.Site(in, &c)
 
-	for _, d := range c.Diagnostics() {
-		fmt.Fprintf(errOut, "%s: %s\n", d.Severity, d.Message)
-	}
+	reportDiagnostics(errOut, c.Diagnostics())
 	if c.HasErrors() {
 		fmt.Fprintf(errOut, "refusing to build a portal from a catalog with errors; it would publish the broken state as if it were the truth\n")
 		return nil, exitValidation
@@ -83,12 +96,23 @@ func Build(fsys fs.FS, errOut io.Writer, opts BuildOptions) ([]emit.File, int) {
 	return files, exitOK
 }
 
-// partialNotice reports the repositories repos.yaml names that this build
-// could not read, because fetching them is Plan 4 (ruling R22).
+// partialNotice reports that this build covers fewer repositories than
+// repos.yaml names, because fetching the others is Plan 4 (ruling R22).
 //
 // It returns the banner text and writes the warning. Silently rendering a
 // portal that covers one repository of three is precisely spec §12's "worse
 // than rendering nothing".
+//
+// It counts rather than names. The previous version listed r.Repos[1:] as the
+// missing ones, which is right only if the entry you are standing in happens
+// to be written first. config.LoadRepos does not verify that — LocalPatterns
+// takes r.Repos[0].Paths "by convention" — so with the local repository listed
+// third the banner stamped into EVERY page named the wrong two repositories as
+// missing and quietly omitted the two that actually were. R22's point is that
+// the omission is visible AND accurate; a count is both, whichever entry is
+// local. Naming them correctly would mean teaching the loader which entry it
+// is standing in, which changes what repos.yaml means to everyone who already
+// has one — a one-way door, and Plan 4's to open.
 func partialNotice(fsys fs.FS, errOut io.Writer) string {
 	data, err := fs.ReadFile(fsys, "repos.yaml")
 	if err != nil {
@@ -99,21 +123,17 @@ func partialNotice(fsys fs.FS, errOut io.Writer) string {
 	if len(r.Repos) < 2 {
 		return ""
 	}
-	var missing []string
-	for _, repo := range r.Repos[1:] {
-		missing = append(missing, path.Base(strings.TrimSuffix(repo.URL, "/")))
+	missing := len(r.Repos) - 1
+	verb := "were"
+	if missing == 1 {
+		verb = "was"
 	}
-	// plural() prepends the count, which reads wrong here ("1 edge-gateway
-	// is missing"). The subject is a list of names, so the verb agrees with
-	// how many names there are and the count appears once, earlier.
-	subject, verb := strings.Join(missing, ", "), "are"
-	if len(missing) == 1 {
-		verb = "is"
-	}
-	fmt.Fprintf(errOut, "warn: repos.yaml lists %d repositories and this build read only the local one; %s %s missing from the portal\n",
-		len(r.Repos), subject, verb)
-	return fmt.Sprintf("This portal read only the local repository. %s %s not included; fetching remote repositories is not implemented yet.",
-		subject, verb)
+	fmt.Fprintf(errOut, "warn: repos.yaml lists %s and this build read only the local one; %s %s not read\n",
+		plural(len(r.Repos), "repository", "repositories"),
+		plural(missing, "repository", "repositories"), verb)
+	return fmt.Sprintf("This portal covers only the repository this build ran in. "+
+		"%s of the %d in repos.yaml %s not read; fetching remote repositories is not implemented yet.",
+		plural(missing, "repository", "repositories"), len(r.Repos), verb)
 }
 
 // mermaidFor resolves --mermaid-src (ruling R13).
