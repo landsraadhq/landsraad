@@ -131,7 +131,7 @@ func alertsParse(e *catalog.Entity, env Env) Result {
 			Detail: fmt.Sprintf("%s defines only recording rules, no alerts", e.Spec.Alerts)}
 	}
 	return Result{Check: id, Status: StatusPass,
-		Detail: fmt.Sprintf("%d alert rules", alerts)}
+		Detail: diag.Plural(alerts, "alert rule", "alert rules")}
 }
 
 func sloDefined(e *catalog.Entity, _ Env) Result {

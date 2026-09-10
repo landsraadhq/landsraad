@@ -126,8 +126,22 @@ func TestAlertsParse(t *testing.T) {
 
 	good := fstest.MapFS{"services/api/alerts.yaml": {Data: []byte(
 		"groups:\n  - name: api\n    rules:\n      - alert: HighErrorRate\n        expr: rate(errors[5m]) > 0.05\n")}}
-	if got := run(t, "alerts-parse", e, env(good)); got.Status != StatusPass {
-		t.Errorf("Status = %q, want pass", got.Status)
+	got1 := run(t, "alerts-parse", e, env(good))
+	if got1.Status != StatusPass {
+		t.Errorf("Status = %q, want pass", got1.Status)
+	}
+	// This fixture has exactly one rule, and the assertion above was only ever
+	// about Status — so the portal rendered "1 alert rules" on the entity page
+	// with the suite green.
+	if got1.Detail != "1 alert rule" {
+		t.Errorf("Detail = %q, want %q", got1.Detail, "1 alert rule")
+	}
+
+	two := fstest.MapFS{"services/api/alerts.yaml": {Data: []byte(
+		"groups:\n  - name: api\n    rules:\n      - alert: HighErrorRate\n        expr: rate(errors[5m]) > 0.05\n" +
+			"      - alert: Down\n        expr: up == 0\n")}}
+	if got := run(t, "alerts-parse", e, env(two)); got.Detail != "2 alert rules" {
+		t.Errorf("Detail = %q, want %q", got.Detail, "2 alert rules")
 	}
 
 	// A rules file that parses as YAML but declares no groups is a file that
