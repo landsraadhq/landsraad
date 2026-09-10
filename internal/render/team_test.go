@@ -77,7 +77,8 @@ func TestTeamPageShowsTheDegradedNoticeBanner(t *testing.T) {
 // shared slug. This is the third call site composing teamSlugMap (after
 // catalogRows and entityPages), both of which have regression tests for this.
 // Without one here, a future refactor inlining a bare Slug call would silently
-// clobber a team's page.
+// clobber a team's page. The assertion must count: a content check alone
+// passes even when both teams render (the first write wins in the file).
 func TestLosingTeamNameCollisionGetsNoTeamPage(t *testing.T) {
 	in := input(t, nil, ent("api", catalog.KindService, "team-payments", 1))
 	var c diag.Collector
@@ -91,23 +92,48 @@ func TestLosingTeamNameCollisionGetsNoTeamPage(t *testing.T) {
 	// sorts before "payments-team" (0x70), so it claims the slug first;
 	// "payments-team" itself is the losing name.
 
-	files := siteMap(Site(in, &c))
-	// The shared URL exists exactly once, with the winning team's content.
-	page, ok := files["team/payments-team/index.html"]
-	if !ok {
-		t.Fatalf("the winning team must have a page at the shared slug; got %v", keys(files))
+	files := Site(in, &c)
+
+	// Count the files at the collision path. If both teams rendered, there
+	// would be two emit.Files with the same path. If the guard removed, there
+	// would be an extra at "team//index.html". Do NOT use siteMap, which
+	// silently collapses duplicates and hides the very bug we are pinning.
+	var collisionPathCount int
+	var hasWinner bool
+	var hasMalformed bool
+	var teamPaths []string
+
+	for _, f := range files {
+		if strings.HasPrefix(f.Path, "team/") {
+			teamPaths = append(teamPaths, f.Path)
+		}
+		if f.Path == "team/payments-team/index.html" {
+			collisionPathCount++
+			if strings.Contains(string(f.Data), "bob") {
+				hasWinner = true
+			} else if strings.Contains(string(f.Data), "alice") {
+				t.Errorf("collision path contains loser's content (alice), not winner's (bob)")
+			}
+		}
+		if f.Path == "team//index.html" {
+			hasMalformed = true
+		}
 	}
-	if !strings.Contains(string(page), "bob") {
-		t.Errorf("the page must contain the winning team's member, bob:\n%s", page)
+
+	if collisionPathCount != 1 {
+		t.Errorf("collision path must exist exactly once, got %d times; all team paths: %v", collisionPathCount, teamPaths)
 	}
-	if strings.Contains(string(page), "alice") {
-		t.Errorf("the page must not contain the losing team's member, alice:\n%s", page)
+	if !hasWinner {
+		t.Errorf("collision path must contain winner's content (bob)")
+	}
+	if hasMalformed {
+		t.Errorf("malformed path team//index.html must not exist; all team paths: %v", teamPaths)
 	}
 }
 
 // A team owning only untiered entities must show "not scored" at the
 // aggregate level, never "0%". This pins Plan 2's ruling R1 at this call site.
-func TestTeamOwningOnlyUntiredEntitiesShowsNotScoredAggregate(t *testing.T) {
+func TestTeamOwningOnlyUntiteredEntitiesShowsNotScoredAggregate(t *testing.T) {
 	in := input(t, nil, ent("lib", catalog.KindLibrary, "team-platform", 0))
 	// Add team-platform to the teams fixture.
 	in = withTeams(t, in, testTeamsYAML+
