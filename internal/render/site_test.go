@@ -93,20 +93,21 @@ func TestCatalogShowsNotScoredRatherThanZero(t *testing.T) {
 // embedded templates always compile — every field a template touches is
 // populated by Go code, never by a user's catalog, so there is no legitimate
 // Input that makes this happen. The only way to exercise the path is to
-// substitute a filesystem missing the page template for the duration of
-// this test, which is exactly the shape a future landsraad bug could take.
+// call siteFrom, Site's logic with the filesystem taken as a parameter,
+// with a fake one missing the page template — exactly the shape a future
+// landsraad bug could take. No package state is touched, so this test needs
+// no save/restore and can run in parallel with the rest of the package.
 func TestSiteContinuesPastAPageThatFailsToCompile(t *testing.T) {
-	saved := webFS
-	t.Cleanup(func() { webFS = saved })
-	webFS = fstest.MapFS{
+	t.Parallel()
+	broken := fstest.MapFS{
 		"web/templates/base.html": &fstest.MapFile{Data: []byte(`{{template "content" .}}`)},
 		"web/static/style.css":    &fstest.MapFile{Data: []byte("body{}")},
-		// catalog.html is deliberately absent: templateSet must fail to
-		// compile it, and Site must still emit everything else.
+		// catalog.html is deliberately absent: templateSetFrom must fail to
+		// compile it, and siteFrom must still emit everything else.
 	}
 
 	var c diag.Collector
-	got := siteMap(Site(twoEntities(t), &c))
+	got := siteMap(siteFrom(broken, twoEntities(t), &c))
 
 	if _, ok := got["index.html"]; ok {
 		t.Errorf("a page whose template failed to compile must not be emitted")

@@ -2,6 +2,7 @@ package render
 
 import (
 	"fmt"
+	"io/fs"
 
 	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/emit"
@@ -18,15 +19,25 @@ import (
 // Pages that fail to render are reported and skipped. A single broken
 // runbook must not cost the reader the other forty pages.
 func Site(in Input, c *diag.Collector) []emit.File {
+	return siteFrom(webFS, in, c)
+}
+
+// siteFrom is Site's logic, taking the filesystem as a parameter (IO at the
+// edges) instead of Site reading the package-level embed directly. webFS's
+// real content cannot fail to compile against any legitimate Input — every
+// field a template touches comes from Go code, never from a user's YAML —
+// so proving Site continues past a broken page needs a filesystem a test
+// can break, not a global it would have to reassign.
+func siteFrom(fsys fs.FS, in Input, c *diag.Collector) []emit.File {
 	var files []emit.File
 
-	if t, err := templateSet("catalog.html"); err != nil {
+	if t, err := templateSetFrom(fsys, "catalog.html"); err != nil {
 		c.Add(templateCompileError("catalog.html", err))
 	} else if f, ok := renderPage(t, "index.html", catalogPage(in), c); ok {
 		files = append(files, f)
 	}
 
-	files = append(files, assets(in, c)...)
+	files = append(files, assetsFrom(fsys, in, c)...)
 	return files
 }
 

@@ -14,7 +14,7 @@ import (
 	"github.com/landsraadhq/landsraad/internal/render/md"
 )
 
-// webFSData holds the templates and static files.
+// webFS holds the templates and static files.
 //
 // Spec §13's layout sketch puts these at a top-level web/. They live here
 // instead (ruling R10): go:embed patterns are relative to the package
@@ -23,16 +23,7 @@ import (
 // constraint and Task 15 amends it.
 //
 //go:embed web
-var webFSData embed.FS
-
-// webFS is what templateSet and assets actually read from, typed as the
-// fs.FS interface rather than the concrete embed.FS above it. The real,
-// well-formed embedded content has no reachable way to fail a page's
-// template compile — every field a template touches is populated by Go
-// code, never by a user's YAML — so a test proving Site continues past a
-// broken page has nowhere to inject the break except here, by substituting
-// a fake filesystem for the duration of one test.
-var webFS fs.FS = webFSData
+var webFS embed.FS
 
 // templateSet parses base.html plus exactly one page template.
 //
@@ -40,9 +31,20 @@ var webFS fs.FS = webFSData
 // "content", so a shared set would silently keep only the last one parsed
 // and render the same body on every page.
 func templateSet(page string) (*template.Template, error) {
+	return templateSetFrom(webFS, page)
+}
+
+// templateSetFrom is templateSet's logic, taking the filesystem as a
+// parameter (composition's "IO at the edges") rather than reading the
+// package-level embed directly. webFS's real, well-formed content has no
+// reachable way to fail a page's template compile — every field a template
+// touches is populated by Go code, never by a user's YAML — so this seam is
+// what lets a test hand it a filesystem missing a page template, without a
+// package-level var anything could reassign.
+func templateSetFrom(fsys fs.FS, page string) (*template.Template, error) {
 	return template.New("base.html").
 		Funcs(funcs()).
-		ParseFS(webFS, "web/templates/base.html", "web/templates/"+page)
+		ParseFS(fsys, "web/templates/base.html", "web/templates/"+page)
 }
 
 func funcs() template.FuncMap {
@@ -84,9 +86,16 @@ func renderPage(t *template.Template, outPath string, data any, c *diag.Collecto
 // It walks the embedded directory rather than listing names, so adding a
 // stylesheet or a client script is one new file and no code change.
 func assets(in Input, c *diag.Collector) []emit.File {
+	return assetsFrom(webFS, in, c)
+}
+
+// assetsFrom is assets's logic, taking the filesystem as a parameter for the
+// same reason templateSetFrom does: a seam a test can hand a substitute
+// filesystem to, with no package-level var to reassign.
+func assetsFrom(fsys fs.FS, in Input, c *diag.Collector) []emit.File {
 	var out []emit.File
 
-	entries, err := fs.ReadDir(webFS, "web/static")
+	entries, err := fs.ReadDir(fsys, "web/static")
 	if err != nil {
 		c.Add(diag.Diagnostic{
 			Severity: diag.SevError, File: "assets", Line: 1,
@@ -99,7 +108,7 @@ func assets(in Input, c *diag.Collector) []emit.File {
 		if e.IsDir() {
 			continue
 		}
-		data, err := fs.ReadFile(webFS, path.Join("web/static", e.Name()))
+		data, err := fs.ReadFile(fsys, path.Join("web/static", e.Name()))
 		if err != nil {
 			c.Add(diag.Diagnostic{
 				Severity: diag.SevError, File: "assets/" + e.Name(), Line: 1,
