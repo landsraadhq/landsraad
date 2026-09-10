@@ -589,3 +589,91 @@ func TestAnEntityPageThatFailsToRenderLeavesNoHoistedIndexSearchEntry(t *testing
 		}
 	}
 }
+
+// The runbook gets a prominent link of its own (spec §5.3, and
+// TestTheRunbookIsLinkedProminently), so listing it AGAIN as an ordinary row
+// in the documentation nav printed "Runbook" twice, stacked, on every entity
+// whose spec.runbook lives inside spec.docs -- which is the common layout.
+// Noticed by looking at a rendered page, not at the code.
+func TestTheRunbookIsNotAlsoAnOrdinaryRowInTheDocNav(t *testing.T) {
+	e := ent("api", catalog.KindService, "team-payments", 1)
+	e.Spec.Docs = "services/api/docs"
+	e.Spec.Runbook = "services/api/docs/runbook.md"
+	files := fstest.MapFS{
+		"services/api/docs/runbook.md": {Data: []byte("# Runbook\n\nDrain the queue.\n")},
+		"services/api/docs/scaling.md": {Data: []byte("# Scaling\n\nAdd replicas.\n")},
+	}
+	in := input(t, files, e)
+	dt, err := templateSet(webFS, "doc.html")
+	if err != nil {
+		t.Fatalf("templateSet: %v", err)
+	}
+
+	var c diag.Collector
+	ed := docsFor(in, e, dt, md.New(), &c)
+
+	// It still renders and is still reachable and searchable.
+	if ed.RunbookURL != "docs/runbook.html" {
+		t.Errorf("RunbookURL = %q, want the rendered runbook", ed.RunbookURL)
+	}
+	if len(ed.Files) != 2 {
+		t.Errorf("both documents must still be emitted, got %+v", ed.Files)
+	}
+	if len(ed.Docs) != 2 {
+		t.Errorf("both documents must still be in the search index, got %+v", ed.Docs)
+	}
+
+	// But it is not repeated as a plain nav row.
+	for _, l := range ed.Nav {
+		if l.URL == "docs/runbook.html" {
+			t.Errorf("the runbook has its own link; it must not also be a nav row: %+v", ed.Nav)
+		}
+	}
+	if len(ed.Nav) != 1 || ed.Nav[0].URL != "docs/scaling.html" {
+		t.Errorf("the other document must still be listed, got %+v", ed.Nav)
+	}
+}
+
+// An entity whose entire documentation is its runbook is a legal layout, and
+// docsFor's index.md branch returned before anything noticed. runbookRendered
+// stayed false, so the entity page told the reader "spec.runbook is set, but
+// the runbook could not be rendered -- see the build diagnostics", about a
+// runbook that had rendered perfectly well inlined a few lines below, and
+// about diagnostics that were never emitted.
+func TestARunbookThatIsTheDocsIndexIsNotReportedUnreadable(t *testing.T) {
+	e := ent("api", catalog.KindService, "team-payments", 1)
+	e.Spec.Docs = "services/api/docs"
+	e.Spec.Runbook = "services/api/docs/index.md"
+	files := fstest.MapFS{
+		"services/api/docs/index.md": {Data: []byte("# API\n\nEverything, including how to page.\n")},
+	}
+	in := input(t, files, e)
+	dt, err := templateSet(webFS, "doc.html")
+	if err != nil {
+		t.Fatalf("templateSet: %v", err)
+	}
+
+	var c diag.Collector
+	ed := docsFor(in, e, dt, md.New(), &c)
+
+	if ed.RunbookUnreadable {
+		t.Error("the runbook rendered — inlined as the index — so the page must not claim it could not be")
+	}
+	if ed.Index == "" {
+		t.Error("and it must actually be inlined")
+	}
+
+	// End to end: the false notice must not reach the page, and neither must
+	// the no-documentation fallback.
+	var c2 diag.Collector
+	page := string(siteMap(Site(in, &c2))["entity/service/api/index.html"])
+	if strings.Contains(page, "could not be rendered") {
+		t.Errorf("the entity page must not claim the runbook failed:\n%s", page)
+	}
+	if strings.Contains(page, "No documentation.") {
+		t.Errorf("the entity page must not claim there is no documentation:\n%s", page)
+	}
+	if !strings.Contains(page, "Everything, including how to page.") {
+		t.Errorf("the runbook's text must be on the page:\n%s", page)
+	}
+}

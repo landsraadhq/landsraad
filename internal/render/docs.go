@@ -300,6 +300,18 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 			if doc, rd, ok := render(repoPath, "index.html", entityDir); ok {
 				out.Index = mdToHTML(doc)
 				out.IndexDoc = &rd
+				if repoPath == e.Spec.Runbook {
+					// An entity whose whole documentation IS its runbook is a
+					// legal and unremarkable layout, and this branch used to
+					// return before anything noticed. runbookRendered then
+					// stayed false and the page told the reader "spec.runbook
+					// is set, but the runbook could not be rendered — see the
+					// build diagnostics", about a runbook that had rendered
+					// perfectly well, inlined a few lines further down, and
+					// about diagnostics that do not exist. No separate link is
+					// wanted: the runbook is already the body of this page.
+					runbookRendered = true
+				}
 			}
 			continue
 		}
@@ -344,12 +356,18 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 			continue
 		}
 		out.Files = append(out.Files, f)
-		out.Nav = append(out.Nav, DocLink{Title: docTitle(doc, repoPath), URL: relURL})
 		out.Docs = append(out.Docs, rd)
 		if repoPath == e.Spec.Runbook {
+			// The runbook already gets a prominent link of its own — it is
+			// what an on-call engineer opens at 3am, not a row in a file
+			// listing. Adding it to the nav as well printed "Runbook" twice,
+			// stacked, for every entity whose spec.runbook lives inside
+			// spec.docs, which is the layout `landsraad init` scaffolds.
 			out.RunbookURL = relURL
 			runbookRendered = true
+			continue
 		}
+		out.Nav = append(out.Nav, DocLink{Title: docTitle(doc, repoPath), URL: relURL})
 	}
 
 	// 2. The runbook, when it is not already one of the documents above.
