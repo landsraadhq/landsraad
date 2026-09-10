@@ -193,7 +193,7 @@ func TestLoadReposReportsEveryUnknownKey(t *testing.T) {
 // makes the caller unable to forget.
 func TestLocalPatternsSaysWhenItDefaulted(t *testing.T) {
 	var c diag.Collector
-	r := LoadRepos("repos.yaml", []byte("repos:\n  - url: https://github.com/org/x\n    paths: []\n"), &c)
+	r := LoadRepos("repos.yaml", []byte("repos:\n  - url: https://x/y\n    paths: []\n"), &c)
 	if c.HasErrors() {
 		t.Fatalf("an empty paths list is not a parse error: %+v", c.Diagnostics())
 	}
@@ -280,10 +280,11 @@ func TestLoadReposDiagnostics(t *testing.T) {
 			wantHint:    "host must be github or gitlab; landsraad v1 supports no others (design decision D5)",
 		},
 		{
-			name:        "host not inferable",
-			yaml:        "repos:\n  - url: https://git.example.com/org/api\n",
+			name: "host not inferable",
+			yaml: "repos:\n  - url: https://github.com/org/platform\n    local: true\n" +
+				"  - url: https://git.example.com/org/api\n",
 			wantCheck:   "repos-host",
-			wantLine:    2,
+			wantLine:    4,
 			wantMessage: `cannot tell which host https://git.example.com/org/api is`,
 			wantHint:    "add host: github or host: gitlab to this entry",
 		},
@@ -317,6 +318,19 @@ func TestLoadReposDiagnostics(t *testing.T) {
 				t.Errorf("Hint = %q, want %q", d.Hint, tt.wantHint)
 			}
 		})
+	}
+}
+
+// The case the host-check split exists for: a single-entry repos.yaml on a
+// hostname landsraad cannot infer, with no host: key, is the repository this
+// command is standing in by LocalRepo()'s own rule (marked local, or the
+// sole entry) — and a local repository is read from disk, never fetched, so
+// there is no host to validate.
+func TestLoadReposLocalRepoOnUnrecognisedHostNeedsNoHostKey(t *testing.T) {
+	var c diag.Collector
+	LoadRepos("repos.yaml", []byte("repos:\n  - url: https://git.example.com/org/api\n"), &c)
+	if got := c.Diagnostics(); len(got) != 0 {
+		t.Fatalf("got %d diagnostics, want 0: %+v", len(got), got)
 	}
 }
 

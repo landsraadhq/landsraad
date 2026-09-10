@@ -447,7 +447,7 @@ metadata:
 // while the absent-file half announced itself.
 func TestPatternsForAnnouncesDefaultsWhenReposYAMLListsNoPaths(t *testing.T) {
 	fsys := fstest.MapFS{
-		"repos.yaml": {Data: []byte("repos:\n  - url: https://github.com/org/x\n    paths: []\n")},
+		"repos.yaml": {Data: []byte("repos:\n  - url: https://x/y\n    paths: []\n")},
 	}
 	var c diag.Collector
 	got := patternsFor(fsys, &c)

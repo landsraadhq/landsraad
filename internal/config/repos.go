@@ -272,6 +272,11 @@ func urlLine(item *yaml.Node) int {
 func validateRepos(file string, r *Repos, c *diag.Collector) {
 	var firstLocal *Repo
 	byName := map[string]*Repo{}
+	// The local repository — computed once, by the same rule LocalRepo()
+	// itself uses (marked local: true, or the sole entry) — is exempt from
+	// the "cannot infer a host" check below, but not from "you stated a
+	// host landsraad does not support".
+	local, _ := r.LocalRepo()
 	for i := range r.Repos {
 		e := &r.Repos[i]
 
@@ -313,13 +318,22 @@ func validateRepos(file string, r *Repos, c *diag.Collector) {
 		}
 		byName[e.Identity()] = e
 
-		// A repository explicitly marked local is read from disk and never
-		// fetched, so it needs no host: requiring one would make `landsraad
-		// validate` demand a key it will never use. An entry that is not
-		// marked local is checked even when it is the only entry in the
-		// file — a bad host: value is a mistake worth catching before this
-		// repos.yaml grows a second entry that actually needs fetching.
-		if e.Local {
+		// Two different mistakes, two different rules. A stated host: value
+		// that landsraad does not support is wrong regardless of whether
+		// this entry is ever fetched — the user typed something the tool
+		// does not accept, and that's true of the local repository too.
+		// An un-inferable hostname with no host: key is not the same kind
+		// of problem: it only matters for an entry that will actually be
+		// fetched, so the local repository — read from disk, never
+		// fetched — is exempt from it. "The local one" is whatever
+		// LocalRepo() says it is, computed once above: an unmarked sole
+		// entry is exempt for the same reason an entry marked local: true
+		// is.
+		if e.Host != "" && !slices.Contains(hostKinds[:], e.Host) {
+			c.Add(hostDiagnostic(file, e))
+			continue
+		}
+		if e == local {
 			continue
 		}
 		if _, known := e.HostKind(); !known {
