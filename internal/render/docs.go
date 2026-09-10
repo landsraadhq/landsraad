@@ -71,6 +71,12 @@ func htmlSuffix(p string) string { return strings.TrimSuffix(p, ".md") + ".html"
 
 // rewriteMarkdownLinks turns a relative *.md destination into *.html,
 // preserving any #fragment. A link that works on GitHub must work here.
+//
+// This is a context-free suffix swap: it is correct only when the source
+// tree and the URL tree are mirrors of each other. docsFor's docLinker
+// uses it as the fallback for a destination it cannot resolve any other
+// way — a predictable dead link, never a panic or an empty href. It is not
+// used for any link inside spec.docs directly; see docLinker.
 func rewriteMarkdownLinks(dest string) string {
 	frag := ""
 	if i := strings.Index(dest, "#"); i >= 0 {
@@ -80,6 +86,97 @@ func rewriteMarkdownLinks(dest string) string {
 		return dest + frag
 	}
 	return htmlSuffix(dest) + frag
+}
+
+// docLinker rewrites the relative Markdown links inside one document by
+// mapping between the repository's source tree and the site's URL tree.
+//
+// The two trees are not mirrors of each other: docs/index.md is hoisted
+// onto the entity page itself (ruling R18), one directory above every
+// other document under spec.docs. A context-free .md -> .html suffix swap
+// gets any link crossing that hoist wrong, in both directions — verified
+// by printing the actual rendered HTML: docs/index.md's own link to
+// docs/runbook.md came out as "runbook.html" (a dead link; the real page
+// is one level down, at "docs/runbook.html"), and a nested doc's link back
+// to docs/index.md came out as "../index.html" (a dead link; index.md has
+// no page of its own to point at).
+//
+// The fix resolves a link's destination against the *source* directory of
+// the document containing it, maps that source path to its URL (with the
+// index.md special case), and computes the relative path from the
+// containing document's own URL to the target's — the only URL-tree fact
+// that source-relative Markdown links cannot already encode.
+//
+// A destination this cannot resolve — outside anything this entity
+// renders, or one that climbs above the docs root — falls back to
+// rewriteMarkdownLinks's plain suffix swap. That is a predictable dead
+// link, not a panic or an empty href; this package does not validate link
+// targets, which is a separate, deliberately out-of-scope feature.
+type docLinker struct {
+	docsDir   string
+	runbook   string
+	entityDir string
+	// srcDir is the source-repository directory of the document currently
+	// being rendered; a relative destination is resolved against it.
+	srcDir string
+	// selfURL is that document's own rendered URL, site-root-relative —
+	// the point every rewritten link is computed relative to.
+	selfURL string
+}
+
+func (l docLinker) rewrite(dest string) string {
+	base, frag := dest, ""
+	if i := strings.Index(dest, "#"); i >= 0 {
+		base, frag = dest[:i], dest[i:]
+	}
+	if !strings.HasSuffix(base, ".md") {
+		return dest
+	}
+	targetURL, ok := l.sourceToURL(path.Join(l.srcDir, base))
+	if !ok {
+		return rewriteMarkdownLinks(dest)
+	}
+	return relativeURL(l.selfURL, targetURL) + frag
+}
+
+// sourceToURL maps a repository-relative source path to the URL it renders
+// at, when docsFor renders that path at all.
+func (l docLinker) sourceToURL(src string) (string, bool) {
+	if l.docsDir != "" {
+		if src == l.docsDir+"/index.md" {
+			// Ruling R18: hoisted onto the entity page, not docs/index.html.
+			return l.entityDir + "index.html", true
+		}
+		if rel, err := relativeTo(l.docsDir, src); err == nil {
+			return l.entityDir + "docs/" + htmlSuffix(rel), true
+		}
+	}
+	if l.runbook != "" && src == l.runbook && !underDir(l.docsDir, l.runbook) {
+		return l.entityDir + "runbook.html", true
+	}
+	return "", false
+}
+
+// relativeURL computes the relative link from the page at fromURL to the
+// page at toURL, both site-root-relative, slash-separated paths — the
+// standard "shared prefix, then climb, then descend" construction.
+func relativeURL(fromURL, toURL string) string {
+	from := strings.Split(fromURL, "/")
+	from = from[:len(from)-1] // the directory containing fromURL
+	to := strings.Split(toURL, "/")
+	toDir, toBase := to[:len(to)-1], to[len(to)-1]
+
+	common := 0
+	for common < len(from) && common < len(toDir) && from[common] == toDir[common] {
+		common++
+	}
+	var parts []string
+	for i := common; i < len(from); i++ {
+		parts = append(parts, "..")
+	}
+	parts = append(parts, toDir[common:]...)
+	parts = append(parts, toBase)
+	return strings.Join(parts, "/")
 }
 
 // docsFor renders one entity's documentation.
@@ -103,7 +200,11 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 			})
 			return md.Doc{}, false
 		}
-		doc, err := md.Render(m, data, rewriteMarkdownLinks)
+		linker := docLinker{
+			docsDir: e.Spec.Docs, runbook: e.Spec.Runbook,
+			entityDir: entityDir, srcDir: path.Dir(repoPath), selfURL: entityDir + relURL,
+		}
+		doc, err := md.Render(m, data, linker.rewrite)
 		if err != nil {
 			c.Add(diag.Diagnostic{
 				Severity: diag.SevError, File: repoPath, Line: 1,

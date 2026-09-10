@@ -54,14 +54,61 @@ func TestOtherDocsBecomeSubPages(t *testing.T) {
 }
 
 // A link that works on GitHub must work in the portal.
+// The URL tree is not a mirror of the source tree: docs/index.md is
+// hoisted onto the entity page itself (ruling R18), one directory above
+// where every other document under spec.docs ends up. So a link's
+// rewritten href must be resolved relative to *where the site puts each
+// page*, not to a context-free .md -> .html suffix swap of the source
+// path.
+//
+// scaling.md's "../index.md" resolves, in source space, to docs/index.md
+// — which the site does not put at docs/index.html (that page does not
+// exist), but at the entity page two directories up from
+// docs/ops/scaling.html. The correct href is therefore "../../index.html",
+// not "../index.html": a previous version of this test asserted the
+// latter, which was the bug written down as a passing assertion rather
+// than a passing behaviour.
 func TestRelativeMarkdownLinksBecomeHTMLLinks(t *testing.T) {
 	var c diag.Collector
 	files := siteMap(Site(documented(t), &c))
 	if !strings.Contains(string(files["entity/service/api/index.html"]), `href="docs/runbook.html"`) {
 		t.Errorf("the inlined index's link was not rewritten:\n%s", files["entity/service/api/index.html"])
 	}
-	if !strings.Contains(string(files["entity/service/api/docs/ops/scaling.html"]), `href="../index.html"`) {
-		t.Errorf("a nested doc's parent-relative link was not rewritten:\n%s", files["entity/service/api/docs/ops/scaling.html"])
+	if !strings.Contains(string(files["entity/service/api/docs/ops/scaling.html"]), `href="../../index.html"`) {
+		t.Errorf("a nested doc's link to the hoisted index was not rewritten relative to the index's real URL:\n%s", files["entity/service/api/docs/ops/scaling.html"])
+	}
+}
+
+// The previous rewrite was context-free, so this exact substring could
+// pass by coincidence: the page's separate .runbook-link element
+// independently produces href="docs/runbook.html" with link text
+// "Runbook", masking a wrong href="runbook.html" sitting right next to it
+// inside the inlined prose (whose link text is "the runbook"). Anchoring
+// on the link text pins the actual element instead.
+func TestIndexMarkdownsOwnLinkIsRewrittenNotJustTheRunbookLinkElement(t *testing.T) {
+	var c diag.Collector
+	page := string(siteMap(Site(documented(t), &c))["entity/service/api/index.html"])
+	if !strings.Contains(page, `href="docs/runbook.html">the runbook</a>`) {
+		t.Errorf("the inlined index's own link to the runbook was not correctly rewritten:\n%s", page)
+	}
+}
+
+// A link between two ordinary sub-pages in the same directory is the
+// common case and must not grow a spurious "docs/" prefix or any other
+// adjustment — only a link that crosses the index.md hoist needs one.
+func TestASiblingSubPageLinkStaysAPlainRelativeLink(t *testing.T) {
+	e := ent("api", catalog.KindService, "team-payments", 1)
+	e.Spec.Docs = "services/api/docs"
+	files := fstest.MapFS{
+		"services/api/docs/index.md": {Data: []byte("# API\n")},
+		"services/api/docs/ops/deploy.md": {Data: []byte(
+			"# Deploy\n\nSee [scaling](scaling.md).\n")},
+		"services/api/docs/ops/scaling.md": {Data: []byte("# Scaling\n\nSteps.\n")},
+	}
+	var c diag.Collector
+	page := string(siteMap(Site(input(t, files, e), &c))["entity/service/api/docs/ops/deploy.html"])
+	if !strings.Contains(page, `href="scaling.html">scaling</a>`) {
+		t.Errorf("a sibling sub-page link must stay a plain relative link:\n%s", page)
 	}
 }
 
