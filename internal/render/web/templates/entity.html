@@ -7,84 +7,119 @@
     <span class="mono">{{.Ref}}</span>
     <span class="runtime" data-ref="{{.Ref}}">runtime unknown</span>
   </p>
-  {{with .Description}}<p class="desc">{{.}}</p>{{end}}
+  {{- with .Description}}
+  <p class="desc">{{.}}</p>
+  {{- end}}
 </header>
 
 <dl class="facts">
   <dt>Owner</dt><dd>{{if .OwnerURL}}<a href="{{.Root}}{{.OwnerURL}}">{{.Owner}}</a>{{else}}{{.Owner}}{{end}}</dd>
   <dt>Tier</dt><dd>{{if .Tier}}{{.Tier}}{{else}}<span class="none">not applicable to this kind</span>{{end}}</dd>
   <dt>Lifecycle</dt><dd>{{.Lifecycle}}</dd>
-  {{with .Language}}<dt>Language</dt><dd>{{.}}</dd>{{end}}
-  {{with .Type}}<dt>Type</dt><dd>{{.}}</dd>{{end}}
-  {{with .Oncall}}<dt>On-call</dt><dd><a href="{{.}}">{{.}}</a></dd>{{end}}
-  {{with .RepoURL}}<dt>Source</dt><dd><a href="{{.}}">{{.}}</a></dd>{{end}}
+  {{- with .Language}}
+  <dt>Language</dt><dd>{{.}}</dd>
+  {{- end}}
+  {{- with .Type}}
+  <dt>Type</dt><dd>{{.}}</dd>
+  {{- end}}
+  {{- with .Oncall}}
+  <dt>On-call</dt><dd><a href="{{.}}">{{.}}</a></dd>
+  {{- end}}
+  {{- with .RepoURL}}
+  <dt>Source</dt><dd><a href="{{.}}">{{.}}</a></dd>
+  {{- end}}
   <dt>Defined in</dt><dd class="mono">{{.SourcePath}}</dd>
-  {{with .Aliases}}<dt>Aliases</dt><dd>{{range .}}<span class="mono">{{.}}</span> {{end}}</dd>{{end}}
-  {{with .Tags}}<dt>Tags</dt><dd>{{range .}}<span class="tag">{{.}}</span> {{end}}</dd>{{end}}
+  {{- with .Aliases}}
+  <dt>Aliases</dt><dd>{{range .}}<span class="mono">{{.}}</span> {{end}}</dd>
+  {{- end}}
+  {{- with .Tags}}
+  <dt>Tags</dt><dd>{{range .}}<span class="tag">{{.}}</span> {{end}}</dd>
+  {{- end}}
 </dl>
+{{- with .Links}}
 
-{{with .Links}}
 <h2>Links</h2>
 <ul class="links">
-{{range .}}<li><a href="{{.URL}}">{{.Title}}</a>{{with .Type}} <span class="none">{{.}}</span>{{end}}</li>
-{{end}}</ul>
-{{end}}
+{{- range .}}
+<li><a href="{{.URL}}">{{.Title}}</a>{{with .Type}} <span class="none">{{.}}</span>{{end}}</li>
+{{- end}}
+</ul>
+{{- end}}
+{{- with .SLO}}
 
-{{with .SLO}}
 <h2>Service level objectives</h2>
 <table><thead><tr><th>Name</th><th>Target</th><th>Window</th></tr></thead><tbody>
-{{range .}}<tr><td>{{.Name}}</td><td class="mono">{{.Target}}</td><td class="mono">{{.Window}}</td></tr>
-{{end}}</tbody></table>
-{{end}}
+{{- range .}}
+<tr><td>{{.Name}}</td><td class="mono">{{.Target}}</td><td class="mono">{{.Window}}</td></tr>
+{{- end}}
+</tbody></table>
+{{- end}}
+{{- if .Score}}
 
-{{if .Score}}
 <h2 id="scorecard">Scorecard <span class="mono">{{pct .Score}}</span> <span class="none">({{.Passed}}/{{.Applicable}})</span></h2>
 <table class="results"><thead><tr><th>Check</th><th>Status</th><th>Severity</th><th>Detail</th></tr></thead><tbody>
-{{range .Results}}
+{{- range .Results}}
 <tr>
   <td class="mono">{{.Check}}</td>
   <td><span class="status {{.Class}}">{{.Status}}</span></td>
   <td>{{.Severity}}</td>
   <td>{{.Detail}}{{with .URL}} <a href="{{.}}">evidence</a>{{end}}</td>
 </tr>
-{{end}}</tbody></table>
-{{else}}
+{{- end}}
+</tbody></table>
+{{- else}}
+
 <h2>Scorecard</h2>
 <p class="none">This entity has no tier, so it is not scored. Tiers apply to Service, Worker, Cron and API — the kinds that can page someone.</p>
-{{end}}
+{{- end}}
+{{- if or .DependsOn .Dependents}}
 
-{{if or .DependsOn .Dependents}}
 <h2>Dependencies</h2>
-{{with .Diagram}}<pre class="mermaid">{{.}}</pre>{{end}}
+{{- with .Diagram}}
+<pre class="mermaid">{{.}}</pre>
+{{- end}}
 <div class="deps">
   <div>
     <h3>Depends on</h3>
-    {{if .DependsOn}}<ul>{{range .DependsOn}}<li>{{if .URL}}<a href="{{$.Root}}{{.URL}}">{{.Ref}}</a>{{else}}<span class="mono">{{.Ref}}</span>{{end}}</li>{{end}}</ul>
-    {{else}}<p class="none">nothing</p>{{end}}
+    {{- if .DependsOn}}
+    <ul>{{range .DependsOn}}<li>{{if .URL}}<a href="{{$.Root}}{{.URL}}">{{.Ref}}</a>{{else}}<span class="mono">{{.Ref}}</span>{{end}}</li>{{end}}</ul>
+    {{- else}}
+    <p class="none">nothing</p>
+    {{- end}}
   </div>
   <div>
     <h3>Depended on by</h3>
-    {{if .Dependents}}<ul>{{range .Dependents}}<li>{{if .URL}}<a href="{{$.Root}}{{.URL}}">{{.Ref}}</a>{{else}}<span class="mono">{{.Ref}}</span>{{end}}</li>{{end}}</ul>
-    {{else}}<p class="none">nothing</p>{{end}}
+    {{- if .Dependents}}
+    <ul>{{range .Dependents}}<li>{{if .URL}}<a href="{{$.Root}}{{.URL}}">{{.Ref}}</a>{{else}}<span class="mono">{{.Ref}}</span>{{end}}</li>{{end}}</ul>
+    {{- else}}
+    <p class="none">nothing</p>
+    {{- end}}
   </div>
 </div>
-{{end}}
+{{- end}}
 
 <h2>Documentation</h2>
-{{if .RunbookURL}}<p><a class="runbook-link" href="{{.RunbookURL}}">Runbook</a></p>
-{{else if .RunbookUnreadable}}<p class="none">spec.runbook is set, but the runbook could not be rendered — see the build diagnostics.</p>{{end}}
-{{if .DocsUnreadable}}<p class="none">spec.docs names a directory that could not be read — see the build diagnostics.</p>{{end}}
-{{with .DocNav}}
+{{- if .RunbookURL}}
+<p><a class="runbook-link" href="{{.RunbookURL}}">Runbook</a></p>
+{{- else if .RunbookUnreadable}}
+<p class="none">spec.runbook is set, but the runbook could not be rendered — see the build diagnostics.</p>
+{{- end}}
+{{- if .DocsUnreadable}}
+<p class="none">spec.docs names a directory that could not be read — see the build diagnostics.</p>
+{{- end}}
+{{- with .DocNav}}
 <ul class="doc-nav">
-{{range .}}<li><a href="{{.URL}}">{{.Title}}</a></li>
-{{end}}</ul>
-{{end}}
-{{if .Index}}
+{{- range .}}
+<li><a href="{{.URL}}">{{.Title}}</a></li>
+{{- end}}
+</ul>
+{{- end}}
+{{- if .Index}}
 <article class="doc">
 {{.Index}}
 </article>
-{{else if and (not .DocNav) (not .RunbookURL) (not .RunbookUnreadable) (not .DocsUnreadable)}}
+{{- else if and (not .DocNav) (not .RunbookURL) (not .RunbookUnreadable) (not .DocsUnreadable)}}
 <p class="none">No documentation. Point spec.docs at a directory or spec.runbook at a file.</p>
-{{end}}
+{{- end}}
 </article>
 {{end}}

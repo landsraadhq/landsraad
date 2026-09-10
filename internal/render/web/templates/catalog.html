@@ -37,7 +37,7 @@
 </tr>
 </thead>
 <tbody>
-{{range .Rows}}
+{{- range .Rows}}
 <tr data-kind="{{lower .Kind}}" data-owner="{{.Owner}}" data-tier="{{.Tier}}" data-tags="{{range .Tags}}{{.}} {{end}}">
   <td>
     <a href="{{$.Root}}{{.URL}}">{{.Name}}</a>
@@ -47,13 +47,13 @@
   <td>{{if .OwnerURL}}<a href="{{$.Root}}{{.OwnerURL}}">{{.Owner}}</a>{{else}}{{.Owner}}{{end}}</td>
   <td data-value="{{if .Tier}}{{.Tier}}{{end}}">{{if .Tier}}{{.Tier}}{{else}}<span class="none">—</span>{{end}}</td>
   <td>{{.Lifecycle}}</td>
-  {{if .Score}}
+  {{- if .Score}}
   <td data-value="{{mul .Score 100}}"><span class="mono">{{pct .Score}}</span></td>
-  {{else}}
+  {{- else}}
   <td data-value=""><span class="none">not scored</span></td>
-  {{end}}
+  {{- end}}
 </tr>
-{{end}}
+{{- end}}
 </tbody>
 </table>
 {{end}}

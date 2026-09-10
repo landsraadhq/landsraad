@@ -3,49 +3,55 @@
 <p class="count">Catalog total {{if .Overall}}<span class="mono">{{pct .Overall}}</span>{{else}}<span class="none">not scored</span>{{end}}</p>
 
 <h2>Trend</h2>
-{{if .Trend.Polyline}}
+{{- if .Trend.Polyline}}
 <svg class="spark" viewBox="0 0 {{.Trend.Width}} {{.Trend.Height}}" width="{{.Trend.Width}}" height="{{.Trend.Height}}" role="img" aria-label="Catalog score over time">
   <polyline points="{{.Trend.Polyline}}" fill="none" stroke="currentColor" stroke-width="1.5" />
 </svg>
 <table class="trend"><thead><tr><th>Date</th><th>Score</th><th>Passed</th><th>Applicable</th></tr></thead><tbody>
-{{range .Trend.Points}}<tr>
+{{- range .Trend.Points}}
+<tr>
   <td class="mono">{{.Date}}</td>
   <td>{{if .Applicable}}<span class="mono">{{printf "%.0f%%" (mul .Score 100)}}</span>{{else}}<span class="none">not scored</span>{{end}}</td>
   <td>{{.Passed}}</td><td>{{.Applicable}}</td>
 </tr>
-{{end}}</tbody></table>
-{{else if .HistoryUnreadable}}
+{{- end}}
+</tbody></table>
+{{- else if .HistoryUnreadable}}
 <p class="none">scorecard-history.csv is present but could not be read, so no trend is shown. The build log says why.</p>
-{{else if .HasHistory}}
-  {{if eq (len .Trend.Points) 0}}
+{{- else if .HasHistory}}
+  {{- if eq (len .Trend.Points) 0}}
 <p class="none">No runs have been recorded yet. scorecard-history.csv exists but nothing has been appended to it.</p>
-  {{else}}
+  {{- else}}
 <p class="none">Only one run has been recorded so far. A trend needs at least two.</p>
-  {{end}}
-{{else}}
+  {{- end}}
+{{- else}}
 <p class="none">No history yet. Run <span class="mono">landsraad score --history</span> in CI to start recording one.</p>
-{{end}}
+{{- end}}
 
 <h2>By team</h2>
-{{if .Teams}}
+{{- if .Teams}}
 <table><thead><tr><th>Team</th><th>Score</th><th>Passed</th><th>Applicable</th></tr></thead><tbody>
-{{range .Teams}}<tr>
+{{- range .Teams}}
+<tr>
   <td>{{if .URL}}<a href="{{$.Root}}{{.URL}}">{{.Team}}</a>{{else}}{{.Team}}{{end}}</td>
   <td>{{if .Score}}<span class="mono">{{pct .Score}}</span>{{else}}<span class="none">not scored</span>{{end}}</td>
   <td>{{.Passed}}</td><td>{{.Applicable}}</td>
 </tr>
-{{end}}</tbody></table>
-{{else}}
+{{- end}}
+</tbody></table>
+{{- else}}
 <p class="none">Nothing in this catalog was scored.</p>
-{{end}}
+{{- end}}
 
 <h2>The standard</h2>
 <p class="none">What each check is worth at each tier, from standards.yaml.</p>
 <table><thead><tr><th>Check</th>{{range .Tiers}}<th>Tier {{.}}</th>{{end}}<th>Source</th></tr></thead><tbody>
-{{range .Checks}}<tr>
+{{- range .Checks}}
+<tr>
   <td class="mono">{{.Check}}</td>
-  {{range .Severities}}<td>{{.}}</td>{{end}}
+  {{- range .Severities}}<td>{{.}}</td>{{end}}
   <td>{{if .External}}<span class="none">reported by CI</span>{{else}}computed{{end}}</td>
 </tr>
-{{end}}</tbody></table>
+{{- end}}
+</tbody></table>
 {{end}}
