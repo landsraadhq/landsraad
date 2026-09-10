@@ -51,6 +51,9 @@ func funcs() template.FuncMap {
 	return template.FuncMap{
 		"lower": lower,
 		"pct":   pct,
+		// mul exists because Go templates have no arithmetic and a score is
+		// stored as a fraction but read as a percentage.
+		"mul": func(f float64, by float64) float64 { return f * by },
 	}
 }
 

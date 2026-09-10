@@ -101,3 +101,6 @@ pre.mermaid { background: transparent; padding: 0; }
 .runbook-link { font-weight: 600; }
 ul.doc-nav { list-style: none; padding: 0; margin: .5rem 0 1rem; }
 ul.doc-nav li { padding: .1rem 0; }
+
+svg.spark { color: var(--accent); display: block; margin: .5rem 0 1rem; }
+table.trend { max-width: 32rem; }

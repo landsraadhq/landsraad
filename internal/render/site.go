@@ -51,6 +51,10 @@ func siteFrom(fsys fs.FS, in Input, c *diag.Collector) []emit.File {
 
 	files = append(files, teamPages(in, c)...)
 
+	if f, ok := scorecardPage(in, c); ok {
+		files = append(files, f)
+	}
+
 	files = append(files, assetsFrom(fsys, in, c)...)
 	return files
 }
