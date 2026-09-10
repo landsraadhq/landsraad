@@ -25,9 +25,15 @@ type CheckRow struct {
 
 // TeamScoreRow is one team's aggregate.
 type TeamScoreRow struct {
-	Team       string
-	URL        string
-	Score      float64
+	Team string
+	URL  string
+	// Score is nil when the team has nothing applicable: every check on
+	// every entity it owns is exempt, or standards.yaml grades that tier
+	// below warn on everything. That is nothing demonstrated, not zero
+	// passed, and rendering it as 0% would be indistinguishable from a team
+	// that failed every check (Plan 2, ruling R1; see also TeamView.Score
+	// and CatalogRow.Score, both *float64 for the same reason).
+	Score      *float64
 	Passed     int
 	Applicable int
 }
@@ -66,8 +72,11 @@ func scorecardPage(in Input, c *diag.Collector) (emit.File, bool) {
 	if in.Scorecard != nil {
 		for _, ts := range in.Scorecard.Teams() {
 			row := TeamScoreRow{
-				Team: ts.Team, Score: ts.Score(),
-				Passed: ts.Passed, Applicable: ts.Applicable,
+				Team: ts.Team, Passed: ts.Passed, Applicable: ts.Applicable,
+			}
+			if ts.Applicable > 0 {
+				score := ts.Score()
+				row.Score = &score
 			}
 			if slug, ok := slugs[ts.Team]; ok {
 				row.URL = TeamURL(slug)

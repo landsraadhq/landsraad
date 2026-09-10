@@ -25,7 +25,7 @@
 <table><thead><tr><th>Team</th><th>Score</th><th>Passed</th><th>Applicable</th></tr></thead><tbody>
 {{range .Teams}}<tr>
   <td>{{if .URL}}<a href="{{$.Root}}{{.URL}}">{{.Team}}</a>{{else}}{{.Team}}{{end}}</td>
-  <td class="mono">{{printf "%.0f%%" (mul .Score 100)}}</td>
+  <td>{{if .Score}}<span class="mono">{{pct .Score}}</span>{{else}}<span class="none">not scored</span>{{end}}</td>
   <td>{{.Passed}}</td><td>{{.Applicable}}</td>
 </tr>
 {{end}}</tbody></table>
