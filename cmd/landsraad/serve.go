@@ -147,7 +147,16 @@ func watchDirs(root string, w *fsnotify.Watcher) error {
 // watch-triggered "change detected" line can never interleave with a build
 // running at the same time — the same hazard as two builds writing errOut
 // at once, just cosmetic instead of fatal.
-func newRebuild(root string, opts BuildOptions, srv *siteServer, errOut io.Writer) func(label string) bool {
+//
+// now is read PER REBUILD, not once when the server started. BuildOptions is a
+// value, built once in RunE and captured here, so a Now stamped into it froze
+// at the instant `serve` was launched: the footer said so, and worse,
+// scorecard.Ingest's stale-result window and docs-fresh's maxAgeDays graded
+// against a clock that had stopped. A preview left running over a weekend
+// graded Monday's catalog against Friday. The clock is still injected rather
+// than read inside internal/ — that rule does not move — it is injected as a
+// function so it can be read again each time.
+func newRebuild(root string, opts BuildOptions, now func() time.Time, srv *siteServer, errOut io.Writer) func(label string) bool {
 	var mu sync.Mutex
 	return func(label string) bool {
 		mu.Lock()
@@ -156,6 +165,8 @@ func newRebuild(root string, opts BuildOptions, srv *siteServer, errOut io.Write
 			fmt.Fprint(errOut, label)
 		}
 		hadGoodBuild := srv.hasBuilt()
+		opts := opts
+		opts.Now = now()
 		files, code := Build(os.DirFS(root), errOut, opts)
 		if code != exitOK {
 			if hadGoodBuild {
@@ -185,9 +196,14 @@ var errInitialBuildFailed = errors.New("initial build failed")
 
 // Serve renders the site and serves it, rebuilding on change when watch is
 // set.
-func Serve(root, addr string, opts BuildOptions, watch bool, errOut io.Writer) error {
+//
+// now is the clock, called once per rebuild. It is a parameter rather than
+// time.Now so a test can freeze or advance it, and so opts.Now — which is
+// stamped once, at construction — cannot quietly become the build time of
+// every rebuild for the life of the process.
+func Serve(root, addr string, opts BuildOptions, now func() time.Time, watch bool, errOut io.Writer) error {
 	srv := &siteServer{}
-	rebuild := newRebuild(root, opts, srv, errOut)
+	rebuild := newRebuild(root, opts, now, srv, errOut)
 	if ok := rebuild(""); !ok && !watch {
 		return errInitialBuildFailed
 	}
@@ -268,14 +284,16 @@ func newServeCmd() *cobra.Command {
 				return err
 			}
 			cmd.SilenceUsage = true
+			// Now is deliberately left at its zero value here: newRebuild
+			// overwrites it from the clock below on every rebuild, which is
+			// what makes the footer's timestamp — and the stale-result and
+			// docs-fresh windows that grade against it — mean anything in a
+			// preview that stays up for days.
 			err = Serve(resolved, addr, BuildOptions{
-				Mermaid: mermaid,
-				// A preview rebuilt on every save re-reads the clock, which
-				// is what makes the footer's timestamp meaningful here.
-				Now:      time.Now().UTC(),
+				Mermaid:  mermaid,
 				LastEdit: gitLastEdit(resolved),
 				Version:  version(),
-			}, watch, cmd.ErrOrStderr())
+			}, func() time.Time { return time.Now().UTC() }, watch, cmd.ErrOrStderr())
 			if errors.Is(err, errInitialBuildFailed) {
 				// A server that could only ever answer 503 is worse than a
 				// clear failure — there is no later save, without --watch,

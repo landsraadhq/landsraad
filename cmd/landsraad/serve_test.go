@@ -221,12 +221,9 @@ func TestRebuildSerialisesConcurrentTriggers(t *testing.T) {
 	root := t.TempDir()
 	writeCatalogFixture(t, root, 40)
 
-	opts := BuildOptions{
-		Now:      time.Now().UTC(),
-		LastEdit: gitLastEdit(root),
-	}
+	opts := BuildOptions{LastEdit: gitLastEdit(root)}
 	srv := &siteServer{}
-	rebuild := newRebuild(root, opts, srv, io.Discard)
+	rebuild := newRebuild(root, opts, utcNow, srv, io.Discard)
 
 	const bursts = 20
 	start := make(chan struct{})
@@ -300,6 +297,61 @@ func TestServeReturns503BeforeAnyBuildHasSucceeded(t *testing.T) {
 	}
 }
 
+// A preview that stays up for days must not grade against the moment it was
+// launched.
+//
+// BuildOptions is a value: it was built once in RunE and captured by the
+// rebuild closure, so a Now stamped into it never changed. The footer said so
+// visibly, and less visibly scorecard.Ingest's stale-result window and
+// docs-fresh's maxAgeDays both graded against a clock that stopped when
+// `serve` started — a preview left running over a weekend graded Monday's
+// catalog against Friday. The comment at that line claimed the opposite of
+// what the code did.
+func TestEachRebuildReadsTheClockAgain(t *testing.T) {
+	root := t.TempDir()
+	writeCatalogFixture(t, root, 1)
+
+	first := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	second := first.Add(72 * time.Hour) // the weekend
+	calls := 0
+	clock := func() time.Time {
+		calls++
+		if calls == 1 {
+			return first
+		}
+		return second
+	}
+
+	srv := &siteServer{}
+	var errOut bytes.Buffer
+	rebuild := newRebuild(root, BuildOptions{LastEdit: noLastEdit()}, clock, srv, &errOut)
+
+	if ok := rebuild(""); !ok {
+		t.Fatalf("the first build must succeed; stderr:\n%s", errOut.String())
+	}
+	page, ok := srv.lookup("index.html")
+	if !ok {
+		t.Fatal("index.html missing after the first build")
+	}
+	if !strings.Contains(string(page), "2026-09-09 12:00 UTC") {
+		t.Fatalf("the first build did not use the injected clock:\n%s", page)
+	}
+
+	if ok := rebuild(""); !ok {
+		t.Fatalf("the second build must succeed; stderr:\n%s", errOut.String())
+	}
+	page, ok = srv.lookup("index.html")
+	if !ok {
+		t.Fatal("index.html missing after the second build")
+	}
+	if !strings.Contains(string(page), "2026-09-12 12:00 UTC") {
+		t.Errorf("the second rebuild still carries the first build's clock:\n%s", page)
+	}
+	if calls != 2 {
+		t.Errorf("the clock was read %d times for 2 rebuilds", calls)
+	}
+}
+
 // TestRebuildAfterAGoodBuildKeepsServingLastGoodSite is the genuine case for
 // "still serving the previous version": a good build already landed, so
 // that message is true, unlike the never-built case above.
@@ -309,8 +361,8 @@ func TestRebuildAfterAGoodBuildKeepsServingLastGoodSite(t *testing.T) {
 
 	srv := &siteServer{}
 	var errOut bytes.Buffer
-	opts := BuildOptions{Now: time.Now().UTC(), LastEdit: noLastEdit()}
-	rebuild := newRebuild(root, opts, srv, &errOut)
+	opts := BuildOptions{LastEdit: noLastEdit()}
+	rebuild := newRebuild(root, opts, utcNow, srv, &errOut)
 
 	if ok := rebuild(""); !ok {
 		t.Fatalf("the first, valid build must succeed; stderr:\n%s", errOut.String())
@@ -358,6 +410,26 @@ func TestServeWithoutWatchExitsWhenTheFirstBuildFails(t *testing.T) {
 	}
 }
 
+// utcNow is the clock newServeCmd injects, spelled once so the tests exercise
+// the same shape the command does.
+func utcNow() time.Time { return time.Now().UTC() }
+
+// ACCEPTED, BOUNDED LEAK — read this before adding a third.
+//
+// Serve has no shutdown path: it ends in http.Server.ListenAndServe, which
+// only returns on an error, and the --watch goroutine and its fsnotify watcher
+// live as long as the process. The two tests that call Serve in a goroutine
+// (TestServeWithWatchRespondsThenRecoversAfterAFailedFirstBuild and
+// TestServeWithWatchRebuildsOnAChange) therefore each leak one goroutine, one
+// listener and one fsnotify file descriptor for the lifetime of the test
+// binary. That is deliberate and it is affordable at two.
+//
+// It does not scale. A third such test means three held ports and three
+// inotify/kqueue registrations in one binary, on CI runners with per-process
+// fd limits, and nothing to fail loudly when it stops fitting. If a third is
+// needed, give Serve a shutdown path first — a context, or an *http.Server the
+// caller can Close — and convert these two to it. Do not simply add another.
+//
 // freeAddr reserves and immediately releases a loopback TCP port, so Serve
 // can be given a real, currently-free address without hardcoding one — the
 // standard trick for a test that needs to know the address before the real
@@ -414,7 +486,7 @@ func TestServeWithWatchRespondsThenRecoversAfterAFailedFirstBuild(t *testing.T) 
 	addr := freeAddr(t)
 	done := make(chan error, 1)
 	go func() {
-		done <- Serve(root, addr, BuildOptions{Now: time.Now().UTC()}, true, io.Discard)
+		done <- Serve(root, addr, BuildOptions{}, utcNow, true, io.Discard)
 	}()
 
 	select {
@@ -496,7 +568,7 @@ func TestServeWithWatchReflectsAnEditAfterAGoodBuild(t *testing.T) {
 	addr := freeAddr(t)
 	done := make(chan error, 1)
 	go func() {
-		done <- Serve(root, addr, BuildOptions{Now: time.Now().UTC()}, true, io.Discard)
+		done <- Serve(root, addr, BuildOptions{}, utcNow, true, io.Discard)
 	}()
 
 	select {
