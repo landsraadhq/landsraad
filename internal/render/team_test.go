@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
+	"github.com/landsraadhq/landsraad/internal/config"
 	"github.com/landsraadhq/landsraad/internal/diag"
 )
 
@@ -69,5 +70,52 @@ func TestTeamPageShowsTheDegradedNoticeBanner(t *testing.T) {
 	page := string(siteMap(Site(in, &c))["team/team-payments/index.html"])
 	if !strings.Contains(page, "This portal is degraded.") {
 		t.Errorf("the degraded notice must appear on the team page:\n%s", page)
+	}
+}
+
+// The losing side of a team-name collision must not render a page at the
+// shared slug. This is the third call site composing teamSlugMap (after
+// catalogRows and entityPages), both of which have regression tests for this.
+// Without one here, a future refactor inlining a bare Slug call would silently
+// clobber a team's page.
+func TestLosingTeamNameCollisionGetsNoTeamPage(t *testing.T) {
+	in := input(t, nil, ent("api", catalog.KindService, "team-payments", 1))
+	var c diag.Collector
+	in.Teams = config.LoadTeams("teams.yaml", []byte(
+		"teams:\n"+
+			"  - name: payments-team\n"+
+			"    members: [alice]\n"+
+			"  - name: Payments Team\n"+
+			"    members: [bob]\n"), &c)
+	// config.Teams.Names() sorts, and "Payments Team" (capital P, 0x50)
+	// sorts before "payments-team" (0x70), so it claims the slug first;
+	// "payments-team" itself is the losing name.
+
+	files := siteMap(Site(in, &c))
+	// The shared URL exists exactly once, with the winning team's content.
+	page, ok := files["team/payments-team/index.html"]
+	if !ok {
+		t.Fatalf("the winning team must have a page at the shared slug; got %v", keys(files))
+	}
+	if !strings.Contains(string(page), "bob") {
+		t.Errorf("the page must contain the winning team's member, bob:\n%s", page)
+	}
+	if strings.Contains(string(page), "alice") {
+		t.Errorf("the page must not contain the losing team's member, alice:\n%s", page)
+	}
+}
+
+// A team owning only untiered entities must show "not scored" at the
+// aggregate level, never "0%". This pins Plan 2's ruling R1 at this call site.
+func TestTeamOwningOnlyUntiredEntitiesShowsNotScoredAggregate(t *testing.T) {
+	in := input(t, nil, ent("lib", catalog.KindLibrary, "team-platform", 0))
+	// Add team-platform to the teams fixture.
+	in = withTeams(t, in, testTeamsYAML+
+		"  - name: team-platform\n    members: [carol]\n    slack: \"#plat\"\n    pagerduty: PLT\n")
+
+	var c diag.Collector
+	page := string(siteMap(Site(in, &c))["team/team-platform/index.html"])
+	if !strings.Contains(page, "nothing this team owns was scored") {
+		t.Errorf("an all-untiered team must show 'nothing scored', not 0%%:\n%s", page)
 	}
 }
