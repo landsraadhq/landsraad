@@ -2629,7 +2629,11 @@ func (c *Client) once(ctx context.Context, target, endpoint, accept string) ([]b
 func (c *Client) statusError(resp *http.Response, endpoint string, body []byte) error {
 	se := &StatusError{
 		Status: resp.StatusCode, Method: http.MethodGet, Endpoint: endpoint,
-		Body:          c.redactString(summarise(body)),
+		// Redact BEFORE truncating. summarise cuts at 200 bytes, and a token
+		// straddling that cut survives as an unredacted prefix: the
+		// full-string ReplaceAll no longer matches the halved value. Found by
+		// review, reproduced with a 57-character token starting at byte 180.
+		Body:          summarise(c.redactString(string(body))),
 		RateRemaining: -1,
 	}
 	if v := resp.Header.Get("X-RateLimit-Remaining"); v != "" {
@@ -2665,10 +2669,13 @@ func (c *Client) redactString(s string) string {
 	return strings.ReplaceAll(s, c.token, "[redacted]")
 }
 
-// summarise trims a response body to something printable. A host's error
-// body can be a full HTML page, and a diagnostic is one line.
-func summarise(body []byte) string {
-	s := strings.TrimSpace(string(body))
+// summarise trims an ALREADY-REDACTED body to something printable. A host's
+// error body can be a full HTML page, and a diagnostic is one line.
+//
+// It takes a string rather than bytes to make the ordering hard to get
+// wrong: the only caller must have redacted before it can call this.
+func summarise(body string) string {
+	s := strings.TrimSpace(body)
 	s = strings.Join(strings.Fields(s), " ")
 	if len(s) > 200 {
 		s = s[:200] + "…"
