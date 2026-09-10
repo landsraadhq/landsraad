@@ -218,6 +218,19 @@ func TestSiteContinuesPastAPageThatFailsToCompile(t *testing.T) {
 				t.Fatalf("want exactly one diagnostic, got %d: %+v", len(ds), ds)
 			}
 			d := ds[0]
+			// Severity is load-bearing, not decoration. Build refuses on
+			// c.HasErrors(), so SevError here is the only thing standing
+			// between a missing page and a published portal that links to
+			// it: index.html's rows and every RefLink are built from the
+			// catalog, not from what was emitted, and they are allowed to be
+			// because a render failure never reaches an artifact. Downgrade
+			// this to warn and the build succeeds with every catalog row
+			// pointing at a 404 — and every other assertion in this test
+			// still passes.
+			if d.Severity != diag.SevError {
+				t.Errorf("Severity = %q, want %q — at warn the build would publish a portal whose catalog links to pages that were never rendered",
+					d.Severity, diag.SevError)
+			}
 			wantMsg := "cannot compile the embedded template " + tc.omit +
 				": template: pattern matches no files: `web/templates/" + tc.omit + "`"
 			if d.Message != wantMsg {

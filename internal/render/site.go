@@ -16,8 +16,22 @@ import (
 // also what lets `serve --watch` hold a rebuilt site in memory instead of
 // watching its own output.
 //
-// Pages that fail to render are reported and skipped. A single broken
-// runbook must not cost the reader the other forty pages.
+// Pages that fail to render are reported and skipped rather than aborting the
+// walk, so a run yields every diagnostic instead of only the first. What
+// becomes of the site is Build's decision, not this function's, and it is
+// worth being exact about it: every skip reachable from here carries
+// SevError except one, and build.go answers a collector with errors by
+// returning exitValidation and writing nothing. A single broken runbook
+// therefore does cost the reader the other forty pages — deliberately.
+// Publishing a portal quietly missing a page is the silent fallback spec §12
+// forbids, and a render failure is a bug in landsraad, not in the catalog.
+//
+// The one survivable skip is a documentation file whose name cannot become a
+// page path (docs-filename, SevWarn): that page is dropped and the build
+// still succeeds. docs.go appends to the nav only after the page is emitted,
+// so nothing links to what was skipped. That ordering is the whole reason no
+// index here has to filter its rows against what was actually written: a
+// published portal cannot contain a link to a page this function dropped.
 func Site(in Input, c *diag.Collector) []emit.File {
 	return siteFrom(webFS, in, c)
 }
