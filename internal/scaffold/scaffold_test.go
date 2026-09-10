@@ -37,8 +37,8 @@ func TestScaffoldValidatesOnTheFirstRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scaffold must include repos.yaml: %v", err)
 	}
-	patterns, defaulted := config.LoadRepos("repos.yaml", data, &c).LocalPatterns()
-	if defaulted {
+	patterns, why := config.LoadRepos("repos.yaml", data, &c).LocalPatterns()
+	if why == config.LocalDefaulted {
 		t.Error("the scaffold's own repos.yaml must list paths, not fall back to defaults")
 	}
 

@@ -160,14 +160,27 @@ func patternsFor(fsys fs.FS, c *diag.Collector) []string {
 		return config.DefaultPatterns()
 	}
 	r := config.LoadRepos("repos.yaml", data, c)
-	patterns, defaulted := r.LocalPatterns()
+	patterns, why := r.LocalPatterns()
 	// A file that failed to parse has already produced a loud error, and its
 	// fallback to defaults is a consequence of that error, not a separate
 	// thing to report: two diagnostics for one cause is noise.
-	if defaulted && r.Loaded() {
-		// Present, parsed, and lists no paths. Same degraded mode as an absent
-		// file, and it used to be the half of it nobody was told about.
-		c.Add(defaultPatternsNote("repos.yaml lists no paths"))
+	if r.Loaded() {
+		switch why {
+		case config.LocalDefaulted:
+			// Present, parsed, and lists no paths. Same degraded mode as an
+			// absent file, and it used to be the half of it nobody was told
+			// about.
+			c.Add(defaultPatternsNote("repos.yaml names no paths"))
+		case config.LocalAssumedFirst:
+			c.Add(diag.Diagnostic{
+				Severity: diag.SevWarn, File: "repos.yaml", Line: 1,
+				Check: "repos-local-assumed",
+				Message: fmt.Sprintf(
+					"no entry in repos.yaml is marked local: true, so the first (%s) is assumed to be this repository",
+					r.Repos[0].Identity()),
+				Hint: "add `local: true` to the entry for the repository you are standing in",
+			})
+		}
 	}
 	return patterns
 }

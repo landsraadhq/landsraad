@@ -2,7 +2,12 @@ package config
 
 import (
 	"bytes"
+	"fmt"
 	"io"
+	"net/url"
+	"path"
+	"slices"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -10,9 +15,37 @@ import (
 )
 
 // Repo is one entry in repos.yaml.
+//
+// Local, Ref, Host and Name arrived with Plan 4 and are all optional, so a
+// repos.yaml written before them still loads. Ruling R26 records why each
+// one is a stated key rather than something inferred: every inference
+// available here — the first entry is local, the hostname names the host,
+// the basename is unique — is true right up until it is not, and each has a
+// failure that is silent rather than loud.
 type Repo struct {
 	URL   string   `yaml:"url"`
 	Paths []string `yaml:"paths"`
+	// Local marks the repository the command is standing in. At most one
+	// entry may set it; see LocalPatterns for what happens when none does.
+	Local bool `yaml:"local"`
+	// Ref is a branch or tag. Empty means "ask the host for its default
+	// branch", which costs one request and is honest — assuming "main"
+	// fetches nothing from every repository that still uses "master" and
+	// reports it as a missing repository.
+	Ref string `yaml:"ref"`
+	// Host is "github" or "gitlab", needed only when the hostname does not
+	// say (a self-hosted instance). See HostKinds.
+	Host string `yaml:"host"`
+	// Name is this repository's identity: the string in every diagnostic's
+	// Repo field, the key in catalog.Sources, and the value of
+	// Entity.SourceRepo. Empty means Identity derives it from the URL.
+	Name string `yaml:"name"`
+
+	// Line is where this entry's `url:` appears in repos.yaml. Not a YAML
+	// field: it is provenance, filled in by attachLines, and it exists so a
+	// fetch failure can point at the line that named the repository rather
+	// than at the top of the file.
+	Line int `yaml:"-"`
 }
 
 // Repos is the loaded repos.yaml.
@@ -46,6 +79,108 @@ func DefaultPatterns() []string {
 	return out
 }
 
+// hostKinds are the hosts landsraad can fetch from (decision D5).
+//
+// Array-shaped and unexported for the reason in catalog.allKinds: an
+// exported mutable slice is state any importer can rewrite underneath
+// everything else.
+var hostKinds = [...]string{"github", "gitlab"}
+
+// HostKinds returns the supported hosts, fresh on each call.
+func HostKinds() []string {
+	out := make([]string, len(hostKinds))
+	copy(out, hostKinds[:])
+	return out
+}
+
+// Identity is the repository's name in diagnostics and in catalog.Sources.
+//
+// The basename rather than owner/repo, deliberately: spec §12's worked
+// example prints "monorepo services/api/service.yaml:4", and lengthening
+// every diagnostic to buy uniqueness is the wrong trade when uniqueness can
+// be bought by rejecting the collision instead. LoadRepos does exactly that.
+func (r *Repo) Identity() string {
+	if r.Name != "" {
+		return r.Name
+	}
+	u := strings.TrimSuffix(r.URL, "/")
+	u = strings.TrimSuffix(u, ".git")
+	return path.Base(u)
+}
+
+// HostKind reports which adapter fetches this repository.
+//
+// known is false when the hostname is not one landsraad recognises and the
+// entry did not say. That is a question, not a default: guessing github for
+// a self-hosted GitLab produces 404s from an API that was never there.
+func (r *Repo) HostKind() (kind string, known bool) {
+	if r.Host != "" {
+		return r.Host, slices.Contains(hostKinds[:], r.Host)
+	}
+	u, err := url.Parse(r.URL)
+	if err != nil {
+		return "", false
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "github.com":
+		return "github", true
+	case "gitlab.com":
+		return "gitlab", true
+	}
+	return "", false
+}
+
+// LocalSource says how LocalPatterns decided which entry is local, so the
+// caller can report an assumption rather than making one silently
+// (spec §12: degraded mode is visible in the artifact, not only in a log).
+type LocalSource int
+
+const (
+	// LocalMarked: an entry said `local: true`, or there is exactly one
+	// entry and it is unambiguous.
+	LocalMarked LocalSource = iota
+	// LocalAssumedFirst: several entries, none marked, so the first was
+	// used — which is what repos.yaml meant before `local:` existed.
+	LocalAssumedFirst
+	// LocalDefaulted: no entry named any paths, so DefaultPatterns are in use.
+	LocalDefaulted
+)
+
+// LocalRepo returns the entry marked `local: true`, or the only entry when
+// there is exactly one. ok is false when neither applies.
+func (r *Repos) LocalRepo() (*Repo, bool) {
+	for i := range r.Repos {
+		if r.Repos[i].Local {
+			return &r.Repos[i], true
+		}
+	}
+	if len(r.Repos) == 1 {
+		return &r.Repos[0], true
+	}
+	return nil, false
+}
+
+// LocalPatterns returns the glob patterns for the local repository.
+//
+// The second return replaced a bool in Plan 4. Two of its three states used
+// to be one: "no repos.yaml, so DefaultPatterns" and "three entries and no
+// idea which one you are standing in" both reported `defaulted`, and the
+// second is the condition that stamped a banner naming the wrong two
+// repositories into every page of a generated site.
+func (r *Repos) LocalPatterns() ([]string, LocalSource) {
+	local, ok := r.LocalRepo()
+	if !ok {
+		if len(r.Repos) == 0 || len(r.Repos[0].Paths) == 0 {
+			return DefaultPatterns(), LocalDefaulted
+		}
+		return r.Repos[0].Paths, LocalAssumedFirst
+	}
+	if len(local.Paths) == 0 {
+		return DefaultPatterns(), LocalDefaulted
+	}
+	return local.Paths, LocalMarked
+}
+
 // reposParseHint is the same advice whatever went wrong with the file.
 const reposParseHint = "repos.yaml is a list under `repos:`, each entry with url and paths"
 
@@ -67,21 +202,166 @@ func LoadRepos(path string, data []byte, c *diag.Collector) *Repos {
 		return &Repos{}
 	}
 	r.loaded = true
+	attachLines(data, r)
+	validateRepos(path, r, c)
 	return r
 }
 
-// LocalPatterns returns the glob patterns for the first repo entry, which by
-// convention is the repository the command is running in. `landsraad validate`
-// is hermetic and never fetches the others; that is the platform build's job.
+// attachLines records where each entry's `url:` key appears.
 //
-// defaulted reports that the file named no paths and DefaultPatterns are in
-// use. It is a return value rather than a diagnostic because this package
-// takes no collector here, and a bool the caller must assign is harder to
-// forget than a fallback it cannot see: spec §12, degraded mode must be
-// visible in the artifact.
-func (r *Repos) LocalPatterns() (patterns []string, defaulted bool) {
-	if len(r.Repos) == 0 || len(r.Repos[0].Paths) == 0 {
-		return DefaultPatterns(), true
+// A second pass over the same bytes, deliberately. yaml.Node decoding does
+// not honour KnownFields, and the strict decode above is load-bearing — a
+// `path:` typo for `paths:` used to fall through to DefaultPatterns and
+// validate an entire repository's worth of nothing. So the strict decode
+// stays exactly as it was, and this pass does one job: provenance. Two
+// passes over a file with a handful of entries is not worth a cleverer
+// scheme.
+func attachLines(data []byte, r *Repos) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil || len(doc.Content) == 0 {
+		return
 	}
-	return r.Repos[0].Paths, false
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value != "repos" {
+			continue
+		}
+		seq := root.Content[i+1]
+		if seq.Kind != yaml.SequenceNode {
+			return
+		}
+		for j, item := range seq.Content {
+			if j >= len(r.Repos) {
+				return
+			}
+			r.Repos[j].Line = urlLine(item)
+		}
+		return
+	}
+}
+
+// urlLine is the line of an entry's `url:` key, falling back to the line the
+// entry itself starts on. Never zero for a node that parsed: a Line of 0 is
+// a bug, and the Global Constraints say to use 1 when there is nothing
+// better — but here there always is.
+func urlLine(item *yaml.Node) int {
+	if item.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(item.Content); i += 2 {
+			if item.Content[i].Value == "url" {
+				return item.Content[i].Line
+			}
+		}
+	}
+	if item.Line == 0 {
+		return 1
+	}
+	return item.Line
+}
+
+// validateRepos reports the configuration mistakes that would otherwise
+// surface as a fetch failure against a host that was never going to answer.
+//
+// Every check here runs in `validate` too, which never fetches anything.
+// That is deliberate: repos.yaml is configuration, and a malformed entry is
+// wrong in the PR that introduced it rather than days later in the platform
+// build. It is the same argument spec §7.1 makes for checking the shape of
+// .landsraad/checks files hermetically.
+func validateRepos(file string, r *Repos, c *diag.Collector) {
+	var firstLocal *Repo
+	byName := map[string]*Repo{}
+	for i := range r.Repos {
+		e := &r.Repos[i]
+
+		if !strings.HasPrefix(e.URL, "https://") {
+			c.Add(diag.Diagnostic{
+				Severity: diag.SevError, File: file, Line: e.Line,
+				Check:   "repos-url",
+				Message: fmt.Sprintf("repository url must begin with https://, got %q", e.URL),
+				Hint:    httpsHint(e.URL),
+			})
+			continue
+		}
+
+		if e.Local {
+			if firstLocal != nil {
+				c.Add(diag.Diagnostic{
+					Severity: diag.SevError, File: file, Line: e.Line,
+					Check: "repos-local",
+					Message: fmt.Sprintf(
+						"two entries in repos.yaml are marked local: true — %q (line %d) and %q (line %d)",
+						firstLocal.Identity(), firstLocal.Line, e.Identity(), e.Line),
+					Hint: "exactly one entry is the repository you are standing in; remove local: true from the other",
+				})
+				continue
+			}
+			firstLocal = e
+		}
+
+		if prev, dup := byName[e.Identity()]; dup {
+			c.Add(diag.Diagnostic{
+				Severity: diag.SevError, File: file, Line: e.Line,
+				Check: "repos-duplicate-name",
+				Message: fmt.Sprintf(
+					"two repositories resolve to the name %q: %s (line %d) and %s (line %d)",
+					e.Identity(), prev.URL, prev.Line, e.URL, e.Line),
+				Hint: "the name is the last path segment of the url unless you set name:; give one of them an explicit name:",
+			})
+			continue
+		}
+		byName[e.Identity()] = e
+
+		// A repository explicitly marked local is read from disk and never
+		// fetched, so it needs no host: requiring one would make `landsraad
+		// validate` demand a key it will never use. An entry that is not
+		// marked local is checked even when it is the only entry in the
+		// file — a bad host: value is a mistake worth catching before this
+		// repos.yaml grows a second entry that actually needs fetching.
+		if e.Local {
+			continue
+		}
+		if _, known := e.HostKind(); !known {
+			c.Add(hostDiagnostic(file, e))
+		}
+	}
+}
+
+// hostDiagnostic distinguishes "you named a host landsraad does not support"
+// from "landsraad cannot tell what this is". They are different mistakes
+// with different fixes, and one message for both would be wrong for one of
+// them: telling somebody with a self-hosted GitLab that "gitlab" is not a
+// valid host is a false statement about their configuration.
+func hostDiagnostic(file string, e *Repo) diag.Diagnostic {
+	if e.Host != "" {
+		return diag.Diagnostic{
+			Severity: diag.SevError, File: file, Line: e.Line,
+			Check:   "repos-host",
+			Message: fmt.Sprintf("unknown host %q for %s", e.Host, e.URL),
+			Hint: fmt.Sprintf("host must be %s; landsraad v1 supports no others (design decision D5)",
+				strings.Join(HostKinds(), " or ")),
+		}
+	}
+	return diag.Diagnostic{
+		Severity: diag.SevError, File: file, Line: e.Line,
+		Check:   "repos-host",
+		Message: fmt.Sprintf("cannot tell which host %s is", e.URL),
+		Hint:    "add host: github or host: gitlab to this entry",
+	}
+}
+
+// httpsHint rewrites the url the user actually wrote, when it can. An ssh
+// remote is what `git remote -v` prints and what people paste, so "must
+// begin with https://" alone would make them work out the translation.
+func httpsHint(raw string) string {
+	if at := strings.Index(raw, "@"); at >= 0 && !strings.Contains(raw, "://") {
+		rest := raw[at+1:]
+		if colon := strings.Index(rest, ":"); colon >= 0 {
+			host := rest[:colon]
+			p := strings.TrimSuffix(strings.TrimPrefix(rest[colon+1:], "/"), ".git")
+			return fmt.Sprintf("write it as https://%s/%s", host, p)
+		}
+	}
+	return "write it as https://<host>/<owner>/<repo>"
 }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/landsraadhq/landsraad/internal/diag"
@@ -16,9 +17,9 @@ func TestLoadReposParsesEntries(t *testing.T) {
 	if len(r.Repos) != 1 || r.Repos[0].URL != "https://github.com/org/monorepo" {
 		t.Fatalf("Repos not read: %+v", r.Repos)
 	}
-	got, defaulted := r.LocalPatterns()
-	if defaulted {
-		t.Error("LocalPatterns() reported a fallback for a file that lists paths")
+	got, why := r.LocalPatterns()
+	if why != LocalMarked {
+		t.Errorf("LocalPatterns() why = %v, want LocalMarked — a file that lists paths is not a fallback", why)
 	}
 	want := []string{"services/*", "topics/*"}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
@@ -78,9 +79,9 @@ func TestLocalPatternsFallsBackToDefaultsWhenEmpty(t *testing.T) {
 	if c.HasErrors() {
 		t.Fatalf("an empty repos list is not an error: %+v", c.Diagnostics())
 	}
-	got, defaulted := r.LocalPatterns()
-	if !defaulted {
-		t.Error("LocalPatterns() fell back to defaults but did not say so")
+	got, why := r.LocalPatterns()
+	if why != LocalDefaulted {
+		t.Errorf("LocalPatterns() why = %v, want LocalDefaulted", why)
 	}
 	if len(got) != len(DefaultPatterns()) {
 		t.Fatalf("LocalPatterns() = %v, want DefaultPatterns %v", got, DefaultPatterns())
@@ -192,15 +193,190 @@ func TestLoadReposReportsEveryUnknownKey(t *testing.T) {
 // makes the caller unable to forget.
 func TestLocalPatternsSaysWhenItDefaulted(t *testing.T) {
 	var c diag.Collector
-	r := LoadRepos("repos.yaml", []byte("repos:\n  - url: https://x/y\n    paths: []\n"), &c)
+	r := LoadRepos("repos.yaml", []byte("repos:\n  - url: https://github.com/org/x\n    paths: []\n"), &c)
 	if c.HasErrors() {
 		t.Fatalf("an empty paths list is not a parse error: %+v", c.Diagnostics())
 	}
-	got, defaulted := r.LocalPatterns()
-	if !defaulted {
-		t.Fatal("LocalPatterns() used DefaultPatterns without reporting it")
+	got, why := r.LocalPatterns()
+	if why != LocalDefaulted {
+		t.Fatalf("LocalPatterns() why = %v, want LocalDefaulted", why)
 	}
 	if len(got) != len(DefaultPatterns()) {
 		t.Errorf("LocalPatterns() = %v, want DefaultPatterns %v", got, DefaultPatterns())
+	}
+}
+
+func TestRepoIdentity(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		repo Repo
+		want string
+	}{
+		{"basename", Repo{URL: "https://github.com/org/monorepo"}, "monorepo"},
+		{"trailing slash", Repo{URL: "https://github.com/org/monorepo/"}, "monorepo"},
+		{"git suffix", Repo{URL: "https://github.com/org/monorepo.git"}, "monorepo"},
+		{"explicit name wins", Repo{URL: "https://github.com/org/monorepo", Name: "core"}, "core"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.repo.Identity(); got != tt.want {
+				t.Errorf("Identity() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRepoHostKind(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		repo      Repo
+		wantKind  string
+		wantKnown bool
+	}{
+		{"github.com", Repo{URL: "https://github.com/org/a"}, "github", true},
+		{"gitlab.com", Repo{URL: "https://gitlab.com/org/a"}, "gitlab", true},
+		{"explicit beats hostname", Repo{URL: "https://gl.internal/org/a", Host: "gitlab"}, "gitlab", true},
+		{"self-hosted, unstated", Repo{URL: "https://git.example.com/org/a"}, "", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			kind, known := tt.repo.HostKind()
+			if kind != tt.wantKind || known != tt.wantKnown {
+				t.Errorf("HostKind() = (%q, %v), want (%q, %v)", kind, known, tt.wantKind, tt.wantKnown)
+			}
+		})
+	}
+}
+
+func TestLoadReposDiagnostics(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		yaml        string
+		wantCheck   string
+		wantLine    int
+		wantMessage string
+		wantHint    string
+	}{
+		{
+			name:        "two locals",
+			yaml:        "repos:\n  - url: https://github.com/org/monorepo\n    local: true\n  - url: https://github.com/org/edge\n    local: true\n",
+			wantCheck:   "repos-local",
+			wantLine:    4,
+			wantMessage: `two entries in repos.yaml are marked local: true — "monorepo" (line 2) and "edge" (line 4)`,
+			wantHint:    "exactly one entry is the repository you are standing in; remove local: true from the other",
+		},
+		{
+			name:        "duplicate identity",
+			yaml:        "repos:\n  - url: https://github.com/org1/api\n  - url: https://github.com/org2/api\n",
+			wantCheck:   "repos-duplicate-name",
+			wantLine:    3,
+			wantMessage: `two repositories resolve to the name "api": https://github.com/org1/api (line 2) and https://github.com/org2/api (line 3)`,
+			wantHint:    "the name is the last path segment of the url unless you set name:; give one of them an explicit name:",
+		},
+		{
+			name:        "unknown host key",
+			yaml:        "repos:\n  - url: https://bitbucket.org/org/api\n    host: bitbucket\n",
+			wantCheck:   "repos-host",
+			wantLine:    2,
+			wantMessage: `unknown host "bitbucket" for https://bitbucket.org/org/api`,
+			wantHint:    "host must be github or gitlab; landsraad v1 supports no others (design decision D5)",
+		},
+		{
+			name:        "host not inferable",
+			yaml:        "repos:\n  - url: https://git.example.com/org/api\n",
+			wantCheck:   "repos-host",
+			wantLine:    2,
+			wantMessage: `cannot tell which host https://git.example.com/org/api is`,
+			wantHint:    "add host: github or host: gitlab to this entry",
+		},
+		{
+			name:        "ssh url",
+			yaml:        "repos:\n  - url: git@github.com:org/api.git\n",
+			wantCheck:   "repos-url",
+			wantLine:    2,
+			wantMessage: `repository url must begin with https://, got "git@github.com:org/api.git"`,
+			wantHint:    "write it as https://github.com/org/api",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var c diag.Collector
+			LoadRepos("repos.yaml", []byte(tt.yaml), &c)
+			ds := c.Diagnostics()
+			if len(ds) != 1 {
+				t.Fatalf("got %d diagnostics, want 1: %+v", len(ds), ds)
+			}
+			d := ds[0]
+			if d.Check != tt.wantCheck {
+				t.Errorf("Check = %q, want %q", d.Check, tt.wantCheck)
+			}
+			if d.Line != tt.wantLine {
+				t.Errorf("Line = %d, want %d", d.Line, tt.wantLine)
+			}
+			if d.Message != tt.wantMessage {
+				t.Errorf("Message = %q, want %q", d.Message, tt.wantMessage)
+			}
+			if d.Hint != tt.wantHint {
+				t.Errorf("Hint = %q, want %q", d.Hint, tt.wantHint)
+			}
+		})
+	}
+}
+
+func TestLocalPatterns(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		yaml    string
+		want    []string
+		wantWhy LocalSource
+	}{
+		{
+			name:    "marked entry wins over order",
+			yaml:    "repos:\n  - url: https://github.com/org/other\n    paths: [apps/*]\n  - url: https://github.com/org/mine\n    local: true\n    paths: [services/*]\n",
+			want:    []string{"services/*"},
+			wantWhy: LocalMarked,
+		},
+		{
+			name:    "single entry needs no marking",
+			yaml:    "repos:\n  - url: https://github.com/org/mine\n    paths: [services/*]\n",
+			want:    []string{"services/*"},
+			wantWhy: LocalMarked,
+		},
+		{
+			name:    "several entries, none marked",
+			yaml:    "repos:\n  - url: https://github.com/org/a\n    paths: [apps/*]\n  - url: https://github.com/org/b\n    paths: [services/*]\n",
+			want:    []string{"apps/*"},
+			wantWhy: LocalAssumedFirst,
+		},
+		{
+			name:    "no paths anywhere",
+			yaml:    "repos:\n  - url: https://github.com/org/a\n",
+			want:    DefaultPatterns(),
+			wantWhy: LocalDefaulted,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var c diag.Collector
+			r := LoadRepos("repos.yaml", []byte(tt.yaml), &c)
+			got, why := r.LocalPatterns()
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("patterns = %v, want %v", got, tt.want)
+			}
+			if why != tt.wantWhy {
+				t.Errorf("why = %v, want %v", why, tt.wantWhy)
+			}
+		})
+	}
+}
+
+func TestLoadReposRecordsLines(t *testing.T) {
+	const y = "repos:\n  - url: https://github.com/org/a\n    paths: [.]\n  - url: https://github.com/org/b\n"
+	var c diag.Collector
+	r := LoadRepos("repos.yaml", []byte(y), &c)
+	if len(r.Repos) != 2 {
+		t.Fatalf("got %d repos, want 2", len(r.Repos))
+	}
+	if r.Repos[0].Line != 2 {
+		t.Errorf("Repos[0].Line = %d, want 2", r.Repos[0].Line)
+	}
+	if r.Repos[1].Line != 4 {
+		t.Errorf("Repos[1].Line = %d, want 4", r.Repos[1].Line)
 	}
 }
