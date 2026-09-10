@@ -11,11 +11,6 @@ import (
 	"time"
 )
 
-// errTruncated is GitHub saying the recursive listing did not fit. Task 9
-// replaces the caller's handling of it with a pattern-directed descent; until
-// then it is an honest failure rather than a silently short listing.
-var errTruncated = errors.New("the repository is too large for a single tree listing")
-
 // GitHub fetches a repository over the GitHub REST API (decision D5).
 type GitHub struct {
 	repo     Repo
@@ -26,7 +21,8 @@ type GitHub struct {
 	ref string // resolved on first use
 
 	mu    sync.Mutex
-	edits map[string]edit // memoized LastEdit answers (ruling R35)
+	edits map[string]edit   // memoized LastEdit answers (ruling R35)
+	shas  map[string]string // subtree shas the truncated-tree descent (R28) has learned, keyed by path; guarded alongside ref and edits for the same reason both of those are
 }
 
 type edit struct {
@@ -35,7 +31,7 @@ type edit struct {
 }
 
 func NewGitHub(r Repo, c *Client, cache Cache, parallel int) *GitHub {
-	return &GitHub{repo: r, c: c, cache: cache, parallel: parallel, ref: r.Ref, edits: map[string]edit{}}
+	return &GitHub{repo: r, c: c, cache: cache, parallel: parallel, ref: r.Ref, edits: map[string]edit{}, shas: map[string]string{}}
 }
 
 // GitHubBaseURL is api.github.com for the public host and /api/v3 for GitHub
@@ -108,9 +104,9 @@ func (g *GitHub) Open(ctx context.Context, patterns []string) (*FS, error) {
 		return nil, fmt.Errorf("cannot read the tree listing: %w", err)
 	}
 	if payload.Truncated {
-		// GitHub truncates at 100,000 entries or 7 MB. Task 9 replaces this
-		// with a pattern-directed descent.
-		return nil, errTruncated
+		// 100,000 entries or 7 MB. Ruling R28: list what the patterns can
+		// reach rather than refusing a repository for being large.
+		return g.walk(ctx, patterns)
 	}
 	var entries []Entry
 	for _, e := range payload.Tree {
@@ -127,8 +123,22 @@ func (g *GitHub) Open(ctx context.Context, patterns []string) (*FS, error) {
 	return FromEntries(entries), nil
 }
 
-// Expand is a no-op for a complete listing. Task 9 gives it a body.
-func (g *GitHub) Expand(ctx context.Context, f *FS, dirs []string) error { return nil }
+// Expand lists directories Open did not cover, which under a complete
+// listing is none of them.
+//
+// Free on the fast path, which is what lets cmd/ call it unconditionally
+// instead of branching on host, ref and whether this particular listing
+// happened to truncate. A path whose parent was never listed reads as
+// ErrNotListed rather than as a missing file, and this is what turns the
+// former into the latter honestly: after Expand, absent means absent.
+func (g *GitHub) Expand(ctx context.Context, f *FS, dirs []string) error {
+	for _, d := range dirs {
+		if err := g.expandRecursive(ctx, f, d); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func (g *GitHub) Fetch(ctx context.Context, f *FS, paths []string) error {
 	return fetchBlobs(ctx, g.repo.Name, f, paths, g.parallel, g.cache,
