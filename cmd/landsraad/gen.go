@@ -36,11 +36,22 @@ func artifacts(fsys fs.FS, c *diag.Collector) []emit.File {
 	}
 }
 
-// loadCatalog runs stages 1, 3, 4 and 5 and loads teams.yaml — the same
-// composition Validate uses, minus the reporting. It returns nil when the
-// repository is unusable rather than when it merely has problems; callers
-// check c.HasErrors() for the latter.
+// loadCatalog runs stages 1, 3, 4 and 5 at LocalOnly scope — what gen and
+// score need, and what validate uses.
 func loadCatalog(fsys fs.FS, c *diag.Collector) (*catalog.Catalog, *config.Teams) {
+	cat, _, teams := loadCatalogScoped(fsys, catalog.LocalOnly, c)
+	return cat, teams
+}
+
+// loadCatalogScoped is the same composition at a caller-chosen scope, also
+// returning the resolved graph.
+//
+// build needs both: spec §7.1 makes a dangling reference a hard failure
+// under build and a recorded-and-skipped one under validate, because a
+// service repo's CI cannot see entities defined elsewhere. And the portal's
+// dependency pages are drawn from the Graph, which is a value produced BY
+// Resolve rather than state on Catalog (spec §3.1).
+func loadCatalogScoped(fsys fs.FS, scope catalog.Scope, c *diag.Collector) (*catalog.Catalog, *catalog.Graph, *config.Teams) {
 	paths := patternsFor(fsys, c)
 	found, err := discover.Find(fsys, paths)
 	if err != nil {
@@ -49,7 +60,7 @@ func loadCatalog(fsys fs.FS, c *diag.Collector) (*catalog.Catalog, *config.Teams
 			Check:   "discover",
 			Message: fmt.Sprintf("cannot search for %s files: %v", discover.Filename, err),
 		})
-		return nil, nil
+		return nil, nil, nil
 	}
 	// Matching nothing at all must be an error here too: gen and score both
 	// call loadCatalog, and without this check an empty-matching repos.yaml
@@ -76,7 +87,7 @@ func loadCatalog(fsys fs.FS, c *diag.Collector) (*catalog.Catalog, *config.Teams
 			Check:   "schema-compile",
 			Message: fmt.Sprintf("cannot compile the embedded schema: %v", err),
 		})
-		return nil, nil
+		return nil, nil, nil
 	}
 	for _, f := range files {
 		validator.Validate("", f.Path, f.Data, c)
@@ -84,7 +95,7 @@ func loadCatalog(fsys fs.FS, c *diag.Collector) (*catalog.Catalog, *config.Teams
 
 	cat := catalog.NewCatalog(catalog.ParseAll(localRepoName(fsys), files, c), c)
 	catalog.CheckFiles(fsys, cat, c)
-	g := cat.Resolve(catalog.LocalOnly, c)
+	g := cat.Resolve(scope, c)
 	reportCycles(cat, g, c)
 
 	teamsData, err := fs.ReadFile(fsys, "teams.yaml")
@@ -95,11 +106,11 @@ func loadCatalog(fsys fs.FS, c *diag.Collector) (*catalog.Catalog, *config.Teams
 			Message: "teams.yaml not found, so no owner can be resolved",
 			Hint:    "run `landsraad init` to create one",
 		})
-		return nil, nil
+		return nil, nil, nil
 	}
 	teams := config.LoadTeams("teams.yaml", teamsData, c)
 	teams.ValidateOwners(cat, c)
-	return cat, teams
+	return cat, g, teams
 }
 
 // Gen writes the derived artifacts, or under check reports which are stale.

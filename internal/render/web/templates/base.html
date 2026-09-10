@@ -17,6 +17,7 @@
   </nav>
 </header>
 <main>
+{{with .Notice}}<div class="notice" role="status">{{.}}</div>{{end}}
 {{template "content" .}}
 </main>
 <footer class="site">

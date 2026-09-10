@@ -65,6 +65,10 @@ type Input struct {
 	Mermaid     Mermaid
 	GeneratedAt time.Time
 	Version     string
+	// Notice is a degraded-mode banner stamped into every page. Spec §12:
+	// a portal quietly missing three services is worse than no portal, so
+	// the degradation must be visible in the artifact and not only in a log.
+	Notice string
 }
 
 // Page is the header every template receives.
@@ -77,6 +81,7 @@ type Page struct {
 	GeneratedAt string
 	Version     string
 	Mermaid     Mermaid
+	Notice      string
 }
 
 // CatalogRow is one entity in the catalog table.
@@ -130,6 +135,7 @@ func newPage(in Input, outputPath, title, nav string) Page {
 		GeneratedAt: in.GeneratedAt.UTC().Format("2006-01-02 15:04 MST"),
 		Version:     in.Version,
 		Mermaid:     m,
+		Notice:      in.Notice,
 	}
 }
 

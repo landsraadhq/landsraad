@@ -63,3 +63,9 @@ td .desc { display: block; color: var(--muted); font-size: 12px; }
 .admonition.tip { border-left-color: var(--good); }
 
 pre { overflow-x: auto; padding: .75rem; background: #f7f7f7; border-radius: 3px; }
+
+.notice {
+  border: 1px solid var(--warn); border-left-width: 3px;
+  background: #fff8e6; color: var(--warn);
+  padding: .5rem .75rem; margin: 0 0 1rem;
+}
