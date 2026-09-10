@@ -116,6 +116,10 @@ table.trend { max-width: 32rem; }
 #results li { padding: .25rem .6rem; display: flex; gap: .5rem; align-items: baseline; }
 #results li:hover { background: #f2f4f7; }
 .result-kind { font-size: 12px; color: var(--muted); margin-left: auto; }
+/* A state that is not a result: the index failed to load. It is deliberately
+   not styled as a hoverable row, because there is nothing to click. */
+.result-note { color: var(--muted); font-style: italic; }
+#results li.result-note:hover { background: none; }
 
 .filters { display: flex; gap: 1rem; margin: 0 0 1rem; flex-wrap: wrap; }
 .filters label { font-size: 12px; color: var(--muted); display: flex; gap: .35rem; align-items: center; }
