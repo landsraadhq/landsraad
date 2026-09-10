@@ -1,6 +1,8 @@
 package render
 
 import (
+	"io/fs"
+
 	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/emit"
 	"github.com/landsraadhq/landsraad/internal/scorecard"
@@ -37,8 +39,8 @@ func teamScores(sc *scorecard.Scorecard) map[string]scorecard.TeamScore {
 //
 // Every team gets one, including a team that owns nothing: the page says so,
 // which is a different statement from a 404.
-func teamPages(in Input, c *diag.Collector) []emit.File {
-	t, err := templateSet("team.html")
+func teamPages(web fs.FS, in Input, c *diag.Collector) []emit.File {
+	t, err := templateSet(web, "team.html")
 	if err != nil {
 		c.Add(templateCompileError("team.html", err))
 		return nil

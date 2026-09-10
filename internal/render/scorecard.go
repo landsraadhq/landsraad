@@ -1,6 +1,8 @@
 package render
 
 import (
+	"io/fs"
+
 	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/emit"
 )
@@ -55,19 +57,24 @@ type ScorecardPage struct {
 	// file with only a header": the first needs the CI job set up, the
 	// second is simply waiting for its second run.
 	HasHistory bool
+	// HistoryUnreadable is the third answer: the file is there and could not
+	// be read. Telling that reader to set up the CI job would be advice about
+	// a problem they do not have.
+	HistoryUnreadable bool
 }
 
-func scorecardPage(in Input, c *diag.Collector) (emit.File, bool) {
-	t, err := templateSet("scorecard.html")
+func scorecardPage(web fs.FS, in Input, c *diag.Collector) (emit.File, bool) {
+	t, err := templateSet(web, "scorecard.html")
 	if err != nil {
 		c.Add(templateCompileError("scorecard.html", err))
 		return emit.File{}, false
 	}
 
 	view := ScorecardPage{
-		Page:       newPage(in, "scorecard/index.html", "Scorecard", "scorecard"),
-		Tiers:      scorecardTiers,
-		HasHistory: in.History != nil,
+		Page:              newPage(in, "scorecard/index.html", "Scorecard", "scorecard"),
+		Tiers:             scorecardTiers,
+		HasHistory:        in.History != nil,
+		HistoryUnreadable: in.HistoryUnreadable,
 	}
 	if in.Scorecard != nil {
 		total := 0

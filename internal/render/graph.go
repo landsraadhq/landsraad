@@ -2,6 +2,7 @@ package render
 
 import (
 	"fmt"
+	"io/fs"
 	"sort"
 	"strings"
 
@@ -153,8 +154,8 @@ func systemGraph(in Input) (string, []Edge, bool) {
 }
 
 // mapPage renders the whole-system map.
-func mapPage(in Input, c *diag.Collector) (emit.File, bool) {
-	t, err := templateSet("map.html")
+func mapPage(web fs.FS, in Input, c *diag.Collector) (emit.File, bool) {
+	t, err := templateSet(web, "map.html")
 	if err != nil {
 		c.Add(templateCompileError("map.html", err))
 		return emit.File{}, false

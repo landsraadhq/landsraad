@@ -22,16 +22,23 @@ func Site(in Input, c *diag.Collector) []emit.File {
 	return siteFrom(webFS, in, c)
 }
 
-// siteFrom is Site's logic, taking the filesystem as a parameter (IO at the
-// edges) instead of Site reading the package-level embed directly. webFS's
-// real content cannot fail to compile against any legitimate Input — every
-// field a template touches comes from Go code, never from a user's YAML —
-// so proving Site continues past a broken page needs a filesystem a test
-// can break, not a global it would have to reassign.
-func siteFrom(fsys fs.FS, in Input, c *diag.Collector) []emit.File {
+// siteFrom is Site's logic, taking the template filesystem as a parameter (IO
+// at the edges) instead of Site reading the package-level embed directly.
+// webFS's real content cannot fail to compile against any legitimate Input —
+// every field a template touches comes from Go code, never from a user's YAML
+// — so proving Site continues past a broken page needs a filesystem a test can
+// break, not a global it would have to reassign.
+//
+// web is threaded into EVERY page builder, not only the two it started with.
+// A seam that reaches the catalog page and the assets while entity, doc, map,
+// team and scorecard pages read webFS directly is not a seam: a test handing
+// this a broken filesystem would still be watching the real embed render five
+// of the seven page types, and would pass for that reason rather than for the
+// property it claims to check.
+func siteFrom(web fs.FS, in Input, c *diag.Collector) []emit.File {
 	var files []emit.File
 
-	if t, err := templateSetFrom(fsys, "catalog.html"); err != nil {
+	if t, err := templateSet(web, "catalog.html"); err != nil {
 		c.Add(templateCompileError("catalog.html", err))
 	} else if f, ok := renderPage(t, "index.html", catalogPage(in), c); ok {
 		files = append(files, f)
@@ -40,16 +47,16 @@ func siteFrom(fsys fs.FS, in Input, c *diag.Collector) []emit.File {
 	// Reported here, once. The page builders use teamSlugMap for their
 	// links; this call is what turns a collision into a build failure.
 	TeamSlugs(in.Teams, c)
-	pages, docs := entityPages(in, c)
+	pages, docs := entityPages(web, in, c)
 	files = append(files, pages...)
 
-	if f, ok := mapPage(in, c); ok {
+	if f, ok := mapPage(web, in, c); ok {
 		files = append(files, f)
 	}
 
-	files = append(files, teamPages(in, c)...)
+	files = append(files, teamPages(web, in, c)...)
 
-	if f, ok := scorecardPage(in, c); ok {
+	if f, ok := scorecardPage(web, in, c); ok {
 		files = append(files, f)
 	}
 
@@ -60,7 +67,7 @@ func siteFrom(fsys fs.FS, in Input, c *diag.Collector) []emit.File {
 		files = append(files, f)
 	}
 
-	files = append(files, assetsFrom(fsys, in, c)...)
+	files = append(files, assets(web, in, c)...)
 	return files
 }
 

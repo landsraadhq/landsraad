@@ -2,6 +2,7 @@ package render
 
 import (
 	"html/template"
+	"io/fs"
 	"sort"
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
@@ -178,13 +179,13 @@ func entityView(in Input, e *catalog.Entity, slugs map[string]string, scores map
 // It returns the rendered documents as well: the search index (Task 12) is
 // built from the same md.Doc values, so the index and the pages cannot
 // disagree about what a document contains.
-func entityPages(in Input, c *diag.Collector) ([]emit.File, []RenderedDoc) {
-	t, err := templateSet("entity.html")
+func entityPages(web fs.FS, in Input, c *diag.Collector) ([]emit.File, []RenderedDoc) {
+	t, err := templateSet(web, "entity.html")
 	if err != nil {
 		c.Add(templateCompileError("entity.html", err))
 		return nil, nil
 	}
-	dt, err := templateSet("doc.html")
+	dt, err := templateSet(web, "doc.html")
 	if err != nil {
 		c.Add(templateCompileError("doc.html", err))
 		return nil, nil
@@ -208,6 +209,13 @@ func entityPages(in Input, c *diag.Collector) ([]emit.File, []RenderedDoc) {
 		view.RunbookUnreadable = ed.RunbookUnreadable
 		if f, ok := renderPage(t, EntityPath(e.Ref()), view, c); ok {
 			out = append(out, f)
+			// The hoisted docs/index.md describes THIS page, so its search
+			// entry is recorded only now — an index entry for a page nothing
+			// emitted is a dead search result, the same defect the doc-nav
+			// links carried.
+			if ed.IndexDoc != nil {
+				docs = append(docs, *ed.IndexDoc)
+			}
 		}
 	}
 	return out, docs

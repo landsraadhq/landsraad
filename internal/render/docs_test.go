@@ -1,6 +1,7 @@
 package render
 
 import (
+	"html/template"
 	"io/fs"
 	"strings"
 	"testing"
@@ -361,20 +362,131 @@ func TestRenderedDocHeadingsIsNeverNilEvenWithNoHeadings(t *testing.T) {
 		"services/api/docs/index.md": {Data: []byte("No headings, just a paragraph.\n")},
 	}
 	in := input(t, files, e)
-	dt, err := templateSet("doc.html")
+	dt, err := templateSet(webFS, "doc.html")
 	if err != nil {
 		t.Fatalf("templateSet: %v", err)
 	}
 
 	var c diag.Collector
 	ed := docsFor(in, e, dt, md.New(), &c)
-	if len(ed.Docs) != 1 {
-		t.Fatalf("got %d rendered docs, want 1: %+v", len(ed.Docs), ed.Docs)
+	// docs/index.md is hoisted onto the entity page (ruling R18), so its
+	// search entry is IndexDoc rather than a row in Docs — entityPages records
+	// it only once that page has actually been emitted.
+	if ed.IndexDoc == nil {
+		t.Fatal("docs/index.md produced no search entry")
 	}
-	if ed.Docs[0].Headings == nil {
+	if len(ed.Docs) != 0 {
+		t.Errorf("the hoisted index must not also be a sub-page entry: %+v", ed.Docs)
+	}
+	if ed.IndexDoc.Headings == nil {
 		t.Error("RenderedDoc.Headings must not be nil for a document with no headings")
 	}
-	if len(ed.Docs[0].Headings) != 0 {
-		t.Errorf("a document with no headings must have zero headings, got %+v", ed.Docs[0].Headings)
+	if len(ed.IndexDoc.Headings) != 0 {
+		t.Errorf("a document with no headings must have zero headings, got %+v", ed.IndexDoc.Headings)
+	}
+}
+
+// brokenDocTemplate compiles and then fails to execute, which is what
+// renderPage reports and skips. A template that fails to COMPILE would never
+// reach docsFor at all — entityPages gives up before the entity loop — so the
+// only way to observe one doc page failing while its siblings succeed is a
+// template that executes badly.
+func brokenDocTemplate() *template.Template {
+	return template.Must(template.New("base.html").Parse(`{{.NoSuchFieldOnDocPage}}`))
+}
+
+// A doc page that failed to render must leave no trace claiming otherwise.
+//
+// out.Nav and out.Docs were appended to BEFORE renderPage was called, so a
+// document that failed to render still put a link in the entity page's
+// documentation nav and a row in search-index.json, both pointing at a page
+// nothing emitted. RunbookURL two lines below was already guarded for exactly
+// this reason; these were not.
+func TestADocumentThatFailsToRenderLeavesNoNavLinkAndNoSearchEntry(t *testing.T) {
+	e := ent("api", catalog.KindService, "team-payments", 1)
+	e.Spec.Docs = "services/api/docs"
+	files := fstest.MapFS{
+		"services/api/docs/runbook.md": {Data: []byte("# Runbook\n\nDrain the queue.\n")},
+	}
+	in := input(t, files, e)
+
+	var c diag.Collector
+	ed := docsFor(in, e, brokenDocTemplate(), md.New(), &c)
+
+	if len(ed.Files) != 0 {
+		t.Fatalf("nothing rendered, so nothing may be emitted: %+v", ed.Files)
+	}
+	if len(ed.Nav) != 0 {
+		t.Errorf("the entity page must not link to a doc page nothing emitted: %+v", ed.Nav)
+	}
+	if len(ed.Docs) != 0 {
+		t.Errorf("search-index.json must not carry a row for a page nothing emitted: %+v", ed.Docs)
+	}
+
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("want exactly one diagnostic, got %d: %+v", len(ds), ds)
+	}
+	wantMsg := "cannot render entity/service/api/docs/runbook.html: " +
+		"template: base.html:1:2: executing \"base.html\" at <.NoSuchFieldOnDocPage>: " +
+		"can't evaluate field NoSuchFieldOnDocPage in type render.DocPage"
+	if ds[0].Message != wantMsg {
+		t.Errorf("Message =\n%q\nwant\n%q", ds[0].Message, wantMsg)
+	}
+	if ds[0].File != "entity/service/api/docs/runbook.html" {
+		t.Errorf("File = %q, want %q", ds[0].File, "entity/service/api/docs/runbook.html")
+	}
+	if ds[0].Line != 1 {
+		t.Errorf("Line = %d, want 1", ds[0].Line)
+	}
+}
+
+// The same guard on the second loop: spec.runbook living outside spec.docs
+// takes a different code path to the same kind of page, and had the same
+// defect.
+func TestARunbookOutsideTheDocsDirectoryThatFailsToRenderLeavesNoSearchEntry(t *testing.T) {
+	e := ent("api", catalog.KindService, "team-payments", 1)
+	e.Spec.Runbook = "services/api/RUNBOOK.md"
+	files := fstest.MapFS{
+		"services/api/RUNBOOK.md": {Data: []byte("# Runbook\n\nDrain the queue.\n")},
+	}
+	in := input(t, files, e)
+
+	var c diag.Collector
+	ed := docsFor(in, e, brokenDocTemplate(), md.New(), &c)
+
+	if len(ed.Docs) != 0 {
+		t.Errorf("search-index.json must not carry a row for a runbook nothing emitted: %+v", ed.Docs)
+	}
+	if ed.RunbookURL != "" {
+		t.Errorf("RunbookURL = %q, want empty for a runbook that failed to render", ed.RunbookURL)
+	}
+	if !ed.RunbookUnreadable {
+		t.Error("a declared runbook that never rendered must be reported as unreadable, not as absent")
+	}
+}
+
+// An entity page that fails to render takes its hoisted docs/index.md search
+// entry with it, for the same reason: the page that entry points at is the
+// entity page, and nothing emitted it.
+func TestAnEntityPageThatFailsToRenderLeavesNoHoistedIndexSearchEntry(t *testing.T) {
+	e := ent("api", catalog.KindService, "team-payments", 1)
+	e.Spec.Docs = "services/api/docs"
+	files := fstest.MapFS{
+		"services/api/docs/index.md": {Data: []byte("# api\n\nThe front door.\n")},
+	}
+	in := input(t, files, e)
+
+	// entity.html is real; base.html is not, so every entity page fails to
+	// execute while doc.html's pages are unaffected.
+	web := webFSWithout(t, "catalog.html")
+	web["web/templates/base.html"] = &fstest.MapFile{Data: []byte(`{{.NoSuchFieldOnEntityView}}`)}
+
+	var c diag.Collector
+	_, docs := entityPages(web, in, &c)
+	for _, d := range docs {
+		if d.URL == "entity/service/api/" {
+			t.Errorf("the hoisted index was indexed although its page never rendered: %+v", d)
+		}
 	}
 }

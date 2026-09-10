@@ -16,6 +16,14 @@ import (
 
 // webFS holds the templates and static files.
 //
+// The client scripts under web/static target modern, evergreen browsers. They
+// already require fetch, Promise, document.currentScript and
+// Element.replaceWith, none of which exist in IE11, and there is no polyfill
+// or transpiler anywhere in this repository. The ES5-looking syntax in those
+// files is house style, not a compatibility contract — CONTRIBUTING.md,
+// "Browser support", says so in full. Working without JavaScript at all is a
+// separate requirement, and a real one.
+//
 // Spec §13's layout sketch puts these at a top-level web/. They live here
 // instead (ruling R10): go:embed patterns are relative to the package
 // directory and may not contain "..", and a root-level `package web` would
@@ -30,21 +38,20 @@ var webFS embed.FS
 // One set per page, not one set for all of them: every page file defines
 // "content", so a shared set would silently keep only the last one parsed
 // and render the same body on every page.
-func templateSet(page string) (*template.Template, error) {
-	return templateSetFrom(webFS, page)
-}
-
-// templateSetFrom is templateSet's logic, taking the filesystem as a
-// parameter (composition's "IO at the edges") rather than reading the
-// package-level embed directly. webFS's real, well-formed content has no
-// reachable way to fail a page's template compile — every field a template
-// touches is populated by Go code, never by a user's YAML — so this seam is
-// what lets a test hand it a filesystem missing a page template, without a
-// package-level var anything could reassign.
-func templateSetFrom(fsys fs.FS, page string) (*template.Template, error) {
+//
+// web is the template filesystem — webFS in production — taken as a parameter
+// (composition's "IO at the edges") rather than read from the package-level
+// embed. It is NOT Input.FS, which is the user's repository. webFS's real,
+// well-formed content has no reachable way to fail a page's template compile —
+// every field a template touches is populated by Go code, never by a user's
+// YAML — so this parameter is what lets a test hand one page builder a
+// filesystem missing its template, without a package-level var anything could
+// reassign. Every page builder takes it for that reason: a seam two of seven
+// consumers honour is not a seam, it is a test that proves nothing.
+func templateSet(web fs.FS, page string) (*template.Template, error) {
 	return template.New("base.html").
 		Funcs(funcs()).
-		ParseFS(fsys, "web/templates/base.html", "web/templates/"+page)
+		ParseFS(web, "web/templates/base.html", "web/templates/"+page)
 }
 
 func funcs() template.FuncMap {
@@ -87,18 +94,12 @@ func renderPage(t *template.Template, outPath string, data any, c *diag.Collecto
 // assets returns every static file the site serves.
 //
 // It walks the embedded directory rather than listing names, so adding a
-// stylesheet or a client script is one new file and no code change.
-func assets(in Input, c *diag.Collector) []emit.File {
-	return assetsFrom(webFS, in, c)
-}
-
-// assetsFrom is assets's logic, taking the filesystem as a parameter for the
-// same reason templateSetFrom does: a seam a test can hand a substitute
-// filesystem to, with no package-level var to reassign.
-func assetsFrom(fsys fs.FS, in Input, c *diag.Collector) []emit.File {
+// stylesheet or a client script is one new file and no code change. web is
+// the template filesystem, for the same reason templateSet takes it.
+func assets(web fs.FS, in Input, c *diag.Collector) []emit.File {
 	var out []emit.File
 
-	entries, err := fs.ReadDir(fsys, "web/static")
+	entries, err := fs.ReadDir(web, "web/static")
 	if err != nil {
 		c.Add(diag.Diagnostic{
 			Severity: diag.SevError, File: "assets", Line: 1,
@@ -111,7 +112,7 @@ func assetsFrom(fsys fs.FS, in Input, c *diag.Collector) []emit.File {
 		if e.IsDir() {
 			continue
 		}
-		data, err := fs.ReadFile(fsys, path.Join("web/static", e.Name()))
+		data, err := fs.ReadFile(web, path.Join("web/static", e.Name()))
 		if err != nil {
 			c.Add(diag.Diagnostic{
 				Severity: diag.SevError, File: "assets/" + e.Name(), Line: 1,

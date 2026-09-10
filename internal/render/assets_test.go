@@ -44,7 +44,7 @@ func TestAssetsEmitsTheLocalMermaidBundleWhenDataIsPresent(t *testing.T) {
 	in := twoEntities(t)
 	in.Mermaid = Mermaid{Src: LocalMermaidPath, Data: []byte("console.log('mermaid')")}
 	var c diag.Collector
-	got := siteMap(assets(in, &c))
+	got := siteMap(assets(webFS, in, &c))
 	if ds := c.Diagnostics(); len(ds) != 0 {
 		t.Fatalf("a populated local bundle must not report a diagnostic: %+v", ds)
 	}
@@ -65,7 +65,7 @@ func TestAssetsReportsWhenMermaidDataIsEmptyForTheLocalSrc(t *testing.T) {
 	in := twoEntities(t)
 	in.Mermaid = Mermaid{Src: LocalMermaidPath}
 	var c diag.Collector
-	got := siteMap(assets(in, &c))
+	got := siteMap(assets(webFS, in, &c))
 
 	if _, ok := got[LocalMermaidPath]; ok {
 		t.Errorf("must not emit %s with no bytes behind it", LocalMermaidPath)
