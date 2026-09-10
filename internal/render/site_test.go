@@ -3,6 +3,7 @@ package render
 import (
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/diag"
@@ -84,6 +85,50 @@ func TestCatalogShowsNotScoredRatherThanZero(t *testing.T) {
 	index := string(siteMap(Site(twoEntities(t), &c))["index.html"])
 	if !strings.Contains(index, "not scored") {
 		t.Errorf("the untiered topic must render as not scored:\n%s", index)
+	}
+}
+
+// TestSiteContinuesPastAPageThatFailsToCompile pins spec §12's core promise
+// for this task: one broken page must not hide the other forty. The real
+// embedded templates always compile — every field a template touches is
+// populated by Go code, never by a user's catalog, so there is no legitimate
+// Input that makes this happen. The only way to exercise the path is to
+// substitute a filesystem missing the page template for the duration of
+// this test, which is exactly the shape a future landsraad bug could take.
+func TestSiteContinuesPastAPageThatFailsToCompile(t *testing.T) {
+	saved := webFS
+	t.Cleanup(func() { webFS = saved })
+	webFS = fstest.MapFS{
+		"web/templates/base.html": &fstest.MapFile{Data: []byte(`{{template "content" .}}`)},
+		"web/static/style.css":    &fstest.MapFile{Data: []byte("body{}")},
+		// catalog.html is deliberately absent: templateSet must fail to
+		// compile it, and Site must still emit everything else.
+	}
+
+	var c diag.Collector
+	got := siteMap(Site(twoEntities(t), &c))
+
+	if _, ok := got["index.html"]; ok {
+		t.Errorf("a page whose template failed to compile must not be emitted")
+	}
+	if _, ok := got["assets/style.css"]; !ok {
+		t.Errorf("assets must still be emitted when the catalog page fails to compile; got %v", keys(got))
+	}
+
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("want exactly one diagnostic, got %d: %+v", len(ds), ds)
+	}
+	d := ds[0]
+	wantMsg := "cannot compile the embedded template catalog.html: template: pattern matches no files: `web/templates/catalog.html`"
+	if d.Message != wantMsg {
+		t.Errorf("Message =\n%q\nwant\n%q", d.Message, wantMsg)
+	}
+	if d.File != "templates/catalog.html" {
+		t.Errorf("File = %q, want %q", d.File, "templates/catalog.html")
+	}
+	if d.Line != 1 {
+		t.Errorf("Line = %d, want 1", d.Line)
 	}
 }
 

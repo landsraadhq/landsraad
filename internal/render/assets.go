@@ -14,7 +14,7 @@ import (
 	"github.com/landsraadhq/landsraad/internal/render/md"
 )
 
-// webFS holds the templates and static files.
+// webFSData holds the templates and static files.
 //
 // Spec §13's layout sketch puts these at a top-level web/. They live here
 // instead (ruling R10): go:embed patterns are relative to the package
@@ -23,7 +23,16 @@ import (
 // constraint and Task 15 amends it.
 //
 //go:embed web
-var webFS embed.FS
+var webFSData embed.FS
+
+// webFS is what templateSet and assets actually read from, typed as the
+// fs.FS interface rather than the concrete embed.FS above it. The real,
+// well-formed embedded content has no reachable way to fail a page's
+// template compile — every field a template touches is populated by Go
+// code, never by a user's YAML — so a test proving Site continues past a
+// broken page has nowhere to inject the break except here, by substituting
+// a fake filesystem for the duration of one test.
+var webFS fs.FS = webFSData
 
 // templateSet parses base.html plus exactly one page template.
 //
@@ -114,9 +123,22 @@ func assets(in Input, c *diag.Collector) []emit.File {
 	}
 
 	// A locally served Mermaid bundle, when --mermaid-src named a file. cmd/
-	// read the bytes; this only places them.
-	if in.Mermaid.Src == LocalMermaidPath && len(in.Mermaid.Data) > 0 {
-		out = append(out, emit.File{Path: LocalMermaidPath, Data: in.Mermaid.Data})
+	// reads the bytes before building Input; this only places them. Src
+	// naming the local path with no bytes behind it is not something a
+	// user's catalog can cause — it means cmd/ built Input wrong — so the
+	// diagnostic says that rather than blaming the catalog (spec §12: no
+	// silent fallbacks).
+	if in.Mermaid.Src == LocalMermaidPath {
+		if len(in.Mermaid.Data) > 0 {
+			out = append(out, emit.File{Path: LocalMermaidPath, Data: in.Mermaid.Data})
+		} else {
+			c.Add(diag.Diagnostic{
+				Severity: diag.SevError, File: LocalMermaidPath, Line: 1,
+				Check:   "assets",
+				Message: fmt.Sprintf("cannot emit %s: Mermaid.Data is empty", LocalMermaidPath),
+				Hint:    "this is a landsraad bug, not a problem with your catalog: cmd/ must read the file named by --mermaid-src before calling Site",
+			})
+		}
 	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
