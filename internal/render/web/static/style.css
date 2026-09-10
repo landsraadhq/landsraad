@@ -116,3 +116,11 @@ table.trend { max-width: 32rem; }
 #results li { padding: .25rem .6rem; display: flex; gap: .5rem; align-items: baseline; }
 #results li:hover { background: #f2f4f7; }
 .result-kind { font-size: 12px; color: var(--muted); margin-left: auto; }
+
+.filters { display: flex; gap: 1rem; margin: 0 0 1rem; flex-wrap: wrap; }
+.filters label { font-size: 12px; color: var(--muted); display: flex; gap: .35rem; align-items: center; }
+.filters select { font: inherit; padding: .15rem .3rem; border: 1px solid var(--line); border-radius: 3px; }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--fg); }
+th[aria-sort="ascending"]::after { content: " ▲"; }
+th[aria-sort="descending"]::after { content: " ▼"; }

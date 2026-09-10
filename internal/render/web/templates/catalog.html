@@ -1,9 +1,40 @@
 {{define "content"}}
 <h1>Catalog</h1>
-<p class="count">{{len .Rows}} entities</p>
+<p class="count"><span id="shown">{{len .Rows}}</span> of {{len .Rows}} entities</p>
+
+<div class="filters" id="filters">
+  <label>Kind
+    <select data-filter="kind"><option value="">any</option>
+    {{range .Kinds}}<option value="{{lower .}}">{{.}}</option>{{end}}
+    </select>
+  </label>
+  <label>Team
+    <select data-filter="owner"><option value="">any</option>
+    {{range .Teams}}<option value="{{.}}">{{.}}</option>{{end}}
+    </select>
+  </label>
+  <label>Tier
+    <select data-filter="tier"><option value="">any</option>
+    {{range .Tiers}}<option value="{{.}}">{{.}}</option>{{end}}
+    </select>
+  </label>
+  <label>Tag
+    <select data-filter="tags"><option value="">any</option>
+    {{range .Tags}}<option value="{{.}}">{{.}}</option>{{end}}
+    </select>
+  </label>
+</div>
+
 <table class="catalog" id="catalog">
 <thead>
-<tr><th>Entity</th><th>Kind</th><th>Owner</th><th>Tier</th><th>Lifecycle</th><th>Score</th></tr>
+<tr>
+  <th data-sort="text">Entity</th>
+  <th data-sort="text">Kind</th>
+  <th data-sort="text">Owner</th>
+  <th data-sort="number">Tier</th>
+  <th data-sort="text">Lifecycle</th>
+  <th data-sort="number">Score</th>
+</tr>
 </thead>
 <tbody>
 {{range .Rows}}
@@ -14,9 +45,13 @@
   </td>
   <td><span class="kind kind-{{lower .Kind}}">{{.Kind}}</span></td>
   <td>{{if .OwnerURL}}<a href="{{$.Root}}{{.OwnerURL}}">{{.Owner}}</a>{{else}}{{.Owner}}{{end}}</td>
-  <td>{{if .Tier}}{{.Tier}}{{else}}<span class="none">—</span>{{end}}</td>
+  <td data-value="{{.Tier}}">{{if .Tier}}{{.Tier}}{{else}}<span class="none">—</span>{{end}}</td>
   <td>{{.Lifecycle}}</td>
-  <td>{{if .Score}}<span class="mono">{{pct .Score}}</span>{{else}}<span class="none">not scored</span>{{end}}</td>
+  {{if .Score}}
+  <td data-value="{{mul .Score 100}}"><span class="mono">{{pct .Score}}</span></td>
+  {{else}}
+  <td data-value="-1"><span class="none">not scored</span></td>
+  {{end}}
 </tr>
 {{end}}
 </tbody>
