@@ -1,11 +1,13 @@
 package render
 
 import (
+	"html/template"
 	"sort"
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/emit"
+	"github.com/landsraadhq/landsraad/internal/render/md"
 	"github.com/landsraadhq/landsraad/internal/scorecard"
 )
 
@@ -64,6 +66,12 @@ type EntityView struct {
 	// Diagram is Mermaid source, empty when the entity has no edges. The
 	// "Depends on" lists above are the navigation; this only shows shape.
 	Diagram string
+	// Index is docs/index.md, rendered inline (ruling R18).
+	Index template.HTML
+	// DocNav lists the sub-pages, relative to this entity's own page.
+	DocNav []DocLink
+	// RunbookURL is where spec.runbook was rendered, "" when unset.
+	RunbookURL string
 }
 
 // Pair is a sorted key/value, so labels and annotations render in a stable
@@ -157,24 +165,42 @@ func entityView(in Input, e *catalog.Entity, slugs map[string]string, scores map
 	return out
 }
 
-// entityPages renders one page per entity.
-func entityPages(in Input, c *diag.Collector) []emit.File {
+// entityPages renders one page per entity, plus that entity's documentation.
+//
+// It returns the rendered documents as well: the search index (Task 12) is
+// built from the same md.Doc values, so the index and the pages cannot
+// disagree about what a document contains.
+func entityPages(in Input, c *diag.Collector) ([]emit.File, []RenderedDoc) {
 	t, err := templateSet("entity.html")
 	if err != nil {
 		c.Add(templateCompileError("entity.html", err))
-		return nil
+		return nil, nil
 	}
+	dt, err := templateSet("doc.html")
+	if err != nil {
+		c.Add(templateCompileError("doc.html", err))
+		return nil, nil
+	}
+	m := md.New()
 	slugs := teamSlugMap(in)
 	scores := entityScores(in.Scorecard)
 
 	var out []emit.File
+	var docs []RenderedDoc
 	for _, e := range in.Catalog.Entities() {
+		ed := docsFor(in, e, dt, m, c)
+		out = append(out, ed.Files...)
+		docs = append(docs, ed.Docs...)
+
 		view := entityView(in, e, slugs, scores)
+		view.Index = ed.Index
+		view.DocNav = ed.Nav
+		view.RunbookURL = runbookURL(e)
 		if f, ok := renderPage(t, EntityPath(e.Ref()), view, c); ok {
 			out = append(out, f)
 		}
 	}
-	return out
+	return out, docs
 }
 
 // teamSlugMap is the non-reporting slug lookup every page builder shares.

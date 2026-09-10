@@ -69,5 +69,20 @@
   </div>
 </div>
 {{end}}
+
+<h2>Documentation</h2>
+{{if .RunbookURL}}<p><a class="runbook-link" href="{{.RunbookURL}}">Runbook</a></p>{{end}}
+{{with .DocNav}}
+<ul class="doc-nav">
+{{range .}}<li><a href="{{.URL}}">{{.Title}}</a></li>
+{{end}}</ul>
+{{end}}
+{{if .Index}}
+<article class="doc">
+{{.Index}}
+</article>
+{{else if not .DocNav}}
+{{if not .RunbookURL}}<p class="none">No documentation. Point spec.docs at a directory or spec.runbook at a file.</p>{{end}}
+{{end}}
 </article>
 {{end}}

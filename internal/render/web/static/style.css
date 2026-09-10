@@ -92,3 +92,12 @@ pre.mermaid { background: transparent; padding: 0; }
 }
 .mermaid-unavailable summary { color: var(--warn); cursor: pointer; }
 .mermaid-unavailable pre { margin: .5rem 0 0; }
+
+.crumbs { color: var(--muted); margin: 0 0 1rem; }
+.doc { max-width: 48rem; }
+.doc h1 { margin-top: 0; }
+.doc table { margin: 1rem 0; }
+.doc blockquote { border-left: 3px solid var(--line); margin: 1rem 0; padding: 0 1rem; color: var(--muted); }
+.runbook-link { font-weight: 600; }
+ul.doc-nav { list-style: none; padding: 0; margin: .5rem 0 1rem; }
+ul.doc-nav li { padding: .1rem 0; }
