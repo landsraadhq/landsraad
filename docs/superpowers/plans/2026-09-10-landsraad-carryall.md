@@ -1004,7 +1004,7 @@ func TestCheckFilesUsesEachEntitysOwnRepository(t *testing.T) {
 		"service.yaml": {Data: []byte("x")},
 		"runbook.md":   {Data: []byte("x")},
 	}
-	src := Sources{"monorepo": mono, "edge-gateway": edge})
+	src := Sources{"monorepo": mono, "edge-gateway": edge}
 
 	inMono := &Entity{SourceRepo: "monorepo", SourcePath: "services/api/service.yaml", NameLine: 4}
 	inMono.Kind = "Service"
@@ -1026,7 +1026,7 @@ func TestCheckFilesUsesEachEntitysOwnRepository(t *testing.T) {
 }
 
 func TestCheckFilesReportsAnEntityWithNoFilesystem(t *testing.T) {
-	src := Sources{"monorepo": fstest.MapFS{}})
+	src := Sources{"monorepo": fstest.MapFS{}}
 
 	orphan := &Entity{SourceRepo: "ghost", SourcePath: "service.yaml", NameLine: 4}
 	orphan.Kind = "Service"
@@ -1152,7 +1152,7 @@ Add to `internal/scorecard/hermetic_test.go`:
 func TestRunbookPresentReadsTheEntitysOwnRepository(t *testing.T) {
 	full := fstest.MapFS{"runbook.md": {Data: []byte("# Runbook\n\nCall the on-call.\n")}}
 	stub := fstest.MapFS{"runbook.md": {Data: []byte("# Runbook\n")}}
-	src := catalog.Sources{"full-repo": full, "stub-repo": stub})
+	src := catalog.Sources{"full-repo": full, "stub-repo": stub}
 
 	good := &catalog.Entity{SourceRepo: "full-repo"}
 	good.Spec.Runbook = "runbook.md"
@@ -1201,7 +1201,7 @@ func TestChecksReportAnEntityWithNoFilesystem(t *testing.T) {
 // repositories is two different directories with two different histories.
 func TestDocsFreshAsksPerRepository(t *testing.T) {
 	docs := fstest.MapFS{"docs/index.md": {Data: []byte("# Docs\n")}}
-	src := catalog.Sources{"fresh": docs, "ancient": docs})
+	src := catalog.Sources{"fresh": docs, "ancient": docs}
 	now := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
 
 	var asked []string
@@ -1250,7 +1250,7 @@ func TestIngestReadsEveryRepository(t *testing.T) {
 				"  - { entity: service:edge, check: image-scanned, status: pass, detail: \"0 critical\" }\n")},
 	}
 	edge := fstest.MapFS{}
-	src := catalog.Sources{"platform": platform, "edge-gateway": edge})
+	src := catalog.Sources{"platform": platform, "edge-gateway": edge}
 
 	var c diag.Collector
 	e := &catalog.Entity{SourceRepo: "edge-gateway", SourcePath: "service.yaml", NameLine: 4}
@@ -1283,7 +1283,7 @@ func TestIngestTieAcrossRepositoriesWithTheSameProducer(t *testing.T) {
 		"  - { entity: service:edge, check: image-scanned, status: %s, detail: d }\n"
 	a := fstest.MapFS{".landsraad/checks/scan.yaml": {Data: []byte(fmt.Sprintf(body, "pass"))}}
 	b := fstest.MapFS{".landsraad/checks/scan.yaml": {Data: []byte(fmt.Sprintf(body, "fail"))}}
-	src := catalog.Sources{"alpha": a, "beta": b})
+	src := catalog.Sources{"alpha": a, "beta": b}
 
 	var c diag.Collector
 	e := &catalog.Entity{SourceRepo: "alpha", SourcePath: "service.yaml", NameLine: 4}
@@ -1493,7 +1493,7 @@ func gitLastEdit(root string) scorecard.LastEditFunc {
 - [ ] **Step 6: Run the tests**
 
 Run: `go test ./internal/scorecard/ ./cmd/... -v`
-Expected: PASS. Existing scorecard tests constructing `Env{FS: fsys}` must become `Env{Sources: catalog.SingleSource("", fsys)}` — the fixtures' entities have an empty `SourceRepo`.
+Expected: PASS. Existing scorecard tests constructing `Env{FS: fsys}` become `Env{Sources: catalog.SingleSource(<name>, fsys)}`. **Read the fixtures to find `<name>` — do not assume it is `""`.** Task 3 hit exactly this: the plan claimed `internal/catalog`'s fixtures carried an empty `SourceRepo` and they carried `"monorepo"`, so the literal `SingleSource("", fsys)` would have broken every existing test. Whatever `SourceRepo` the fixture entities actually have is the name to key on, and no existing assertion should need changing.
 
 - [ ] **Step 7: Verify the tree**
 
@@ -1547,7 +1547,7 @@ func TestDocsForReadsTheEntitysOwnRepository(t *testing.T) {
 	edge := fstest.MapFS{
 		"docs/index.md": {Data: []byte("# Edge docs\n\nThe gateway's index.\n")},
 	}
-	src := catalog.Sources{"monorepo": mono, "edge-gateway": edge})
+	src := catalog.Sources{"monorepo": mono, "edge-gateway": edge}
 
 	for _, tt := range []struct {
 		repo string
@@ -1618,7 +1618,7 @@ In `cmd/landsraad/build.go`'s `render.Input` literal, `FS: fsys` becomes `Source
 - [ ] **Step 5: Run the tests**
 
 Run: `go test ./internal/render/ ./cmd/... -v`
-Expected: PASS. The golden tests are the ones to watch: their `Input` literals need `Sources: catalog.SingleSource("", fsys)` and their **output must not change at all**. A golden diff here means this refactor changed the portal, which it must not.
+Expected: PASS. The golden tests are the ones to watch: their `Input` literals need `Sources: catalog.SingleSource(<name>, fsys)` — **read the fixtures for `<name>` rather than assuming `""`,** as Task 3's fixtures turned out to carry `"monorepo"` — and their **output must not change at all**. A golden diff here means this refactor changed the portal, which it must not.
 
 - [ ] **Step 6: Verify the tree**
 
