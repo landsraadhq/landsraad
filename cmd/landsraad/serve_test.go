@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -233,7 +236,7 @@ func TestRebuildSerialisesConcurrentTriggers(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			rebuild()
+			rebuild("")
 		}()
 	}
 	close(start)
@@ -246,5 +249,188 @@ func TestRebuildSerialisesConcurrentTriggers(t *testing.T) {
 	// swap (siteServer.set), never merged.
 	if _, ok := srv.lookup("index.html"); !ok {
 		t.Fatal("index.html missing after a burst of concurrent rebuild triggers")
+	}
+}
+
+// writeBrokenCatalog writes a service.yaml under root whose owner is not
+// defined in teams.yaml -- the same fixture shape as build_test.go's
+// TestBuildRefusesABrokenCatalog -- guaranteeing Build returns exitValidation
+// and renders nothing.
+func writeBrokenCatalog(t *testing.T, root string) {
+	t.Helper()
+	teams := "teams:\n  - name: team-payments\n    members: [alice]\n    slack: \"#pay\"\n    pagerduty: PAY\n"
+	if err := os.WriteFile(filepath.Join(root, "teams.yaml"), []byte(teams), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "services", "ledger-api")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	svc := "apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: ledger-api\n" +
+		"  owner: team-ghost\n  tier: 1\n  lifecycle: production\nspec:\n" +
+		"  path: services/ledger-api\n"
+	if err := os.WriteFile(filepath.Join(dir, "service.yaml"), []byte(svc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fixBrokenCatalog corrects the dangling owner reference writeBrokenCatalog
+// left behind -- the same edit a developer mid-session would make to fix it.
+func fixBrokenCatalog(t *testing.T, root string) {
+	t.Helper()
+	svc := "apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: ledger-api\n" +
+		"  owner: team-payments\n  tier: 1\n  lifecycle: production\nspec:\n" +
+		"  path: services/ledger-api\n"
+	if err := os.WriteFile(filepath.Join(root, "services", "ledger-api", "service.yaml"), []byte(svc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestServeReturns503BeforeAnyBuildHasSucceeded is the case a bare 404 would
+// misdescribe: there is no previous version to fall back to, so ServeHTTP
+// must say so honestly rather than looking like a missing route.
+func TestServeReturns503BeforeAnyBuildHasSucceeded(t *testing.T) {
+	rec := get(t, &siteServer{}, "/")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	want := buildNeverSucceededMessage + "\n" // http.Error appends the newline.
+	if rec.Body.String() != want {
+		t.Errorf("body = %q, want %q", rec.Body.String(), want)
+	}
+}
+
+// TestRebuildAfterAGoodBuildKeepsServingLastGoodSite is the genuine case for
+// "still serving the previous version": a good build already landed, so
+// that message is true, unlike the never-built case above.
+func TestRebuildAfterAGoodBuildKeepsServingLastGoodSite(t *testing.T) {
+	root := t.TempDir()
+	writeCatalogFixture(t, root, 1)
+
+	srv := &siteServer{}
+	var errOut bytes.Buffer
+	opts := BuildOptions{Now: time.Now().UTC(), LastEdit: noLastEdit()}
+	rebuild := newRebuild(root, opts, srv, &errOut)
+
+	if ok := rebuild(""); !ok {
+		t.Fatalf("the first, valid build must succeed; stderr:\n%s", errOut.String())
+	}
+	goodIndex, ok := srv.lookup("index.html")
+	if !ok {
+		t.Fatal("index.html missing after a successful build")
+	}
+
+	errOut.Reset()
+	writeBrokenCatalog(t, root) // adds a second entity with an undefined owner
+	if ok := rebuild(""); ok {
+		t.Fatal("a build with a dangling owner reference must fail")
+	}
+	want := "  build failed; still serving the previous version\n"
+	if !strings.HasSuffix(errOut.String(), want) {
+		t.Errorf("stderr:\n%s\nmust end with:\n%s", errOut.String(), want)
+	}
+	if got, _ := srv.lookup("index.html"); string(got) != string(goodIndex) {
+		t.Error("the last good site must still be served after a failed rebuild")
+	}
+}
+
+// TestServeWithoutWatchExitsWhenTheFirstBuildFails drives the real binary,
+// not Serve in-process, because the exit code lives only in newServeCmd's
+// RunE, which calls os.Exit directly (see binPath's doc in
+// integration_test.go).
+func TestServeWithoutWatchExitsWhenTheFirstBuildFails(t *testing.T) {
+	dir := materialize(t, map[string]string{
+		"teams.yaml": "teams:\n  - name: team-payments\n    members: [alice]\n    slack: \"#pay\"\n    pagerduty: PAY\n",
+		"services/ledger-api/service.yaml": "apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: ledger-api\n" +
+			"  owner: team-ghost\n  tier: 1\n  lifecycle: production\nspec:\n" +
+			"  path: services/ledger-api\n",
+	})
+	r := run(t, dir, "serve")
+	if r.exitCode != exitValidation {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", r.exitCode, exitValidation, r.stderr)
+	}
+	want := "  build failed; nothing has been rendered yet\n"
+	if !strings.HasSuffix(r.stderr, want) {
+		t.Errorf("stderr:\n%s\nmust end with:\n%s", r.stderr, want)
+	}
+	if strings.Contains(r.stderr, "serving on http://") {
+		t.Error("must never announce that it is serving -- it did not start listening")
+	}
+}
+
+// freeAddr reserves and immediately releases a loopback TCP port, so Serve
+// can be given a real, currently-free address without hardcoding one — the
+// standard trick for a test that needs to know the address before the real
+// listener exists.
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return addr
+}
+
+// pollHTTP retries an HTTP GET against url until it returns want or d
+// elapses, then returns the response body. There is no channel to select on
+// for "has the listener come up yet" or "has the watched rebuild landed
+// yet", so this polls with a bound instead of a single sleep-and-hope.
+func pollHTTP(t *testing.T, url string, want int, d time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	var lastStatus int
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url)
+		if err != nil {
+			lastErr = err
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == want {
+			return string(body)
+		}
+		lastStatus = resp.StatusCode
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("polling %s for status %d timed out: last status %d, last error %v", url, want, lastStatus, lastErr)
+	return ""
+}
+
+// TestServeWithWatchRespondsThenRecoversAfterAFailedFirstBuild is the
+// --watch counterpart of TestServeWithoutWatchExitsWhenTheFirstBuildFails:
+// the user is mid-edit, so a later save should fix it, and the server must
+// stay up to see that save arrive.
+func TestServeWithWatchRespondsThenRecoversAfterAFailedFirstBuild(t *testing.T) {
+	root := t.TempDir()
+	writeBrokenCatalog(t, root)
+
+	addr := freeAddr(t)
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(root, addr, BuildOptions{Now: time.Now().UTC()}, true, io.Discard)
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("Serve returned early (err=%v); --watch must keep serving after a failed first build", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	body := pollHTTP(t, "http://"+addr+"/", http.StatusServiceUnavailable, 2*time.Second)
+	want := buildNeverSucceededMessage + "\n"
+	if body != want {
+		t.Errorf("503 body = %q, want %q", body, want)
+	}
+
+	fixBrokenCatalog(t, root)
+	if body := pollHTTP(t, "http://"+addr+"/", http.StatusOK, 3*time.Second); body == "" {
+		t.Error("expected a non-empty catalog page once the fix landed")
 	}
 }

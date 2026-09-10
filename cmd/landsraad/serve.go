@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -35,6 +36,12 @@ const debounce = 150 * time.Millisecond
 type siteServer struct {
 	mu    sync.RWMutex
 	files map[string][]byte
+	// built is false until the first successful rebuild. Before that, files
+	// is a nil map either way, so a request cannot tell "nothing built yet"
+	// from "built, but this path does not exist" without this flag — and the
+	// two must answer differently: a bare 404 for the latter, an honest 503
+	// for the former, because there is no previous version to fall back to.
+	built bool
 }
 
 func (s *siteServer) set(files []emit.File) {
@@ -44,6 +51,7 @@ func (s *siteServer) set(files []emit.File) {
 	}
 	s.mu.Lock()
 	s.files = next
+	s.built = true
 	s.mu.Unlock()
 }
 
@@ -54,7 +62,24 @@ func (s *siteServer) lookup(p string) ([]byte, bool) {
 	return data, ok
 }
 
+func (s *siteServer) hasBuilt() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.built
+}
+
+// buildNeverSucceededMessage is what a browser sees for every path until the
+// first build succeeds. Spec §12 requires degraded mode be visible in the
+// artifact, not only in a log — a bare 404 here would look like a missing
+// route rather than the build failure it actually is.
+const buildNeverSucceededMessage = "landsraad serve: the build has not completed successfully yet; " +
+	"check the terminal for the error and save again once it is fixed"
+
 func (s *siteServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !s.hasBuilt() {
+		http.Error(w, buildNeverSucceededMessage, http.StatusServiceUnavailable)
+		return
+	}
 	// path.Clean resolves any "..", and the leading slash is then stripped,
 	// so a request can only ever name a key that a generator produced.
 	p := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
@@ -104,7 +129,8 @@ func watchDirs(root string, w *fsnotify.Watcher) error {
 }
 
 // newRebuild returns a function that renders root into srv, serialised so a
-// burst of triggers can never run Build concurrently.
+// burst of triggers can never run Build concurrently, and reports whether
+// the build succeeded.
 //
 // Build's LastEdit closure (gitLastEdit, lastedit.go) caches into a plain,
 // unsynchronised map. The debounce timer's Stop-then-AfterFunc pattern can
@@ -116,29 +142,55 @@ func watchDirs(root string, w *fsnotify.Watcher) error {
 // server down mid-session. A mutex around the entire rebuild serialises
 // every trigger, so nothing Build touches can ever be entered twice at once
 // -- not just this one cache.
-func newRebuild(root string, opts BuildOptions, srv *siteServer, errOut io.Writer) func() {
+//
+// label, if non-empty, is written to errOut while the lock is held, so a
+// watch-triggered "change detected" line can never interleave with a build
+// running at the same time — the same hazard as two builds writing errOut
+// at once, just cosmetic instead of fatal.
+func newRebuild(root string, opts BuildOptions, srv *siteServer, errOut io.Writer) func(label string) bool {
 	var mu sync.Mutex
-	return func() {
+	return func(label string) bool {
 		mu.Lock()
 		defer mu.Unlock()
+		if label != "" {
+			fmt.Fprint(errOut, label)
+		}
+		hadGoodBuild := srv.hasBuilt()
 		files, code := Build(os.DirFS(root), errOut, opts)
 		if code != exitOK {
-			// Keep serving the last good site. A preview that goes blank
-			// the moment you make a typo is a preview you stop trusting;
-			// the diagnostics are already on stderr.
-			fmt.Fprintf(errOut, "  build failed; still serving the previous version\n")
-			return
+			if hadGoodBuild {
+				// Keep serving the last good site. A preview that goes
+				// blank the moment you make a typo is a preview you stop
+				// trusting; the diagnostics are already on stderr.
+				fmt.Fprintf(errOut, "  build failed; still serving the previous version\n")
+			} else {
+				// Claiming "the previous version" here would be a lie —
+				// there is no previous version. ServeHTTP answers every
+				// request with an honest 503 until this is fixed.
+				fmt.Fprintf(errOut, "  build failed; nothing has been rendered yet\n")
+			}
+			return false
 		}
 		srv.set(files)
+		return true
 	}
 }
+
+// errInitialBuildFailed signals that the first build failed and --watch was
+// not set. There is no later save that could fix it and nothing to serve,
+// so newServeCmd exits 2 (spec §12) instead of starting a server that could
+// only ever answer 503 — matching how newBuildCmd exits on a Build that
+// returns a non-exitOK code (build.go).
+var errInitialBuildFailed = errors.New("initial build failed")
 
 // Serve renders the site and serves it, rebuilding on change when watch is
 // set.
 func Serve(root, addr string, opts BuildOptions, watch bool, errOut io.Writer) error {
 	srv := &siteServer{}
 	rebuild := newRebuild(root, opts, srv, errOut)
-	rebuild()
+	if ok := rebuild(""); !ok && !watch {
+		return errInitialBuildFailed
+	}
 
 	if watch {
 		w, err := fsnotify.NewWatcher()
@@ -167,8 +219,7 @@ func Serve(root, addr string, opts BuildOptions, watch bool, errOut io.Writer) e
 						timer.Stop()
 					}
 					timer = time.AfterFunc(debounce, func() {
-						fmt.Fprintf(errOut, "  change detected, rebuilding\n")
-						rebuild()
+						rebuild("  change detected, rebuilding\n")
 					})
 				case err, ok := <-w.Errors:
 					if !ok {
@@ -217,7 +268,7 @@ func newServeCmd() *cobra.Command {
 				return err
 			}
 			cmd.SilenceUsage = true
-			return Serve(resolved, addr, BuildOptions{
+			err = Serve(resolved, addr, BuildOptions{
 				Mermaid: mermaid,
 				// A preview rebuilt on every save re-reads the clock, which
 				// is what makes the footer's timestamp meaningful here.
@@ -225,6 +276,13 @@ func newServeCmd() *cobra.Command {
 				LastEdit: gitLastEdit(resolved),
 				Version:  version(),
 			}, watch, cmd.ErrOrStderr())
+			if errors.Is(err, errInitialBuildFailed) {
+				// A server that could only ever answer 503 is worse than a
+				// clear failure — there is no later save, without --watch,
+				// that could fix it.
+				os.Exit(exitValidation)
+			}
+			return err
 		},
 	}
 	cmd.Flags().StringVar(&addr, "addr", "localhost:8080", "address to listen on")
