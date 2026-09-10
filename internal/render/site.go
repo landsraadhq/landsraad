@@ -40,9 +40,7 @@ func siteFrom(fsys fs.FS, in Input, c *diag.Collector) []emit.File {
 	// Reported here, once. The page builders use teamSlugMap for their
 	// links; this call is what turns a collision into a build failure.
 	TeamSlugs(in.Teams, c)
-	// The second return is the rendered documents. Task 12 builds the
-	// search index from them; until then nothing consumes it.
-	pages, _ := entityPages(in, c)
+	pages, docs := entityPages(in, c)
 	files = append(files, pages...)
 
 	if f, ok := mapPage(in, c); ok {
@@ -52,6 +50,13 @@ func siteFrom(fsys fs.FS, in Input, c *diag.Collector) []emit.File {
 	files = append(files, teamPages(in, c)...)
 
 	if f, ok := scorecardPage(in, c); ok {
+		files = append(files, f)
+	}
+
+	// Built from the same rows the catalog renders and the same documents
+	// the entity pages do, so it cannot disagree with them about what
+	// exists or what a document says.
+	if f, ok := searchIndexFile(catalogRows(in), docs, c); ok {
 		files = append(files, f)
 	}
 
