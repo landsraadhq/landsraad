@@ -85,6 +85,23 @@ func TestSystemGraphIsCappedOnALargeCatalog(t *testing.T) {
 	}
 }
 
+// The mirror of TestSystemGraphIsCappedOnALargeCatalog: exactly SystemMapCap
+// entities is still under the limit and must render as a diagram. Without
+// this, the cap's off-by-one is only ever exercised from the capped side.
+func TestSystemGraphIsNotCappedAtExactlyTheLimit(t *testing.T) {
+	var entities []*catalog.Entity
+	for i := 0; i < SystemMapCap; i++ {
+		entities = append(entities, ent(fmt.Sprintf("svc-%03d", i), catalog.KindService, "team-payments", 3))
+	}
+	src, _, capped := systemGraph(input(t, nil, entities...))
+	if capped {
+		t.Errorf("%d entities must not trip the cap of %d", len(entities), SystemMapCap)
+	}
+	if src == "" {
+		t.Error("an uncapped map must emit Mermaid source")
+	}
+}
+
 func TestMapPageExplainsTheCap(t *testing.T) {
 	var entities []*catalog.Entity
 	for i := 0; i <= SystemMapCap; i++ {
@@ -137,4 +154,18 @@ func TestNoMermaidScriptWhenSrcIsEmpty(t *testing.T) {
 func TestMapPageIsGolden(t *testing.T) {
 	var c diag.Collector
 	golden(t, "map.html", siteMap(Site(linked(t), &c))["map/index.html"])
+}
+
+// Spec §12: the degraded-mode banner must appear on every page. map/index.html
+// is a new page type this task introduces; mirrors
+// TestEntityPageShowsTheDegradedNoticeBanner so the invariant is pinned here
+// too rather than only checked by hand.
+func TestMapPageShowsTheDegradedNoticeBanner(t *testing.T) {
+	in := linked(t)
+	in.Notice = "degraded: could not fetch team-payments from GitHub"
+	var c diag.Collector
+	page := string(siteMap(Site(in, &c))["map/index.html"])
+	if !strings.Contains(page, `<div class="notice" role="status">degraded: could not fetch team-payments from GitHub</div>`) {
+		t.Errorf("the degraded-mode notice must render on the map page:\n%s", page)
+	}
 }

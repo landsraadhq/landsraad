@@ -86,11 +86,9 @@ ul.links li { padding: .15rem 0; }
 .status { font-size: 12px; }
 
 pre.mermaid { background: transparent; padding: 0; }
-pre.mermaid-unavailable {
-  background: #f7f7f7; color: var(--muted);
-  border: 1px dashed var(--line); font-size: 12px;
+.mermaid-unavailable {
+  border: 1px dashed var(--line); border-radius: 3px;
+  padding: .5rem .75rem; font-size: 12px;
 }
-pre.mermaid-unavailable::before {
-  content: attr(data-note);
-  display: block; color: var(--warn); margin-bottom: .5rem;
-}
+.mermaid-unavailable summary { color: var(--warn); cursor: pointer; }
+.mermaid-unavailable pre { margin: .5rem 0 0; }
