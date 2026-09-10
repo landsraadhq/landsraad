@@ -40,6 +40,12 @@ tasks:
       - go run ./cmd/landsraad schema > schema/service.schema.json
       - go run ./cmd/landsraad schema --kind standards > schema/standards.schema.json
 
+  site:
+    desc: Build the portal from the fixture repository and open it
+    cmds:
+      - go run ./cmd/landsraad build testdata/monorepo-ok -o dist
+      - echo "built dist/ — run 'go run ./cmd/landsraad serve testdata/monorepo-ok --watch' to preview"
+
   ci:
     desc: Everything CI runs
     deps: [lint, test]

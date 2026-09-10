@@ -10,12 +10,15 @@ platform team.
 | | |
 |---|---|
 | Design, decisions D1–D13, rationale | `docs/superpowers/specs/2026-09-08-landsraad-design.md` |
-| Implementation, 11 tasks, 125 steps | `docs/superpowers/plans/2026-09-08-landsraad-catalog-core.md` |
+| Plan 1 — catalog core, 11 tasks | `docs/superpowers/plans/2026-09-08-landsraad-catalog-core.md` |
+| Plan 2 — scorecard and generated artefacts, 12 tasks | `docs/superpowers/plans/2026-09-09-landsraad-scorecard-and-artifacts.md` |
+| Plan 3 — the portal renderer, 15 tasks | `docs/superpowers/plans/2026-09-09-landsraad-portal-renderer.md` |
 | Composition principles in depth | `/composition` |
 
-Plan 1 covers scope A only: catalog core, delivering `landsraad validate`.
-Scorecard and generated artefacts are Plan 2; fetch adapters and the renderer
-are Plan 3.
+Plan 1 delivered scope A, the catalog core (`validate`). Plan 2 delivered B and
+C (`gen`, `score`). Plan 3 delivers D, the portal (`build`, `serve`), against
+the local repository. Plan 4 is Carryall — multi-repo fetching over the GitHub
+and GitLab APIs — and is the only part of v1 still unbuilt.
 
 ## Non-negotiable, and enforced by hooks
 
@@ -33,6 +36,11 @@ fourth formats and reports but never blocks — `task ci` is its gate.
 | No `sync.Once`, no `init()` below `cmd/` | Package-level mutable state means two configurations cannot coexist and initialisation failure cannot be tested. | `no-package-state.py` |
 | Diagnostics assert **exact** message strings | Error message quality is the product. A substring check passes against a badly worded message — the first draft was 0/10 on this while looking thoroughly tested. | `exact-message-tests.py` |
 | Go stays gofmt-clean and vet-clean | `task ci` gates on both. This hook applies `gofmt -w` and *reports* vet findings without blocking: the plan is test-first, so a package that does not compile is the expected state between the failing test and the fix. | `gofmt-vet.py` (advisory) |
+
+The renderer is where the `os` rule bites hardest — generating a directory tree
+is exactly where a contributor reaches for `os.MkdirAll`. The answer is always
+to return an `emit.File` and let `cmd/` write it. That is also what makes
+`serve --watch` able to rebuild in memory.
 
 ## Project shape
 

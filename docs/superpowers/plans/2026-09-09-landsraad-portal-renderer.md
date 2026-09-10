@@ -6,7 +6,7 @@
 
 **Architecture:** `internal/render.Site(Input) []emit.File` is a pure function: it takes the catalog, the graph, the teams, the scorecard and an `fs.FS` to read documentation from, and returns every byte of the site as values. `cmd/` owns the one loop that puts them on disk — the same loop `gen` and `init` already use. Markdown goes through `internal/render/md`, a goldmark pipeline running *without* `WithUnsafe`. Templates, CSS and the vanilla-JS clients are `go:embed`ed. Because the site is a value, `serve --watch` rebuilds it in memory and serves from a map, never writing to disk and so never watching its own output.
 
-**Tech Stack:** Go 1.23 (toolchain 1.26.1), go-task 3.53.1, cobra, `gopkg.in/yaml.v3` v3.0.1, `github.com/santhosh-tekuri/jsonschema/v6` v6.0.1, `github.com/google/go-cmp` v0.6.0. **Three new direct dependencies:** `github.com/yuin/goldmark` v1.8.6, `github.com/alecthomas/chroma/v2` v2.27.0, `github.com/fsnotify/fsnotify` v1.10.1.
+**Tech Stack:** Go 1.23 (toolchain 1.26.1), go-task 3.53.1, cobra, `gopkg.in/yaml.v3` v3.0.1, `github.com/santhosh-tekuri/jsonschema/v6` v6.0.1, `github.com/google/go-cmp` v0.6.0. **Three new direct dependencies:** `github.com/yuin/goldmark` v1.8.6, `github.com/alecthomas/chroma/v2` v2.24.1 (pinned below v2.27.0, which declares `go 1.25` and would raise this module's floor past the `go-version: '1.23'` / `golang:1.23` CI snippets the README publishes to adopters), `github.com/fsnotify/fsnotify` v1.10.1.
 
 **Spec:** `docs/superpowers/specs/2026-09-08-landsraad-design.md` — this plan implements sub-project **D** (§10, the portal) and the `build`/`serve` half of §8. Read the spec alongside this plan; where they disagree, the spec wins and the disagreement is a bug in this plan, **except** where a ruling below records a deliberate, argued deviation.
 
@@ -157,7 +157,10 @@ A third fact to know while writing this: `text.Segment.Value` has a **pointer** 
 
 ```bash
 go get github.com/yuin/goldmark@v1.8.6
-go get github.com/alecthomas/chroma/v2@v2.27.0
+# Not v2.27.0: that release declares `go 1.25`, which would raise this
+# module's floor past the go-version: '1.23' / golang:1.23 CI snippets the
+# README publishes to adopters (Task 15 correction).
+go get github.com/alecthomas/chroma/v2@v2.24.1
 go mod tidy
 ```
 
@@ -6506,7 +6509,7 @@ the way text would."
 - Consumes: `Build`, `BuildOptions`.
 - Produces:
   - `type siteServer struct{…}` with `set([]emit.File)` and `ServeHTTP`
-  - `func Serve(fsys fs.FS, addr string, opts BuildOptions, errOut io.Writer) error`
+  - `func Serve(root, addr string, opts BuildOptions, watch bool, errOut io.Writer) error`
   - `func watchDirs(root string, w *fsnotify.Watcher) error`
 
 **Context:** Spec §8: `landsraad serve [--watch]`, local preview.

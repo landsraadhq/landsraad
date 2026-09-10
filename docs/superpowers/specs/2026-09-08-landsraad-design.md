@@ -583,13 +583,20 @@ internal/render/       site generation, goldmark pipeline, search index
 internal/render/md/    admonition extension
 internal/generate/     CODEOWNERS, alert routing, Slack map
 internal/config/       repos / teams / standards loading
-web/                   go:embed templates, CSS, search JS
+internal/render/web/   go:embed templates, CSS, search and catalog JS
 testdata/              fixture repos
 
 The canonical JSON Schema lives at internal/schema/service.schema.json so
 go:embed can reach it; schema/service.schema.json at the repo root is
 generated from it by `task schema` for editor autocompletion.
 ```
+
+The assets sit under internal/render/ rather than at the repository root
+because a go:embed pattern is relative to its own package directory and may
+not contain "..", so internal/render cannot reach a top-level web/. The
+alternative — a root-level `package web` holding the embed — would be a
+public import path, which D8 rules out. Corrected in Plan 3; earlier drafts
+of this section described a layout that does not compile.
 
 ---
 

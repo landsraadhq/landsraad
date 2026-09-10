@@ -79,3 +79,27 @@ the change.
 Implement `diag.Formatter` and add one line to `diag.Formatters()` — that's
 the whole extension point, by design. There's deliberately no registry type
 or `init()`-based self-registration to wire up.
+
+## Adding a page to the portal
+
+1. A view model in `internal/render/`, and a function returning `[]emit.File`
+   or `(emit.File, bool)`. **Never write a file** — `cmd/` owns the one loop
+   that does, and `internal/` may not import `os`.
+2. A template in `internal/render/web/templates/`. Every page template defines
+   `"content"`; `templateSet` parses `base.html` plus exactly one of them,
+   because a shared set would silently keep only the last one parsed.
+3. Every link is `{{.Root}}` plus a site-relative path. `Root` is the relative
+   path back to the site root, so the portal works when hosted in a
+   subdirectory. An absolute `/assets/style.css` would 404 there, on every
+   page, with nothing to report it.
+4. A golden test. `go test ./internal/render/ -update` regenerates the fixtures
+   — **read the diff before committing it.** A golden file refreshed without
+   being looked at asserts nothing.
+5. Static assets go in `internal/render/web/static/` and are picked up
+   automatically; add the `<script>` or `<link>` tag to `base.html`.
+
+Rendered Markdown is the only place `template.HTML` appears, in
+`internal/render/docs.go`. It is safe because `md.New()` configures goldmark
+**without** `WithUnsafe` (spec §14.1), so raw HTML in a runbook was already
+escaped into text. Do not reuse that cast on bytes that have not been through
+`md.Render`.

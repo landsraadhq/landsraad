@@ -434,3 +434,85 @@ func TestServeWithWatchRespondsThenRecoversAfterAFailedFirstBuild(t *testing.T) 
 		t.Error("expected a non-empty catalog page once the fix landed")
 	}
 }
+
+// pollHTTPContains retries an HTTP GET against url until the 200 body
+// contains want or d elapses. TestServeWithWatchRespondsThenRecoversAfter...
+// above only ever needs "some page landed" or a fixed 503 string; this is
+// for the case where the page changes shape between the two builds and the
+// test has to recognise the second one by content, not just status.
+func pollHTTPContains(t *testing.T, url, want string, d time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	var last string
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url)
+		if err != nil {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			last = string(body)
+			if strings.Contains(last, want) {
+				return last
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("polling %s for body containing %q timed out; last body:\n%s", url, want, last)
+	return ""
+}
+
+// TestServeWithWatchRespondsThenRecoversAfterAFailedFirstBuild (above) proves
+// the *recovery* path: a broken first build, then a save that fixes it. It
+// never proves the everyday path: a first build that already succeeds, then
+// an ordinary edit. That gap matters because it is a different code path
+// through Serve -- rebuild's hadGoodBuild branch, not its "nothing has been
+// rendered yet" branch -- and nothing else exercises it through a real
+// listener, a real fsnotify event and a real debounced rebuild wired
+// together the way newServeCmd actually wires them. newRebuild and
+// watchDirs are covered in isolation elsewhere in this file; this is the
+// composition of both, driven by Serve itself.
+func TestServeWithWatchReflectsAnEditAfterAGoodBuild(t *testing.T) {
+	root := t.TempDir()
+	teams := "teams:\n  - name: team-payments\n    members: [alice]\n    slack: \"#pay\"\n    pagerduty: PAY\n"
+	if err := os.WriteFile(filepath.Join(root, "teams.yaml"), []byte(teams), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svcDir := filepath.Join(root, "services", "api")
+	if err := os.MkdirAll(svcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	svcYAML := func(description string) []byte {
+		return []byte("apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: api\n" +
+			"  description: " + description + "\n" +
+			"  owner: team-payments\n  tier: 1\n  lifecycle: production\nspec:\n  path: services/api\n")
+	}
+	if err := os.WriteFile(filepath.Join(svcDir, "service.yaml"), svcYAML("before the edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	addr := freeAddr(t)
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(root, addr, BuildOptions{Now: time.Now().UTC()}, true, io.Discard)
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("Serve returned early (err=%v)", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	first := pollHTTPContains(t, "http://"+addr+"/", "before the edit", 2*time.Second)
+	if strings.Contains(first, "after the edit") {
+		t.Fatalf("index already shows the post-edit description before any edit was made:\n%s", first)
+	}
+
+	if err := os.WriteFile(filepath.Join(svcDir, "service.yaml"), svcYAML("after the edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pollHTTPContains(t, "http://"+addr+"/", "after the edit", 3*time.Second)
+}

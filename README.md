@@ -8,12 +8,14 @@ database, no platform team, and it works against a repo you already have.
 
 ## What exists today
 
-**`landsraad validate`** is the whole product right now, alongside `init` to
-scaffold a catalog and `schema` for editor support. Everything past that —
-`score`, `gen`, `build`/`serve`, the static portal, fetching remote repos over
-the GitHub/GitLab APIs — is designed but **not implemented**. If you came here
-looking for a browsable service catalog site or a scorecard, that's the plan,
-not the current state; see [Status](#status) below for what's real.
+**`landsraad validate`**, **`gen`**, **`score`**, **`build`** and **`serve`** all
+work. Validation is hermetic and offline; `gen` derives CODEOWNERS, alert
+routing and a Slack map; `score` measures the catalog against `standards.yaml`;
+`build` renders a static portal and `serve --watch` previews it.
+
+What is **not** built: fetching remote repositories over the GitHub and GitLab
+APIs. `build` renders the repository it is run in, and warns when `repos.yaml`
+names repositories it could not read.
 
 ## Try it in under a minute
 
@@ -38,16 +40,16 @@ any linter would.
 
 ### `teams.yaml`
 
-The source for who owns what. A future generator (Plan 2) will produce
-CODEOWNERS and alert routing from exactly this shape, so it's worth getting
-right early:
+The source for who owns what. `landsraad gen` produces CODEOWNERS, alert
+routing and a Slack map from exactly this shape, so it's worth getting right
+early:
 
 ```yaml
 teams:
   - name: team-payments      # what service.yaml `owner` refers to
-    members: [alice, bob]    # CODEOWNERS entries, eventually
-    slack: "#payments"       # deploy notifications, eventually
-    pagerduty: PAY           # alert routing target, eventually
+    members: [alice, bob]    # CODEOWNERS entries
+    slack: "#payments"       # the Slack map
+    pagerduty: PAY           # alert routing target
 ```
 
 Unknown keys are rejected: a silently ignored `pagerDuty:` typo would make
@@ -128,6 +130,29 @@ Both can be forced explicitly with `--format text|json|github|gitlab`.
 `validate` exits `0` clean, `1` on a usage or config error, `2` when it found
 a problem in the catalog — script off the exit code, not the output.
 
+## The portal
+
+```bash
+landsraad build -o dist      # render the static site
+landsraad serve --watch      # preview at localhost:8080, rebuilding on change
+```
+
+`build` writes a `.landsraad-manifest` into the output directory listing what it
+produced, so a later build removes the page of a service that has left the
+catalog. It refuses to write into a non-empty directory it did not create;
+pass `--force` if you mean it.
+
+Dependency diagrams load Mermaid from a pinned CDN URL with an integrity hash.
+On a host with no outbound network:
+
+```bash
+landsraad build --mermaid-src ./vendor/mermaid.min.js   # copied into the site
+landsraad build --mermaid-src none                      # diagrams degrade to a visible "not rendered" note
+```
+
+Search needs `fetch()`, which browsers block on `file://` pages. Use
+`landsraad serve`, or host the output, to try it.
+
 ## Editor autocompletion
 
 `landsraad init` writes `schema/service.schema.json` — the schema the binary
@@ -170,14 +195,12 @@ kind that survives.
 ## Status
 
 Implemented: schema validation, ownership checks against `teams.yaml`,
-dependency-cycle detection, and four CI-friendly output formats
-(`text`, `json`, `github`, `gitlab`) — all hermetic, all offline.
+dependency-cycle detection, four CI-friendly output formats
+(`text`, `json`, `github`, `gitlab`), generated ownership artifacts with a
+`--check` gate, a tier-aware scorecard with history, and the static portal.
 
-Designed but not built: the scorecard (`score`), generated artifacts
-(`gen` — CODEOWNERS, alert routing, a Slack map), and the static portal
-(`build`/`serve`), along with fetching remote repos over the GitHub and
-GitLab APIs. See `docs/superpowers/specs/2026-09-08-landsraad-design.md` for
-the full design and what's coming.
+Designed but not built: multi-repo fetching over the GitHub and GitLab APIs.
+See `docs/superpowers/specs/2026-09-08-landsraad-design.md`.
 
 ## License
 

@@ -4,11 +4,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/landsraadhq/landsraad/internal/emit"
+	"github.com/landsraadhq/landsraad/internal/render"
 )
 
 // binPath is the landsraad binary these tests exercise as a real subprocess.
@@ -430,5 +436,146 @@ func TestIntegrationScoreRejectsAnUnknownFormat(t *testing.T) {
 	want := `Error: --format must be text or json, got "bogus"`
 	if !strings.Contains(r.stderr, want) {
 		t.Errorf("stderr = %q, want to contain %q", r.stderr, want)
+	}
+}
+
+// A portal built from the fixture repository must be complete: every entity
+// has a page, every page the catalog links to exists, and the site is
+// internally consistent. This is the assertion that the fourteen unit-level
+// tasks actually compose.
+func TestBuildProducesACompletePortal(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "dist")
+
+	files, code := Build(os.DirFS("../../testdata/monorepo-ok"), io.Discard, BuildOptions{
+		Now:      time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC),
+		LastEdit: noLastEdit(),
+		Version:  "v0.0.0-test",
+		Mermaid:  render.Mermaid{Src: render.DefaultMermaidSrc, Integrity: render.DefaultMermaidIntegrity},
+	})
+	if code != exitOK {
+		t.Fatalf("build of the known-good fixture failed with exit %d", code)
+	}
+	if err := writeSite(out, files, false, io.Discard); err != nil {
+		t.Fatalf("writeSite: %v", err)
+	}
+
+	present := map[string]bool{}
+	for _, f := range files {
+		present[f.Path] = true
+	}
+	for _, want := range []string{
+		"index.html",
+		"scorecard/index.html",
+		"map/index.html",
+		"search-index.json",
+		"assets/style.css",
+		"assets/chroma.css",
+		"assets/search.js",
+		"assets/catalog.js",
+		"assets/runtime.js",
+		"assets/mermaid.js",
+		"entity/service/ledger-api/index.html",
+		"entity/service/payments-worker/index.html",
+		// The topic's metadata.name is "payments.events" (a literal dot,
+		// spec §4's namespaced-name convention for Topic/Database/API) even
+		// though its directory is topics/payments-events (a hyphen) -- the
+		// URL is built from the entity name, not the directory. Confirmed
+		// against testdata/monorepo-ok/topics/payments-events/service.yaml
+		// and a real `landsraad build` of this fixture.
+		"entity/topic/payments.events/index.html",
+		"team/team-payments/index.html",
+	} {
+		if !present[want] {
+			t.Errorf("the portal is missing %s", want)
+		}
+	}
+
+	// Every internal href must resolve to a file the build produced. A
+	// portal that links to its own 404s is the failure this whole plan's
+	// URL scheme exists to prevent.
+	for _, f := range files {
+		if !strings.HasSuffix(f.Path, ".html") {
+			continue
+		}
+		for _, href := range hrefs(string(f.Data)) {
+			if strings.HasPrefix(href, "http") || strings.HasPrefix(href, "#") || href == "" {
+				continue
+			}
+			target := path.Join(path.Dir(f.Path), href)
+			// path.Join runs path.Clean, which strips any trailing slash
+			// target ever had -- so checking target's suffix here can never
+			// fire; it must be checked on href before Join eats it. Without
+			// this, a directory-style link whose last segment happens to
+			// contain a literal "." (e.g. the payments.events topic, or the
+			// root "./" self-link, which Joins down to ".") reads as an
+			// already-named file and is never resolved to its index.html.
+			if target == "." || strings.HasSuffix(href, "/") || !strings.Contains(path.Base(target), ".") {
+				target = path.Join(target, "index.html")
+			}
+			if !present[target] {
+				t.Errorf("%s links to %q which resolves to %q, and nothing generated it", f.Path, href, target)
+			}
+		}
+	}
+}
+
+// hrefs pulls every href and src value out of a page. Deliberately crude:
+// this is a link checker for our own generated markup, not an HTML parser.
+func hrefs(page string) []string {
+	var out []string
+	for _, attr := range []string{`href="`, `src="`} {
+		rest := page
+		for {
+			i := strings.Index(rest, attr)
+			if i < 0 {
+				break
+			}
+			rest = rest[i+len(attr):]
+			j := strings.Index(rest, `"`)
+			if j < 0 {
+				break
+			}
+			out = append(out, rest[:j])
+			rest = rest[j:]
+		}
+	}
+	return out
+}
+
+// A second build over the same directory must remove the page of an entity
+// that has left the catalog (ruling R16).
+func TestRebuildPrunesADeletedEntity(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "dist")
+	opts := BuildOptions{
+		Now:      time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC),
+		LastEdit: noLastEdit(), Version: "v0.0.0-test",
+	}
+
+	full, code := Build(os.DirFS("../../testdata/monorepo-ok"), io.Discard, opts)
+	if code != exitOK {
+		t.Fatalf("first build exited %d", code)
+	}
+	if err := writeSite(out, full, false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	page := filepath.Join(out, "entity", "topic", "payments.events", "index.html")
+	if _, err := os.Stat(page); err != nil {
+		t.Fatalf("first build did not write the topic's page: %v", err)
+	}
+
+	// Rebuild with that entity's page absent from the set.
+	var without []emit.File
+	for _, f := range full {
+		if f.Path != "entity/topic/payments.events/index.html" {
+			without = append(without, f)
+		}
+	}
+	if err := writeSite(out, without, false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(page); !os.IsNotExist(err) {
+		t.Error("the removed entity's page survived the rebuild")
 	}
 }
