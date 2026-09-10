@@ -19,7 +19,6 @@ import (
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/config"
-	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/scorecard"
 )
 
@@ -156,17 +155,13 @@ func scoresByRef(sc *scorecard.Scorecard) map[catalog.Ref]float64 {
 // between runs.
 func catalogRows(in Input) []CatalogRow {
 	scores := scoresByRef(in.Scorecard)
-	// TeamSlugs is the single source of truth for name -> slug: it is what
+	// teamSlugMap is the single source of truth for name -> slug: it is what
 	// drops a losing name on a collision. Computing slugs inline here with
 	// bare Slug calls would let a losing team's name silently share the
 	// winning team's slug, pointing an entity at a page that was actually
-	// rendered with a different team's data.
-	//
-	// The collector is throwaway: the same collision is already reported
-	// once, against the real collector, wherever site.go calls TeamSlugs to
-	// build the team pages — reporting it again here would double-report.
-	var throwaway diag.Collector
-	slugs := TeamSlugs(in.Teams, &throwaway)
+	// rendered with a different team's data. See teamSlugMap in entity.go
+	// for why its collector is throwaway.
+	slugs := teamSlugMap(in)
 
 	var rows []CatalogRow
 	for _, e := range in.Catalog.Entities() {

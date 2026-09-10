@@ -6,6 +6,7 @@ import (
 	"testing/fstest"
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
+	"github.com/landsraadhq/landsraad/internal/config"
 	"github.com/landsraadhq/landsraad/internal/diag"
 )
 
@@ -119,6 +120,48 @@ func TestAnUntieredEntityPageHasNoScorecardSection(t *testing.T) {
 	}
 	if !strings.Contains(page, "not scored") {
 		t.Errorf("it must say so instead:\n%s", page)
+	}
+}
+
+// The losing side of a team-name collision must not get an owner link on
+// the entity page either — mirrors TestALosingTeamNameCollisionGetsNoOwnerLink
+// for catalogRows. A version that only checks the winning team's entity page
+// links correctly would pass against the teamSlugMap bug this pins: a bare
+// per-name Slug lookup with no collision tracking would let the losing name
+// share the winner's slug, linking the owner to the wrong team's page.
+func TestEntityPageGivesTheLosingTeamNameCollisionNoOwnerLink(t *testing.T) {
+	in := input(t, nil, ent("api", catalog.KindService, "team-payments", 1))
+	var c diag.Collector
+	in.Teams = config.LoadTeams("teams.yaml", []byte(
+		"teams:\n"+
+			"  - name: payments-team\n"+
+			"    members: [alice]\n"+
+			"  - name: Payments Team\n"+
+			"    members: [bob]\n"), &c)
+	// config.Teams.Names() sorts, and "Payments Team" (capital P, 0x50)
+	// sorts before "payments-team" (0x70), so it claims the slug
+	// "payments-team" first; "payments-team" itself is the losing name.
+	in.Catalog.Entities()[0].Metadata.Owner = "payments-team"
+
+	page := string(siteMap(Site(in, &c))["entity/service/api/index.html"])
+	if strings.Contains(page, `href="../../../team/payments-team/"`) {
+		t.Errorf("the losing side of a slug collision must not link to the winning team's page:\n%s", page)
+	}
+	if !strings.Contains(page, "<dd>payments-team</dd>") {
+		t.Errorf("the owner name must still render:\n%s", page)
+	}
+}
+
+// Spec §12: the degraded-mode banner must appear on every page. The entity
+// page inherits it through newPage/Page the same way the catalog page does,
+// but nothing pinned that with a committed test until now.
+func TestEntityPageShowsTheDegradedNoticeBanner(t *testing.T) {
+	in := twoEntities(t)
+	in.Notice = "degraded: could not fetch team-payments from GitHub"
+	var c diag.Collector
+	page := string(siteMap(Site(in, &c))["entity/service/ledger-api/index.html"])
+	if !strings.Contains(page, `<div class="notice" role="status">degraded: could not fetch team-payments from GitHub</div>`) {
+		t.Errorf("the degraded-mode notice must render on the entity page:\n%s", page)
 	}
 }
 

@@ -173,14 +173,17 @@ func entityPages(in Input, c *diag.Collector) []emit.File {
 	return out
 }
 
-// teamSlugMap is the non-reporting slug lookup the page builders share.
-// Site calls TeamSlugs once for the diagnostics; this is for the links.
+// teamSlugMap is the non-reporting slug lookup every page builder shares.
+//
+// It delegates to TeamSlugs rather than looping over Slug directly: a bare
+// Slug call per name has no collision tracking, so the losing side of a
+// name collision would silently share the winning name's slug, pointing an
+// entity's OwnerURL at a page that is actually rendered with the other
+// team's members and on-call data (see model.go's catalogRows for the same
+// warning). The collector is throwaway because the real collision
+// diagnostic is already reported exactly once, in site.go's TeamSlugs call
+// — reporting it again per page would spam it once per entity.
 func teamSlugMap(in Input) map[string]string {
-	out := map[string]string{}
-	for _, name := range in.Teams.Names() {
-		if s, ok := Slug(name); ok {
-			out[name] = s
-		}
-	}
-	return out
+	var throwaway diag.Collector
+	return TeamSlugs(in.Teams, &throwaway)
 }
