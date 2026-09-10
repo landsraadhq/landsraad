@@ -69,3 +69,18 @@ pre { overflow-x: auto; padding: .75rem; background: #f7f7f7; border-radius: 3px
   background: #fff8e6; color: var(--warn);
   padding: .5rem .75rem; margin: 0 0 1rem;
 }
+
+.entity-head .meta { display: flex; gap: .75rem; align-items: baseline; color: var(--muted); margin: .25rem 0; }
+.entity-head .desc { margin: .5rem 0 1rem; }
+.runtime { font-size: 12px; padding: .1rem .35rem; border: 1px dashed var(--line); border-radius: 3px; }
+.runtime-known { border-style: solid; border-color: var(--good); color: var(--good); }
+dl.facts { display: grid; grid-template-columns: 10rem 1fr; gap: .3rem 1rem; margin: 1rem 0; }
+dl.facts dt { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+dl.facts dd { margin: 0; }
+.tag { font-size: 12px; padding: .05rem .3rem; background: #f2f4f7; border-radius: 3px; }
+ul.links { list-style: none; padding: 0; }
+ul.links li { padding: .15rem 0; }
+.deps { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; }
+.deps h3 { font-size: .95rem; margin: .5rem 0 .25rem; }
+.deps ul { list-style: none; padding: 0; margin: 0; }
+.status { font-size: 12px; }

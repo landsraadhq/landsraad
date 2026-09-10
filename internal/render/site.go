@@ -37,6 +37,11 @@ func siteFrom(fsys fs.FS, in Input, c *diag.Collector) []emit.File {
 		files = append(files, f)
 	}
 
+	// Reported here, once. The page builders use teamSlugMap for their
+	// links; this call is what turns a collision into a build failure.
+	TeamSlugs(in.Teams, c)
+	files = append(files, entityPages(in, c)...)
+
 	files = append(files, assetsFrom(fsys, in, c)...)
 	return files
 }
