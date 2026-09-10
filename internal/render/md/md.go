@@ -34,6 +34,7 @@ func New() goldmark.Markdown {
 			// `note[^1]` renders as the literal text "[^1]" — a feature spec
 			// D2 names, dropped in silence.
 			extension.Footnote,
+			Admonitions{},
 			Code{},
 		),
 		// Heading IDs make a runbook section deep-linkable, which is what an
