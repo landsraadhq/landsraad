@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 
 	"github.com/landsraadhq/landsraad/internal/diag"
 )
@@ -74,13 +75,74 @@ func findRoot(start string) (string, error) {
 // quotes something useful. `go install ...@latest` applies no -ldflags, which
 // is why every user would otherwise report "dev".
 func version() string {
-	if Version != "dev" {
-		return Version
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		bi = nil
 	}
-	if bi, ok := debug.ReadBuildInfo(); ok {
-		if v := bi.Main.Version; v != "" && v != "(devel)" {
-			return v
+	return versionFrom(Version, bi)
+}
+
+// versionFrom is version's decision, with the build info taken as a parameter
+// so every branch can be tested. Reading it inside version() left the choice
+// untestable: a test binary always reports Main.Version "(devel)" and carries
+// no VCS stamp, so a test calling version() exercises the fallback and
+// nothing else — which is exactly how the wrong answer survived.
+//
+// stamped is the -ldflags value, "dev" when nobody set one.
+func versionFrom(stamped string, bi *debug.BuildInfo) string {
+	if stamped != "dev" {
+		// Somebody deliberately stamped a release. Nothing outranks that.
+		return stamped
+	}
+	if bi == nil {
+		return stamped
+	}
+	if v := buildRevision(bi.Settings); v != "" {
+		return v
+	}
+	if v := bi.Main.Version; v != "" && v != "(devel)" && !strings.HasPrefix(v, "v0.0.0-") {
+		// A real tag, which is the `go install ...@v1.2.3` case: no VCS
+		// stamp, and the tag is the honest answer.
+		return v
+	}
+	return stamped
+}
+
+// buildRevision describes a build by the commit it came from, and is empty
+// when the binary carries no VCS stamp — an installed module, or
+// -buildvcs=false.
+//
+// This exists because the obvious answer, bi.Main.Version, lies about a build
+// from a checkout. Go fills it in with a pseudo-version like
+// v0.0.0-20260910182806-2f17ea624567+dirty, and that leading v0.0.0 is not a
+// release: it is the placeholder for "no tag is reachable from here". The
+// portal stamps this string into the footer of every page it generates, so
+// the old behaviour published "v0.0.0" — a version that was never cut — on
+// every page of every preview, while burying the commit that would actually
+// identify the build. A release stamps -ldflags -X main.Version and never
+// reaches this path; `go install ...@v1.2.3` carries the real tag in
+// Main.Version and carries no VCS stamp, so it does not reach it either.
+func buildRevision(settings []debug.BuildSetting) string {
+	var rev string
+	var modified bool
+	for _, s := range settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			modified = s.Value == "true"
 		}
 	}
-	return Version
+	if rev == "" {
+		return ""
+	}
+	if len(rev) > 12 {
+		rev = rev[:12]
+	}
+	if modified {
+		// Uncommitted changes: the commit alone would name a tree this
+		// binary was not built from.
+		return "dev-" + rev + "-dirty"
+	}
+	return "dev-" + rev
 }
