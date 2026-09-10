@@ -200,3 +200,15 @@ func TestALosingTeamNameCollisionGetsNoOwnerLink(t *testing.T) {
 		t.Errorf("the owner name is still shown, got %q", rows[0].Owner)
 	}
 }
+
+// withTeams replaces an Input's teams, for tests about teams that own
+// nothing.
+func withTeams(t *testing.T, in Input, yaml string) Input {
+	t.Helper()
+	var c diag.Collector
+	in.Teams = config.LoadTeams("teams.yaml", []byte(yaml), &c)
+	if ds := c.Diagnostics(); len(ds) != 0 {
+		t.Fatalf("teams fixture is not clean: %+v", ds)
+	}
+	return in
+}

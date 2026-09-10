@@ -1,0 +1,26 @@
+{{define "content"}}
+<h1>{{.Name}}</h1>
+
+<dl class="facts">
+  {{with .Members}}<dt>Members</dt><dd>{{range .}}<span class="mono">{{.}}</span> {{end}}</dd>{{end}}
+  {{with .Slack}}<dt>Slack</dt><dd class="mono">{{.}}</dd>{{end}}
+  {{with .PagerDuty}}<dt>PagerDuty</dt><dd class="mono">{{.}}</dd>{{end}}
+  <dt>Scorecard</dt>
+  <dd>{{if .Score}}<span class="mono">{{pct .Score}}</span> <span class="none">aggregate over {{.Applicable}} applicable checks</span>
+      {{else}}<span class="none">nothing this team owns was scored</span>{{end}}</dd>
+</dl>
+
+<h2>Owns</h2>
+{{if .Owned}}
+<table><thead><tr><th>Entity</th><th>Kind</th><th>Tier</th><th>Score</th></tr></thead><tbody>
+{{range .Owned}}<tr>
+  <td><a href="{{$.Root}}{{.URL}}">{{.Name}}</a></td>
+  <td><span class="kind kind-{{lower .Kind}}">{{.Kind}}</span></td>
+  <td>{{if .Tier}}{{.Tier}}{{else}}<span class="none">—</span>{{end}}</td>
+  <td>{{if .Score}}<span class="mono">{{pct .Score}}</span>{{else}}<span class="none">not scored</span>{{end}}</td>
+</tr>
+{{end}}</tbody></table>
+{{else}}
+<p class="none">This team owns nothing in this catalog.</p>
+{{end}}
+{{end}}
