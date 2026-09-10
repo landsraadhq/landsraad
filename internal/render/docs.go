@@ -54,6 +54,18 @@ type entityDocs struct {
 	// Index is docs/index.md, inlined on the entity page (ruling R18).
 	Index template.HTML
 	Docs  []RenderedDoc
+	// RunbookURL is where spec.runbook actually rendered, "" when it is
+	// unset or failed to render. This reflects render success, never spec
+	// metadata alone: a link to a page that was not actually emitted is
+	// the silent fallback spec §12 forbids by name.
+	RunbookURL string
+	// DocsUnreadable is set when spec.docs names a directory this build
+	// could not read — a state distinct from spec.docs being unset (spec
+	// §12: these are different answers and must render differently).
+	DocsUnreadable bool
+	// RunbookUnreadable is set when spec.runbook names a file that failed
+	// to read or render — a state distinct from spec.runbook being unset.
+	RunbookUnreadable bool
 }
 
 // mdToHTML performs the single template.HTML conversion in this codebase.
@@ -240,9 +252,15 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 				Check:   "docs-unreadable",
 				Message: fmt.Sprintf("cannot read the documentation directory %s: %v", e.Spec.Docs, err),
 			})
+			out.DocsUnreadable = true
 		}
 		sort.Strings(mdPaths)
 	}
+
+	// runbookRendered tracks whether spec.runbook's page was actually
+	// emitted, from either loop below — never recomputed from e.Spec.Runbook
+	// alone, which cannot tell success from failure.
+	var runbookRendered bool
 
 	for _, repoPath := range mdPaths {
 		rel, err := relativeTo(e.Spec.Docs, repoPath)
@@ -272,6 +290,10 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 		}
 		if f, ok := renderPage(t, sitePath, view, c); ok {
 			out.Files = append(out.Files, f)
+			if repoPath == e.Spec.Runbook {
+				out.RunbookURL = relURL
+				runbookRendered = true
+			}
 		}
 	}
 
@@ -288,8 +310,17 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 			}
 			if f, ok := renderPage(t, sitePath, view, c); ok {
 				out.Files = append(out.Files, f)
+				out.RunbookURL = relURL
+				runbookRendered = true
 			}
 		}
+	}
+
+	// A declared runbook that never actually rendered is a state distinct
+	// from no runbook at all: entity.html must not show a working-looking
+	// link to a page nothing emitted.
+	if e.Spec.Runbook != "" && !runbookRendered {
+		out.RunbookUnreadable = true
 	}
 
 	return out
@@ -336,16 +367,4 @@ func underDir(dir, p string) bool {
 		return false
 	}
 	return strings.HasPrefix(p, strings.TrimSuffix(dir, "/")+"/")
-}
-
-// runbookURL is where an entity's runbook page ended up, relative to the
-// entity's own page — "" when it has none.
-func runbookURL(e *catalog.Entity) string {
-	if e.Spec.Runbook == "" {
-		return ""
-	}
-	if rel, err := relativeTo(e.Spec.Docs, e.Spec.Runbook); err == nil {
-		return "docs/" + htmlSuffix(rel)
-	}
-	return "runbook.html"
 }

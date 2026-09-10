@@ -70,8 +70,16 @@ type EntityView struct {
 	Index template.HTML
 	// DocNav lists the sub-pages, relative to this entity's own page.
 	DocNav []DocLink
-	// RunbookURL is where spec.runbook was rendered, "" when unset.
+	// RunbookURL is where spec.runbook actually rendered, "" when unset or
+	// when it failed to render — never a link to a page that was not
+	// actually emitted.
 	RunbookURL string
+	// DocsUnreadable is set when spec.docs names a directory that could
+	// not be read — distinct from spec.docs being unset (spec §12).
+	DocsUnreadable bool
+	// RunbookUnreadable is set when spec.runbook names a file that failed
+	// to read or render — distinct from spec.runbook being unset.
+	RunbookUnreadable bool
 }
 
 // Pair is a sorted key/value, so labels and annotations render in a stable
@@ -195,7 +203,9 @@ func entityPages(in Input, c *diag.Collector) ([]emit.File, []RenderedDoc) {
 		view := entityView(in, e, slugs, scores)
 		view.Index = ed.Index
 		view.DocNav = ed.Nav
-		view.RunbookURL = runbookURL(e)
+		view.RunbookURL = ed.RunbookURL
+		view.DocsUnreadable = ed.DocsUnreadable
+		view.RunbookUnreadable = ed.RunbookUnreadable
 		if f, ok := renderPage(t, EntityPath(e.Ref()), view, c); ok {
 			out = append(out, f)
 		}

@@ -1,6 +1,7 @@
 package render
 
 import (
+	"io/fs"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -9,6 +10,35 @@ import (
 	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/render/md"
 )
+
+// failFS wraps an fstest.MapFS, making reads of one named path fail with a
+// real error.
+//
+// fstest.MapFS implements ReadFile and Stat directly (confirmed against
+// $GOROOT/src/testing/fstest/mapfs.go), so io/fs's package-level ReadFile
+// and Stat/WalkDir call straight through to those without ever going
+// through Open — and MapFS never checks permission bits. Setting Mode: 0
+// on a MapFile, as an earlier version of these tests did, changes nothing:
+// fs.ReadFile against {Data: nil, Mode: 0} returns empty data and a nil
+// error, so the failure path it claimed to test never ran.
+type failFS struct {
+	fstest.MapFS
+	path string
+}
+
+func (f failFS) ReadFile(name string) ([]byte, error) {
+	if name == f.path {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrPermission}
+	}
+	return f.MapFS.ReadFile(name)
+}
+
+func (f failFS) Stat(name string) (fs.FileInfo, error) {
+	if name == f.path {
+		return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrPermission}
+	}
+	return f.MapFS.Stat(name)
+}
 
 // documented builds an entity with a docs tree and a runbook.
 func documented(t *testing.T) Input {
@@ -160,22 +190,141 @@ func TestAnUndocumentedEntitySaysSo(t *testing.T) {
 }
 
 // Accumulate, never fail fast: one unreadable document must not cost the
-// reader the other pages.
+// reader the other pages. Uses failFS, since fstest.MapFS's Mode bits
+// cannot make a read actually fail (see failFS's doc comment).
 func TestAnUnreadableDocumentIsReportedAndSkipped(t *testing.T) {
 	e := ent("api", catalog.KindService, "team-payments", 1)
 	e.Spec.Docs = "services/api/docs"
 	files := fstest.MapFS{
-		"services/api/docs/index.md":  {Data: []byte("# API\n")},
-		"services/api/docs/broken.md": {Data: []byte("ok"), Mode: 0},
+		"services/api/docs/index.md":  {Data: []byte("# API\n\nThe overview.\n")},
+		"services/api/docs/broken.md": {Data: []byte("# Broken\n\nUnreachable.\n")},
 	}
 	in := input(t, files, e)
-	// Make the read fail the way a real permission problem would.
-	files["services/api/docs/broken.md"] = &fstest.MapFile{Data: nil, Mode: 0}
+	in.FS = failFS{MapFS: files, path: "services/api/docs/broken.md"}
 
 	var c diag.Collector
 	site := siteMap(Site(in, &c))
-	if _, ok := site["entity/service/api/index.html"]; !ok {
-		t.Error("the entity page must still be rendered")
+
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(ds), ds)
+	}
+	got := ds[0]
+	if got.Message != "cannot read services/api/docs/broken.md" {
+		t.Errorf("Message = %q, want %q", got.Message, "cannot read services/api/docs/broken.md")
+	}
+	if got.Hint != "the file is named by spec.docs or spec.runbook" {
+		t.Errorf("Hint = %q, want %q", got.Hint, "the file is named by spec.docs or spec.runbook")
+	}
+	if got.Line == 0 {
+		t.Error("Line must not be 0")
+	}
+
+	page := string(site["entity/service/api/index.html"])
+	if !strings.Contains(page, "The overview.") {
+		t.Errorf("the other document (index.md) must still render despite broken.md failing:\n%s", page)
+	}
+}
+
+// The fs.WalkDir failure path: a whole docs/ directory that cannot be
+// listed must be reported with an exact diagnostic, and must not cost the
+// reader anything else the entity has — here, a runbook outside spec.docs.
+func TestADocsDirectoryThatCannotBeReadIsReportedAndSkipped(t *testing.T) {
+	e := ent("api", catalog.KindService, "team-payments", 1)
+	e.Spec.Docs = "services/api/docs"
+	e.Spec.Runbook = "services/api/RUNBOOK.md"
+	files := fstest.MapFS{
+		"services/api/docs/index.md": {Data: []byte("# API\n\nThe overview.\n")},
+		"services/api/RUNBOOK.md":    {Data: []byte("# Runbook\n\nSteps.\n")},
+	}
+	in := input(t, files, e)
+	in.FS = failFS{MapFS: files, path: "services/api/docs"}
+
+	var c diag.Collector
+	site := siteMap(Site(in, &c))
+
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(ds), ds)
+	}
+	got := ds[0]
+	wantMsg := "cannot read the documentation directory services/api/docs: stat services/api/docs: permission denied"
+	if got.Message != wantMsg {
+		t.Errorf("Message =\n%q\nwant\n%q", got.Message, wantMsg)
+	}
+	if got.Line == 0 {
+		t.Error("Line must not be 0")
+	}
+
+	// Accumulate, never fail fast: the runbook lives outside the broken
+	// docs directory and must still render.
+	if _, ok := site["entity/service/api/runbook.html"]; !ok {
+		t.Errorf("the runbook must still render despite the docs directory failing; got %v", keys(site))
+	}
+}
+
+// Spec §12's Global Constraints, verbatim: "A missing docs/ directory... and
+// an entity with no documentation at all are three different answers and
+// must render differently." A reader must be able to tell "this service
+// declared no documentation" from "this service says it has docs and we
+// could not read them" — those imply different actions.
+func TestADocsDirectoryThatCannotBeReadRendersDistinctlyFromNoDocumentation(t *testing.T) {
+	e := ent("api", catalog.KindService, "team-payments", 1)
+	e.Spec.Docs = "services/api/docs"
+	files := fstest.MapFS{"services/api/docs/index.md": {Data: []byte("# API\n")}}
+	in := input(t, files, e)
+	in.FS = failFS{MapFS: files, path: "services/api/docs"}
+
+	var c diag.Collector
+	page := string(siteMap(Site(in, &c))["entity/service/api/index.html"])
+
+	if !strings.Contains(page, "spec.docs names a directory that could not be read") {
+		t.Errorf("an unreadable docs directory must say so distinctly:\n%s", page)
+	}
+	if strings.Contains(page, "No documentation.") {
+		t.Errorf("an unreadable docs directory must not read as \"no documentation at all\":\n%s", page)
+	}
+}
+
+// The other half of the same constraint: an unreadable runbook must not
+// misrepresent failure as success. runbookURL used to be computed from
+// spec.runbook alone, so a runbook that failed to render still got a
+// confident-looking .runbook-link pointing at a page nothing emitted —
+// exactly the silent fallback spec §12 forbids by name.
+func TestAnUnreadableRunbookRendersDistinctlyAndNeverLinksToAMissingPage(t *testing.T) {
+	e := ent("api", catalog.KindService, "team-payments", 1)
+	e.Spec.Runbook = "services/api/RUNBOOK.md"
+	files := fstest.MapFS{"services/api/RUNBOOK.md": {Data: []byte("# Runbook\n\nSteps.\n")}}
+	in := input(t, files, e)
+	in.FS = failFS{MapFS: files, path: "services/api/RUNBOOK.md"}
+
+	var c diag.Collector
+	site := siteMap(Site(in, &c))
+	page := string(site["entity/service/api/index.html"])
+
+	if strings.Contains(page, `class="runbook-link"`) {
+		t.Errorf("a runbook that failed to render must not get a working-looking link:\n%s", page)
+	}
+	if !strings.Contains(page, "spec.runbook is set, but the runbook could not be rendered") {
+		t.Errorf("an unreadable runbook must say so distinctly:\n%s", page)
+	}
+	if strings.Contains(page, "No documentation.") {
+		t.Errorf("an unreadable runbook must not read as \"no documentation at all\":\n%s", page)
+	}
+	if _, ok := site["entity/service/api/runbook.html"]; ok {
+		t.Error("no runbook page should have been emitted when the read failed")
+	}
+
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(ds), ds)
+	}
+	got := ds[0]
+	if got.Message != "cannot read services/api/RUNBOOK.md" {
+		t.Errorf("Message = %q, want %q", got.Message, "cannot read services/api/RUNBOOK.md")
+	}
+	if got.Line == 0 {
+		t.Error("Line must not be 0")
 	}
 }
 

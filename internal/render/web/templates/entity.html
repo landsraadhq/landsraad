@@ -71,7 +71,9 @@
 {{end}}
 
 <h2>Documentation</h2>
-{{if .RunbookURL}}<p><a class="runbook-link" href="{{.RunbookURL}}">Runbook</a></p>{{end}}
+{{if .RunbookURL}}<p><a class="runbook-link" href="{{.RunbookURL}}">Runbook</a></p>
+{{else if .RunbookUnreadable}}<p class="none">spec.runbook is set, but the runbook could not be rendered — see the build diagnostics.</p>{{end}}
+{{if .DocsUnreadable}}<p class="none">spec.docs names a directory that could not be read — see the build diagnostics.</p>{{end}}
 {{with .DocNav}}
 <ul class="doc-nav">
 {{range .}}<li><a href="{{.URL}}">{{.Title}}</a></li>
@@ -81,8 +83,8 @@
 <article class="doc">
 {{.Index}}
 </article>
-{{else if not .DocNav}}
-{{if not .RunbookURL}}<p class="none">No documentation. Point spec.docs at a directory or spec.runbook at a file.</p>{{end}}
+{{else if and (not .DocNav) (not .RunbookURL) (not .RunbookUnreadable) (not .DocsUnreadable)}}
+<p class="none">No documentation. Point spec.docs at a directory or spec.runbook at a file.</p>
 {{end}}
 </article>
 {{end}}
