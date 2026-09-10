@@ -74,7 +74,7 @@ func TestIngestMarksAnOldResultStale(t *testing.T) {
 	if r.Result.Status != StatusStale {
 		t.Errorf("Status = %q, want stale — 39 days old against a 14 day limit", r.Result.Status)
 	}
-	if r.Result.Detail != "reported pass 39 days ago by ci/test, older than the 14 day limit" {
+	if r.Result.Detail != "reported pass 39 days ago by ci/test, older than the 14-day limit" {
 		t.Errorf("Detail = %q", r.Result.Detail)
 	}
 }

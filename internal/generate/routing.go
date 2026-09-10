@@ -154,12 +154,8 @@ func SlackMap(cat *catalog.Catalog, teams *config.Teams, c *diag.Collector) emit
 	return emit.File{Path: SlackMapPath, Data: []byte(b.String())}
 }
 
-// plural renders a count with the right noun, as cmd/landsraad does for the
-// validate summary. "1 entities" in a diagnostic is the same defect as "1
-// entities validated" on stdout.
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return fmt.Sprintf("%d %s", n, one)
-	}
-	return fmt.Sprintf("%d %s", n, many)
-}
+// plural renders a count with the right noun. "1 entities" in a diagnostic is
+// the same defect as "1 entities validated" on stdout — which is why the
+// logic now lives once, in diag.Plural, rather than being copied a third time
+// when the scorecard needed it.
+func plural(n int, one, many string) string { return diag.Plural(n, one, many) }

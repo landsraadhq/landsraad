@@ -274,9 +274,8 @@ func newValidateCmd() *cobra.Command {
 // plural renders a count with the right noun. "1 entities validated" is the
 // most-read line the tool prints, in a project whose thesis is that message
 // quality is the product.
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return fmt.Sprintf("%d %s", n, one)
-	}
-	return fmt.Sprintf("%d %s", n, many)
-}
+//
+// The logic moved to diag.Plural once a third package needed it. This stays
+// as a name, not a copy: eleven call sites in this package read better
+// unqualified.
+func plural(n int, one, many string) string { return diag.Plural(n, one, many) }

@@ -9,7 +9,20 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
+	"github.com/landsraadhq/landsraad/internal/diag"
 )
+
+// daysAgo renders a whole-day age the way a person says it, covering the two
+// cases a bare "%d days ago" gets wrong: "1 days ago", and "0 days ago" as a
+// clumsy way of saying today. The portal renders this string on every entity
+// page, which is where the singular was noticed — it is the most-read
+// sentence the scorecard produces.
+func daysAgo(days int) string {
+	if days <= 0 {
+		return "today"
+	}
+	return diag.Plural(days, "day", "days") + " ago"
+}
 
 // HermeticChecks returns the checks computed in-binary (spec §9), fresh on
 // each call so a caller cannot rewrite what the package believes.
@@ -180,8 +193,9 @@ func docsFresh(e *catalog.Entity, env Env) Result {
 	}
 	if age > limit {
 		return Result{Check: id, Status: StatusFail,
-			Detail: fmt.Sprintf("%s last edited %d days ago, limit is %d", e.Spec.Docs, age, limit)}
+			Detail: fmt.Sprintf("%s last edited %s, limit is %s",
+				e.Spec.Docs, daysAgo(age), diag.Plural(limit, "day", "days"))}
 	}
 	return Result{Check: id, Status: StatusPass,
-		Detail: fmt.Sprintf("edited %d days ago", age)}
+		Detail: "edited " + daysAgo(age)}
 }

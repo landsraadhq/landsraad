@@ -206,8 +206,41 @@ func TestDocsFreshUsesTheInjectedLastEditDate(t *testing.T) {
 	if got.Status != StatusFail {
 		t.Errorf("Status = %q, want fail for docs edited 365 days ago", got.Status)
 	}
-	if got.Detail != "services/api/docs last edited 365 days ago, limit is 180" {
+	if got.Detail != "services/api/docs last edited 365 days ago, limit is 180 days" {
 		t.Errorf("Detail = %q", got.Detail)
+	}
+}
+
+// The portal prints this detail on every entity page, so its grammar is not a
+// detail. Nothing pinned the counts where "%d days ago" reads wrong: at one
+// day it said "edited 1 days ago", and at zero "edited 0 days ago". Both were
+// visible in a real build; neither was covered.
+func TestDocsFreshDetailReadsCorrectlyAtEveryCount(t *testing.T) {
+	e := svc("api")
+	e.Spec.Docs = "services/api/docs"
+	files := fstest.MapFS{"services/api/docs/index.md": {Data: []byte("# Docs\n\nreal content\n")}}
+	base := env(files)
+
+	for _, tc := range []struct {
+		daysOld int
+		want    string
+	}{
+		{0, "edited today"},
+		{1, "edited 1 day ago"},
+		{2, "edited 2 days ago"},
+		{10, "edited 10 days ago"},
+	} {
+		at := base
+		at.LastEdit = func(string) (time.Time, bool) {
+			return base.Now.AddDate(0, 0, -tc.daysOld), true
+		}
+		got := docsFreshFor(t, e, at)
+		if got.Status != StatusPass {
+			t.Fatalf("%d days old: Status = %q, want pass", tc.daysOld, got.Status)
+		}
+		if got.Detail != tc.want {
+			t.Errorf("%d days old: Detail = %q, want %q", tc.daysOld, got.Detail, tc.want)
+		}
 	}
 }
 

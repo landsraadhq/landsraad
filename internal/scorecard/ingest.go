@@ -189,8 +189,8 @@ func Ingest(fsys fs.FS, cat *catalog.Catalog, staleAfterDays int, now time.Time,
 				// produce.
 				originalStatus := rep.Result.Status
 				rep.Result.Status = StatusStale
-				rep.Result.Detail = fmt.Sprintf("reported %s %d days ago by %s, older than the %d day limit",
-					originalStatus, days, rep.Producer, staleAfterDays)
+				rep.Result.Detail = fmt.Sprintf("reported %s %s by %s, older than the %d-day limit",
+					originalStatus, daysAgo(days), rep.Producer, staleAfterDays)
 				byCheck[id] = rep
 			}
 		}

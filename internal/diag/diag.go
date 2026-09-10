@@ -118,3 +118,17 @@ func (c *Collector) HasErrors() bool {
 	}
 	return false
 }
+
+// Plural renders a count with the right noun.
+//
+// It lives here, in the package about message quality, because it had been
+// copied verbatim into two others and was about to be copied into a third.
+// "1 entities validated" on stdout, "1 entities" in a diagnostic and "edited
+// 1 days ago" on every entity page of the portal are one defect with three
+// addresses, in a project whose thesis is that the message is the product.
+func Plural(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}

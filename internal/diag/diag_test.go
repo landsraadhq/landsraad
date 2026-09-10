@@ -63,3 +63,21 @@ func TestDiagnosticsAreDeterministicWithIdenticalKeys(t *testing.T) {
 		t.Errorf("adding in different order produced different results (-want +got):\n%s", diff)
 	}
 }
+
+// The singular case is the whole reason this function exists; a test that
+// only checked 0 and 5 would pass against fmt.Sprintf("%d %s", n, many).
+func TestPluralPicksTheNounByCount(t *testing.T) {
+	for _, tc := range []struct {
+		n    int
+		want string
+	}{
+		{0, "0 entities"},
+		{1, "1 entity"},
+		{2, "2 entities"},
+		{42, "42 entities"},
+	} {
+		if got := Plural(tc.n, "entity", "entities"); got != tc.want {
+			t.Errorf("Plural(%d) = %q, want %q", tc.n, got, tc.want)
+		}
+	}
+}
