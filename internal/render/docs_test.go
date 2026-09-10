@@ -202,7 +202,7 @@ func TestAnUnreadableDocumentIsReportedAndSkipped(t *testing.T) {
 		"services/api/docs/broken.md": {Data: []byte("# Broken\n\nUnreachable.\n")},
 	}
 	in := input(t, files, e)
-	in.FS = failFS{MapFS: files, path: "services/api/docs/broken.md"}
+	in.Sources = catalog.SingleSource("", failFS{MapFS: files, path: "services/api/docs/broken.md"})
 
 	var c diag.Collector
 	site := siteMap(Site(in, &c))
@@ -240,7 +240,7 @@ func TestADocsDirectoryThatCannotBeReadIsReportedAndSkipped(t *testing.T) {
 		"services/api/RUNBOOK.md":    {Data: []byte("# Runbook\n\nSteps.\n")},
 	}
 	in := input(t, files, e)
-	in.FS = failFS{MapFS: files, path: "services/api/docs"}
+	in.Sources = catalog.SingleSource("", failFS{MapFS: files, path: "services/api/docs"})
 
 	var c diag.Collector
 	site := siteMap(Site(in, &c))
@@ -275,7 +275,7 @@ func TestADocsDirectoryThatCannotBeReadRendersDistinctlyFromNoDocumentation(t *t
 	e.Spec.Docs = "services/api/docs"
 	files := fstest.MapFS{"services/api/docs/index.md": {Data: []byte("# API\n")}}
 	in := input(t, files, e)
-	in.FS = failFS{MapFS: files, path: "services/api/docs"}
+	in.Sources = catalog.SingleSource("", failFS{MapFS: files, path: "services/api/docs"})
 
 	var c diag.Collector
 	page := string(siteMap(Site(in, &c))["entity/service/api/index.html"])
@@ -298,7 +298,7 @@ func TestAnUnreadableRunbookRendersDistinctlyAndNeverLinksToAMissingPage(t *test
 	e.Spec.Runbook = "services/api/RUNBOOK.md"
 	files := fstest.MapFS{"services/api/RUNBOOK.md": {Data: []byte("# Runbook\n\nSteps.\n")}}
 	in := input(t, files, e)
-	in.FS = failFS{MapFS: files, path: "services/api/RUNBOOK.md"}
+	in.Sources = catalog.SingleSource("", failFS{MapFS: files, path: "services/api/RUNBOOK.md"})
 
 	var c diag.Collector
 	site := siteMap(Site(in, &c))
@@ -675,5 +675,48 @@ func TestARunbookThatIsTheDocsIndexIsNotReportedUnreadable(t *testing.T) {
 	}
 	if !strings.Contains(page, "Everything, including how to page.") {
 		t.Errorf("the runbook's text must be on the page:\n%s", page)
+	}
+}
+
+// Two entities in different repositories naming the same relative docs path
+// must render different documents. Before Plan 4 there was one fs.FS for the
+// whole catalog, so the second entity would have silently rendered the
+// first's index.
+func TestDocsForReadsTheEntitysOwnRepository(t *testing.T) {
+	mono := fstest.MapFS{
+		"docs/index.md": {Data: []byte("# API\n\nThe monorepo's own index.\n")},
+	}
+	edge := fstest.MapFS{
+		"docs/index.md": {Data: []byte("# API\n\nThe edge-gateway's own index.\n")},
+	}
+	src := catalog.Sources{"monorepo": mono, "edge-gateway": edge}
+
+	dt, err := templateSet(webFS, "doc.html")
+	if err != nil {
+		t.Fatalf("templateSet: %v", err)
+	}
+
+	for _, tt := range []struct {
+		repo string
+		want string
+	}{
+		{"monorepo", "The monorepo's own index."},
+		{"edge-gateway", "The edge-gateway's own index."},
+	} {
+		t.Run(tt.repo, func(t *testing.T) {
+			e := ent("api", catalog.KindService, "team-payments", 1)
+			e.SourceRepo = tt.repo
+			e.Spec.Docs = "docs"
+
+			var c diag.Collector
+			in := Input{Sources: src}
+			ed := docsFor(in, e, dt, md.New(), &c)
+			if !strings.Contains(string(ed.Index), tt.want) {
+				t.Errorf("rendered index does not contain %q:\n%s", tt.want, ed.Index)
+			}
+			if ds := c.Diagnostics(); len(ds) != 0 {
+				t.Errorf("want no diagnostics, got %+v", ds)
+			}
+		})
 	}
 }

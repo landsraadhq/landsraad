@@ -207,6 +207,20 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 	ref := e.Ref()
 	entityDir := EntityURL(ref)
 
+	// Resolved once, at the top: every read below reaches through fsys, never
+	// in.Sources again. When it is missing, this returns immediately rather
+	// than falling into the loops below, unlike every other failure in this
+	// function. Elsewhere docsFor reports and carries on, because one
+	// unreadable document must not cost the reader the other pages. Here
+	// there is no filesystem at all, so every subsequent read would produce
+	// an identical diagnostic — one per document, for a bug that has nothing
+	// to do with any of them.
+	fsys, ok := in.Sources.For(e)
+	if !ok {
+		c.Add(catalog.MissingSourceDiagnostic(e, "docs-unreadable"))
+		return out
+	}
+
 	// render reads and renders one Markdown file, returning the document and
 	// the search-index entry that would describe it.
 	//
@@ -227,7 +241,7 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 	// one page two ways and put two rows in the index for every documented
 	// entity, one labelled "Service" and one not.
 	render := func(repoPath, relURL, searchURL string) (md.Doc, RenderedDoc, bool) {
-		data, err := fs.ReadFile(in.FS, repoPath)
+		data, err := fs.ReadFile(fsys, repoPath)
 		if err != nil {
 			c.Add(diag.Diagnostic{
 				Severity: diag.SevError, File: repoPath, Line: 1,
@@ -261,7 +275,7 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 	// 1. The docs directory.
 	var mdPaths []string
 	if e.Spec.Docs != "" {
-		err := fs.WalkDir(in.FS, e.Spec.Docs, func(p string, d fs.DirEntry, err error) error {
+		err := fs.WalkDir(fsys, e.Spec.Docs, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}

@@ -1,10 +1,11 @@
 // Package render turns a validated, scored catalog into a static portal.
 //
 // Site is a pure function: it takes the catalog, the resolved graph, the
-// teams, the scorecard and an fs.FS to read documentation from, and returns
-// every byte of the site as []emit.File. Nothing here touches the
-// filesystem, reads the clock, or reaches the network — cmd/ owns the one
-// loop that writes what this returns (spec §3.1).
+// teams, the scorecard and each repository's filesystem to read
+// documentation from, and returns every byte of the site as []emit.File.
+// Nothing here touches the filesystem, reads the clock, or reaches the
+// network — cmd/ owns the one loop that writes what this returns (spec
+// §3.1).
 //
 // That is also what makes `serve --watch` simple: the site is a value, so a
 // rebuild is a function call and the preview server holds the result in
@@ -12,7 +13,6 @@
 package render
 
 import (
-	"io/fs"
 	"sort"
 	"strings"
 	"time"
@@ -67,8 +67,11 @@ type Input struct {
 	// It follows the same rule as entityDocs.DocsUnreadable one file over
 	// (spec §12: different answers must render differently).
 	HistoryUnreadable bool
-	// FS is the repository, for reading docs/ and runbooks.
-	FS          fs.FS
+	// Sources holds each repository's filesystem, for reading docs/ and
+	// runbooks. It replaced a single fs.FS in Plan 4: a portal built from
+	// three repositories has three, and "read e.Spec.Runbook" is answerable
+	// only against the repository that entity came from (ruling R23).
+	Sources     catalog.Sources
 	Mermaid     Mermaid
 	GeneratedAt time.Time
 	Version     string

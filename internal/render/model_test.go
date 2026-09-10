@@ -62,7 +62,7 @@ func input(t *testing.T, files fstest.MapFS, entities ...*catalog.Entity) Input 
 	}
 	return Input{
 		Catalog: cat, Graph: g, Teams: teams, Scorecard: sc, Standards: std,
-		FS: files, GeneratedAt: testNow, Version: "v0.3.0-test",
+		Sources: env.Sources, GeneratedAt: testNow, Version: "v0.3.0-test",
 		Mermaid: Mermaid{Src: DefaultMermaidSrc, Integrity: DefaultMermaidIntegrity},
 	}
 }

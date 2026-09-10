@@ -82,7 +82,7 @@ func Build(fsys fs.FS, errOut io.Writer, opts BuildOptions) ([]emit.File, int) {
 		Catalog: cat, Graph: g, Teams: teams,
 		Scorecard: sc, Standards: std, History: history,
 		HistoryUnreadable: historyErr != nil && !errors.Is(historyErr, fs.ErrNotExist),
-		FS:                fsys, Mermaid: opts.Mermaid,
+		Sources:           src, Mermaid: opts.Mermaid,
 		GeneratedAt: opts.Now, Version: opts.Version,
 		Notice: partialNotice(fsys, errOut),
 	}
