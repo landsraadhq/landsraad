@@ -71,9 +71,12 @@ func findRoot(start string) (string, error) {
 	}
 }
 
-// version reports the module version recorded at build time, so a bug report
-// quotes something useful. `go install ...@latest` applies no -ldflags, which
-// is why every user would otherwise report "dev".
+// version reports what this binary is, so that a bug report — and the footer
+// of every page the portal generates — quotes something that identifies the
+// build. `go install ...@latest` applies no -ldflags, which is why this
+// cannot simply be the Version variable.
+//
+// The choice itself is versionFrom, which states the order and the reasons.
 func version() string {
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
