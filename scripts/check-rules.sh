@@ -32,8 +32,19 @@ fi
 
 # 2. Package-level mutable state means two configurations cannot coexist in
 #    one process, and initialisation failure cannot be tested.
+#    The sync.Once check matches a USE, not any occurrence. The bare word used
+#    to match the COMMENT explaining why the code avoids sync.Once, and a Task 1
+#    implementer had to reword their reasoning to get past it. In a project
+#    whose thesis is that the recorded reasoning is the artifact, a rule that
+#    punishes writing down *why* is backwards.
+#    grep -E has no lookbehind, so this is two steps: find every line naming
+#    it, then drop the ones where the name is inside a comment. Only a line
+#    that is ENTIRELY a comment is dropped — a trailing `// sync.Once` after
+#    real code stays flagged, because such a line is ambiguous and this rule
+#    fails closed. `.claude/hooks/no-package-state.py` mirrors both steps.
 found=$(grep -rnE 'sync\.Once|^func init\(\)' \
-	internal --include='*.go' --exclude='*_test.go' 2>/dev/null || true)
+	internal --include='*.go' --exclude='*_test.go' 2>/dev/null \
+	| grep -vE '^[^:]*:[0-9]+:[[:space:]]*//' || true)
 if [ -n "$found" ]; then
 	report 'no sync.Once and no init() below cmd/ — construct the value the caller needs instead:' "$found"
 fi

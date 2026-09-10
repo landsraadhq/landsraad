@@ -94,10 +94,16 @@ func TestScorecardPageShowsNotScoredForATeamWithNoApplicableChecks(t *testing.T)
 
 	var c diag.Collector
 	page := string(siteMap(Site(in, &c))["scorecard/index.html"])
-	if !strings.Contains(page, "not scored") {
-		t.Errorf("a team with zero applicable checks must read 'not scored':\n%s", page)
+	// The exact markup its sibling at TestScorecardPageOverallIsNotScoredRather
+	// ThanZero asserts. A bare Contains(page, "0%") also matched "50%", "100%"
+	// and "80%": it passed only because this fixture's percentages happen not
+	// to end in a zero, so a change to DefaultStandards would have broken it
+	// with a message about a thing it was never testing.
+	want := `<span class="none">not scored</span>`
+	if !strings.Contains(page, want) {
+		t.Errorf("a team with zero applicable checks must render %s:\n%s", want, page)
 	}
-	if strings.Contains(page, "0%") {
+	if strings.Contains(page, `<span class="mono">0%</span>`) {
 		t.Errorf("it must never read 0%%, indistinguishable from failing everything:\n%s", page)
 	}
 }

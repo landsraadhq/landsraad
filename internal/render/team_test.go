@@ -133,7 +133,7 @@ func TestLosingTeamNameCollisionGetsNoTeamPage(t *testing.T) {
 
 // A team owning only untiered entities must show "not scored" at the
 // aggregate level, never "0%". This pins Plan 2's ruling R1 at this call site.
-func TestTeamOwningOnlyUntiteredEntitiesShowsNotScoredAggregate(t *testing.T) {
+func TestTeamOwningOnlyUntieredEntitiesShowsNotScoredAggregate(t *testing.T) {
 	in := input(t, nil, ent("lib", catalog.KindLibrary, "team-platform", 0))
 	// Add team-platform to the teams fixture.
 	in = withTeams(t, in, testTeamsYAML+

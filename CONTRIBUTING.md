@@ -98,6 +98,26 @@ or `init()`-based self-registration to wire up.
 5. Static assets go in `internal/render/web/static/` and are picked up
    automatically; add the `<script>` or `<link>` tag to `base.html`.
 
+### Browser support: modern/evergreen only
+
+The portal's client scripts target **current versions of Chrome, Firefox, Safari
+and Edge**. There is no IE11 support, no transpiler and no polyfill anywhere in
+the tree, and none is going to be added.
+
+The scripts are already written past that line and cannot be walked back: they
+use `fetch`, `Promise`, `document.currentScript` and `Element.replaceWith`
+(`mermaid.js`), none of which exist in IE11. So the ES5-looking style you will
+find in `internal/render/web/static/` — `var`, `function` expressions,
+`Array.prototype.slice.call` on a `NodeList` — is **house style, not a
+compatibility contract**. Match it for consistency if you like; do not pay an
+ES5 tax believing it buys a guarantee, because it does not, and do not "fix" a
+script to ES5 on compatibility grounds.
+
+Every script must still degrade without JavaScript at all. That is a real
+requirement and a separate one: the catalog table ships fully rendered and
+sorted in the HTML, and `mermaid.js` replaces an unrendered diagram with a
+visible note rather than a blank space.
+
 Rendered Markdown is the only place `template.HTML` appears, in
 `internal/render/docs.go`. It is safe because `md.New()` configures goldmark
 **without** `WithUnsafe` (spec §14.1), so raw HTML in a runbook was already
