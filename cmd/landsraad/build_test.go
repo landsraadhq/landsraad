@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"io/fs"
+	"sort"
 	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	"github.com/landsraadhq/landsraad/internal/emit"
 	"github.com/landsraadhq/landsraad/internal/render"
 	"github.com/landsraadhq/landsraad/internal/scorecard"
 )
@@ -263,6 +266,76 @@ func TestBuildPrintsWholeDiagnosticsNotJustTheirMessages(t *testing.T) {
 	if errOut != want {
 		t.Errorf("stderr =\n%s\nwant\n%s", errOut, want)
 	}
+}
+
+// A documentation filename is USER DATA, and it becomes part of a page path:
+// docsFor walks every *.md under spec.docs and emits entityDir + "docs/" +
+// htmlSuffix(rel), where htmlSuffix is a bare suffix swap. So a file called
+// "2024-06-01T09:00-incident.md" produces a site path containing a colon,
+// which writeSite's path guard rejects — and rejecting it there aborts the
+// whole build, after the output directory has already been half-updated, with
+// a message telling the user to file a landsraad bug about their own filename.
+//
+// The build must survive it. The one page is dropped, by name, with a
+// diagnostic that says what to rename.
+func TestBuildSurvivesADocumentationFilenameThatCannotBecomeAPagePath(t *testing.T) {
+	fsys := buildFS()
+	fsys["services/ledger-api/service.yaml"] = &fstest.MapFile{Data: []byte(
+		"apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: ledger-api\n" +
+			"  owner: team-payments\n  tier: 1\n  lifecycle: production\nspec:\n" +
+			"  path: services/ledger-api\n  docs: services/ledger-api/docs\n")}
+	fsys["services/ledger-api/docs/2024-06-01T09:00-incident.md"] = &fstest.MapFile{
+		Data: []byte("# Incident\n\nWhat happened.\n")}
+	fsys["services/ledger-api/docs/rollback.md"] = &fstest.MapFile{
+		Data: []byte("# Rollback\n\nHow to roll back.\n")}
+
+	files, code, errOut := buildSiteMap(t, fsys, buildOpts())
+	if code != exitOK {
+		t.Fatalf("a filename landsraad cannot publish must not fail the build, got exit %d:\n%s", code, errOut)
+	}
+
+	// The sibling document is unaffected: accumulate and skip, never stop.
+	if _, ok := files["entity/service/ledger-api/docs/rollback.html"]; !ok {
+		t.Errorf("the other documentation page must still be emitted; got %v", keysOf(files))
+	}
+	if _, ok := files["entity/service/ledger-api/index.html"]; !ok {
+		t.Error("the entity page must still be emitted")
+	}
+	for p := range files {
+		if strings.Contains(p, ":") || strings.Contains(p, `\`) {
+			t.Errorf("a path writeSite would refuse reached the output: %q", p)
+		}
+	}
+
+	wantDiag := "warn: services/ledger-api/docs/2024-06-01T09:00-incident.md:1 [docs-filename]\n" +
+		"  cannot publish services/ledger-api/docs/2024-06-01T09:00-incident.md: " +
+		"its name would make the page path \"entity/service/ledger-api/docs/2024-06-01T09:00-incident.html\", " +
+		"which landsraad cannot write\n" +
+		"  hint: rename the file without \":\" or \"\\\" — a documentation filename becomes part of its page's URL\n"
+	if !strings.Contains(errOut, wantDiag) {
+		t.Errorf("stderr:\n%s\nmust contain:\n%s", errOut, wantDiag)
+	}
+
+	// The user-visible half: writeSite is where the guard lives, so the whole
+	// command has to survive, not just Build. This also pins that the guard
+	// stays unreachable for user data — if a future change lets such a path out
+	// of render again, this fails here rather than on somebody's machine.
+	var files2 []emit.File
+	for _, p := range keysOf(files) {
+		files2 = append(files2, emit.File{Path: p, Data: files[p]})
+	}
+	if err := writeSite(t.TempDir(), files2, false, io.Discard); err != nil {
+		t.Fatalf("writeSite must not abort the build over a documentation filename: %v", err)
+	}
+}
+
+func keysOf(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func TestBuildIsPureAndWritesNothing(t *testing.T) {

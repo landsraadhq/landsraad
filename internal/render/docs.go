@@ -305,6 +305,30 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 		}
 		relURL := "docs/" + htmlSuffix(rel)
 		sitePath := entityDir + relURL
+		// This is the only place a user-controlled string becomes a page path.
+		// rel is a filename out of the repository — WalkDir found it, relativeTo
+		// is a bare TrimPrefix and htmlSuffix a bare suffix swap — so a file
+		// called "2024-06-01T09:00-incident.md" produces a path cmd/'s writeSite
+		// will not write. Caught here, the entity loses that one page, by name,
+		// and the portal is still built. Caught there, `landsraad build` aborts
+		// after the output directory is already half-updated and tells the user
+		// they have found a landsraad bug, when what they have is a filename.
+		//
+		// Reported at warn: the artifact is correct about everything it does
+		// publish, and one skipped document is not a reason to refuse to publish
+		// a whole portal. The other documents under the same spec.docs still
+		// render — accumulate and skip, never stop.
+		if !emit.ValidPath(sitePath) {
+			c.Add(diag.Diagnostic{
+				Severity: diag.SevWarn, File: repoPath, Line: 1,
+				Entity: e.Metadata.Name,
+				Check:  "docs-filename",
+				Message: fmt.Sprintf("cannot publish %s: its name would make the page path %q, which landsraad cannot write",
+					repoPath, sitePath),
+				Hint: `rename the file without ":" or "\" — a documentation filename becomes part of its page's URL`,
+			})
+			continue
+		}
 		doc, rd, ok := render(repoPath, relURL, sitePath)
 		if !ok {
 			continue

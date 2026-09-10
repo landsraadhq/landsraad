@@ -182,6 +182,48 @@ func TestReadManifestRejectsEveryUntrustworthyPathShape(t *testing.T) {
 	}
 }
 
+// The manifest guard and the guard internal/render applies before emitting a
+// page must agree, or the build breaks in one of two ways: a path render emits
+// and writeSite refuses aborts the build with the output directory already
+// half-updated, and a path writeSite accepts and render would reject goes into
+// landsraad's own manifest, which readManifest then refuses to trust on the
+// next build — forfeiting "known" and rejecting the whole output directory.
+//
+// They agree by construction now (safeManifestPath delegates to
+// emit.ValidPath), so this pins the one thing delegation does not: that the
+// extra filepath.IsAbs is genuinely redundant rather than a second opinion,
+// over every shape either side has ever cared about.
+func TestSafeManifestPathIsExactlyEmitValidPath(t *testing.T) {
+	for _, p := range []string{
+		// legal
+		"index.html",
+		"entity/service/api/index.html",
+		"entity/service/api/docs/a.b-c_d.html",
+		"assets/style.css",
+		".landsraad-manifest",
+		// escaping
+		"../victim.txt", "../../etc/passwd", "a/../../victim.txt", "..",
+		// absolute, in every spelling
+		"/etc/passwd", `C:\Windows`, "C:/Windows", `\\server\share`,
+		// unclean
+		"./index.html", "a//b.html", "a/./b.html", "",
+		// the regression: a legal Linux/macOS documentation filename
+		"entity/service/api/docs/2024-06-01T09:00-incident.html",
+		`entity/service/api/docs/back\slash.html`,
+	} {
+		want := !filepath.IsAbs(p) && emit.ValidPath(p)
+		if got := safeManifestPath(p); got != want {
+			t.Errorf("safeManifestPath(%q) = %v, emit.ValidPath-with-IsAbs = %v", p, got, want)
+		}
+		// And the belt is redundant: ValidPath alone must already reject
+		// everything filepath.IsAbs would have caught.
+		if filepath.IsAbs(p) && emit.ValidPath(p) {
+			t.Errorf("emit.ValidPath(%q) accepted an OS-absolute path; filepath.IsAbs is doing real work "+
+				"and internal/render, which does not apply it, would disagree with writeSite", p)
+		}
+	}
+}
+
 // --force permits writing into a directory landsraad did not create. It has
 // never licensed deleting a file landsraad did not write, and an untrusted
 // manifest is exactly that case.

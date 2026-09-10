@@ -14,7 +14,9 @@ import (
 	"bytes"
 	"fmt"
 	"io/fs"
+	"path"
 	"sort"
+	"strings"
 )
 
 // File is one file to write: a slash-separated path relative to a root the
@@ -22,6 +24,51 @@ import (
 type File struct {
 	Path string
 	Data []byte
+}
+
+// ValidPath reports whether p is a legal File.Path: non-empty, relative,
+// already clean, slash-separated, and unable to escape the root it is written
+// under.
+//
+// This is the Path field's invariant, so it lives with the type rather than at
+// either place that enforces it — and there are two, which is the point.
+// internal/render checks it before emitting a page whose path came from a
+// user's filename; cmd/'s writeSite checks it again on the one line in the
+// program that turns a Path into a filesystem path. Those two MUST agree, and
+// disagreeing either way is a real failure:
+//
+//   - if render emits a path writeSite refuses, the build aborts after
+//     MkdirAll, after the prune loop and after writing every preceding file,
+//     leaving the output directory half-updated — and it blames a landsraad bug
+//     for what is actually somebody's filename. That happened: a documentation
+//     file called "2024-06-01T09:00-incident.md" killed the build.
+//   - if writeSite accepted a path render rejects, landsraad would write that
+//     path into its own .landsraad-manifest, and readManifest — which rejects
+//     the same shapes — would refuse to trust the manifest on the NEXT build,
+//     forfeiting "known" and refusing the whole output directory. That is the
+//     worse failure of the two.
+//
+// One definition is what makes "the two agree" a fact instead of a promise.
+//
+// The rule is stricter than "cannot escape". A path landsraad produced is
+// always already clean, so "./x" and "a//b" are shapes it never writes, and
+// their presence in a manifest means the file was edited by something else.
+// ":" and "\" are rejected because a drive-relative or backslash-separated
+// path is absolute on the machine that reads it even when it was not on the
+// machine that wrote it — and because a colon is a legal filename byte on
+// Linux and macOS, so this is reachable from user data and must be diagnosed
+// before it becomes a File, never after.
+func ValidPath(p string) bool {
+	if p == "" || strings.HasPrefix(p, "/") {
+		return false
+	}
+	if strings.ContainsAny(p, `\:`) {
+		return false
+	}
+	if p != path.Clean(p) {
+		return false
+	}
+	return p != ".." && !strings.HasPrefix(p, "../")
 }
 
 func (f File) String() string {

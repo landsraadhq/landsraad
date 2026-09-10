@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -56,19 +55,19 @@ type manifest struct {
 // emit.File.Path unaltered — so "./index.html" or "a//b.html" cannot have come
 // from a landsraad build either, and a file that has been edited by something
 // else is not evidence about what this directory contains.
+//
+// The rule itself is emit.ValidPath, next to the field it is the invariant of,
+// because internal/render has to apply the SAME rule before it emits a page
+// path built from a user's documentation filename. Two copies of this
+// predicate would be free to drift, and drifting in either direction is a real
+// failure — emit.ValidPath's doc comment sets out both. filepath.IsAbs stays
+// here rather than moving into it: ValidPath judges a site path, and this also
+// judges a string about to be joined to a real directory on THIS machine.
+// ValidPath already subsumes it — every OS-absolute form starts with "/" or
+// contains ":" or "\" — and TestSafeManifestPathIsExactlyEmitValidPath pins
+// that, but the belt is free and this is the deletion path.
 func safeManifestPath(p string) bool {
-	if p == "" || filepath.IsAbs(p) || strings.HasPrefix(p, "/") {
-		return false
-	}
-	// A Windows-absolute or drive-relative path is absolute on the machine
-	// that reads it even when it is not on the machine that wrote it.
-	if strings.Contains(p, `\`) || strings.Contains(p, ":") {
-		return false
-	}
-	if p != path.Clean(p) {
-		return false
-	}
-	return p != ".." && !strings.HasPrefix(p, "../")
+	return !filepath.IsAbs(p) && emit.ValidPath(p)
 }
 
 // readManifest returns the paths the previous build wrote, split into the ones
@@ -166,11 +165,22 @@ func writeSite(outDir string, files []emit.File, force bool, errOut io.Writer) e
 
 	for _, f := range files {
 		// The same guard as the prune loop, applied to this build's own
-		// output. render.Site derives every path from a schema-validated
-		// entity name and a test asserts none of them escape, but this is the
-		// one line in the program that turns a site-relative path into a
-		// filesystem path, so the property is checked where it is relied on
-		// rather than two packages away.
+		// output. This is the one line in the program that turns a
+		// site-relative path into a filesystem path, so the property is
+		// checked where it is relied on rather than two packages away.
+		//
+		// It is a BACKSTOP, not the diagnosis. Reaching it means a generator
+		// produced a path it should have reported instead: internal/render
+		// applies emit.ValidPath to every page path built from a user's
+		// documentation filename, which is the only user-controlled source,
+		// and reports that file by name. Everything else is derived from a
+		// schema-validated entity name, a Slug, or a literal.
+		//
+		// Note the ordering, which is why the render-time check matters: this
+		// returns after MkdirAll, after the prune loop, and after writing every
+		// preceding file, so the output directory is left half-updated. That is
+		// tolerable for a landsraad bug and was not tolerable for a legal
+		// filename, which is what used to reach it.
 		if !safeManifestPath(f.Path) {
 			return fmt.Errorf("refusing to write %q: a rendered path must be relative to %s and must not escape it; "+
 				"this is a landsraad bug, not a problem with your catalog", f.Path, outDir)

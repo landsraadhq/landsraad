@@ -9,6 +9,7 @@ import (
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/diag"
+	"github.com/landsraadhq/landsraad/internal/emit"
 	"github.com/landsraadhq/landsraad/internal/render/md"
 )
 
@@ -463,6 +464,104 @@ func TestARunbookOutsideTheDocsDirectoryThatFailsToRenderLeavesNoSearchEntry(t *
 	}
 	if !ed.RunbookUnreadable {
 		t.Error("a declared runbook that never rendered must be reported as unreadable, not as absent")
+	}
+}
+
+// A documentation filename is user data and it becomes part of a page path.
+// "2024-06-01T09:00-incident.md" is a perfectly legal filename on Linux and
+// macOS, and the path it produces is one cmd/'s writeSite will not write —
+// so it has to be diagnosed here, by name, while there is still a file to
+// name. Caught downstream instead, `landsraad build` aborts with the output
+// directory half-updated and blames a landsraad bug for the user's filename.
+func TestADocumentationFilenameThatCannotBecomeAPagePathIsReportedAndSkipped(t *testing.T) {
+	e := ent("api", catalog.KindService, "team-payments", 1)
+	e.Spec.Docs = "services/api/docs"
+	files := fstest.MapFS{
+		"services/api/docs/2024-06-01T09:00-incident.md": {Data: []byte("# Incident\n\nWhat happened.\n")},
+		"services/api/docs/rollback.md":                  {Data: []byte("# Rollback\n\nHow to.\n")},
+	}
+	in := input(t, files, e)
+	dt, err := templateSet(webFS, "doc.html")
+	if err != nil {
+		t.Fatalf("templateSet: %v", err)
+	}
+
+	var c diag.Collector
+	ed := docsFor(in, e, dt, md.New(), &c)
+
+	// Accumulate and skip: the sibling document is untouched.
+	if len(ed.Files) != 1 || ed.Files[0].Path != "entity/service/api/docs/rollback.html" {
+		t.Fatalf("the other document must still render, got %+v", ed.Files)
+	}
+	for _, f := range ed.Files {
+		if !emit.ValidPath(f.Path) {
+			t.Errorf("emitted a path writeSite would refuse: %q", f.Path)
+		}
+	}
+	if len(ed.Nav) != 1 || ed.Nav[0].URL != "docs/rollback.html" {
+		t.Errorf("the nav must not link to the skipped page: %+v", ed.Nav)
+	}
+	if len(ed.Docs) != 1 || ed.Docs[0].URL != "entity/service/api/docs/rollback.html" {
+		t.Errorf("the search index must not carry the skipped page: %+v", ed.Docs)
+	}
+
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("want exactly one diagnostic, got %d: %+v", len(ds), ds)
+	}
+	d := ds[0]
+	// Warn, not error: Build refuses on c.HasErrors(), and one unpublishable
+	// filename is not a reason to withhold the whole portal.
+	if d.Severity != diag.SevWarn {
+		t.Errorf("Severity = %q, want %q — an error here would fail the whole build", d.Severity, diag.SevWarn)
+	}
+	wantMsg := "cannot publish services/api/docs/2024-06-01T09:00-incident.md: " +
+		"its name would make the page path \"entity/service/api/docs/2024-06-01T09:00-incident.html\", " +
+		"which landsraad cannot write"
+	if d.Message != wantMsg {
+		t.Errorf("Message =\n%q\nwant\n%q", d.Message, wantMsg)
+	}
+	wantHint := `rename the file without ":" or "\" — a documentation filename becomes part of its page's URL`
+	if d.Hint != wantHint {
+		t.Errorf("Hint =\n%q\nwant\n%q", d.Hint, wantHint)
+	}
+	if d.File != "services/api/docs/2024-06-01T09:00-incident.md" {
+		t.Errorf("File = %q, want the offending file", d.File)
+	}
+	if d.Line != 1 {
+		t.Errorf("Line = %d, want 1", d.Line)
+	}
+	if d.Check != "docs-filename" {
+		t.Errorf("Check = %q, want %q", d.Check, "docs-filename")
+	}
+}
+
+// The sweep, pinned. Every other site path this package builds comes from a
+// source that cannot produce an invalid one, and the test says which:
+// EntityURL from a schema-constrained name, TeamURL from Slug, and the runbook
+// and hoisted-index pages from literals. If a future change routes a
+// user-controlled string into any of them, this fails.
+func TestEverySitePathSurvivesAHostileButLegalRepository(t *testing.T) {
+	e := ent("api", catalog.KindService, "team-payments", 1)
+	// spec.runbook's own filename never becomes a page path — the page is the
+	// literal "runbook.html" — so a colon in it must be harmless.
+	e.Spec.Runbook = "services/api/2024:06:01-RUNBOOK.md"
+	e.Spec.Docs = "services/api/docs"
+	files := fstest.MapFS{
+		"services/api/2024:06:01-RUNBOOK.md": {Data: []byte("# Runbook\n\nDrain.\n")},
+		"services/api/docs/index.md":         {Data: []byte("# api\n\nThe front door.\n")},
+		"services/api/docs/ok.md":            {Data: []byte("# OK\n\nFine.\n")},
+	}
+	in := input(t, files, e)
+
+	var c diag.Collector
+	for _, f := range Site(in, &c) {
+		if !emit.ValidPath(f.Path) {
+			t.Errorf("Site emitted a path writeSite would refuse: %q", f.Path)
+		}
+	}
+	if ds := c.Diagnostics(); len(ds) != 0 {
+		t.Errorf("nothing here is unpublishable, so nothing may be reported: %+v", ds)
 	}
 }
 
