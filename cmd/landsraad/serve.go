@@ -103,12 +103,24 @@ func watchDirs(root string, w *fsnotify.Watcher) error {
 	})
 }
 
-// Serve renders the site and serves it, rebuilding on change when watch is
-// set.
-func Serve(root, addr string, opts BuildOptions, watch bool, errOut io.Writer) error {
-	srv := &siteServer{}
-
-	rebuild := func() {
+// newRebuild returns a function that renders root into srv, serialised so a
+// burst of triggers can never run Build concurrently.
+//
+// Build's LastEdit closure (gitLastEdit, lastedit.go) caches into a plain,
+// unsynchronised map. The debounce timer's Stop-then-AfterFunc pattern can
+// let a second rebuild start while the first is still running: Stop reports
+// false, not "still running", when the timer already fired, so the caller
+// cannot tell the difference. Two Build calls in flight at once then write
+// that map from two goroutines at once, which panics with "fatal error:
+// concurrent map writes" -- unrecoverable, and it takes the whole preview
+// server down mid-session. A mutex around the entire rebuild serialises
+// every trigger, so nothing Build touches can ever be entered twice at once
+// -- not just this one cache.
+func newRebuild(root string, opts BuildOptions, srv *siteServer, errOut io.Writer) func() {
+	var mu sync.Mutex
+	return func() {
+		mu.Lock()
+		defer mu.Unlock()
 		files, code := Build(os.DirFS(root), errOut, opts)
 		if code != exitOK {
 			// Keep serving the last good site. A preview that goes blank
@@ -119,6 +131,13 @@ func Serve(root, addr string, opts BuildOptions, watch bool, errOut io.Writer) e
 		}
 		srv.set(files)
 	}
+}
+
+// Serve renders the site and serves it, rebuilding on change when watch is
+// set.
+func Serve(root, addr string, opts BuildOptions, watch bool, errOut io.Writer) error {
+	srv := &siteServer{}
+	rebuild := newRebuild(root, opts, srv, errOut)
 	rebuild()
 
 	if watch {

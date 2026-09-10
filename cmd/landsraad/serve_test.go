@@ -1,10 +1,13 @@
 package main
 
 import (
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -162,5 +165,86 @@ func waitFor(t *testing.T, ch chan fsnotify.Event, d time.Duration) {
 	case <-ch:
 	case <-time.After(d):
 		t.Fatal("no filesystem event arrived")
+	}
+}
+
+// writeCatalogFixture writes n services under root, each with a docs/
+// directory containing index.md. That makes scorecard's docs-fresh check
+// call env.LastEdit(e.Spec.Docs) for every one of them during Build -- the
+// exact call that writes into gitLastEdit's cache map -- and n large enough
+// makes one Build call slow enough (n forked, failing `git log` processes,
+// since root is not a git repository) for concurrent calls to overlap.
+func writeCatalogFixture(t *testing.T, root string, n int) {
+	t.Helper()
+	teams := "teams:\n  - name: team-payments\n    members: [alice]\n    slack: \"#pay\"\n    pagerduty: PAY\n"
+	if err := os.WriteFile(filepath.Join(root, "teams.yaml"), []byte(teams), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("svc%d", i)
+		dir := filepath.Join(root, "services", name)
+		docsDir := filepath.Join(dir, "docs")
+		if err := os.MkdirAll(docsDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(docsDir, "index.md"), []byte("# "+name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		yaml := fmt.Sprintf(
+			"apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: %s\n"+
+				"  owner: team-payments\n  tier: 1\n  lifecycle: production\nspec:\n"+
+				"  path: services/%s\n  docs: services/%s/docs\n", name, name, name)
+		if err := os.WriteFile(filepath.Join(dir, "service.yaml"), []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestRebuildSerialisesConcurrentTriggers proves a burst of rapid rebuild
+// triggers cannot run Build concurrently.
+//
+// This is the exact hazard newRebuild's mutex exists to close: Build's
+// LastEdit closure (gitLastEdit, lastedit.go) caches into a plain,
+// unsynchronised map, and the debounce timer's Stop-then-AfterFunc pattern
+// in Serve can start a second rebuild while the first is still running.
+// Two Build calls writing that map concurrently panic with "fatal error:
+// concurrent map writes" -- unrecoverable, and it takes the whole preview
+// server down mid-session.
+//
+// It uses the real gitLastEdit closure against a real (non-git) temp
+// directory, not a stand-in, so it exercises the exact code path
+// newServeCmd wires up.
+func TestRebuildSerialisesConcurrentTriggers(t *testing.T) {
+	root := t.TempDir()
+	writeCatalogFixture(t, root, 40)
+
+	opts := BuildOptions{
+		Now:      time.Now().UTC(),
+		LastEdit: gitLastEdit(root),
+	}
+	srv := &siteServer{}
+	rebuild := newRebuild(root, opts, srv, io.Discard)
+
+	const bursts = 20
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < bursts; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			rebuild()
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	// Reaching this line at all -- rather than a fatal "concurrent map
+	// writes" crash, or -race reporting a data race -- is most of what this
+	// test proves. It also leaves a complete site behind, not a partial one:
+	// whichever rebuild last held the lock replaced the whole map in one
+	// swap (siteServer.set), never merged.
+	if _, ok := srv.lookup("index.html"); !ok {
+		t.Fatal("index.html missing after a burst of concurrent rebuild triggers")
 	}
 }
