@@ -18,12 +18,18 @@ import (
 // The result is cached per path: `git log` is cheap but a repository with
 // forty entities would otherwise fork forty processes for the same handful of
 // directories.
+//
+// The repo parameter is ignored: this closure is built for one checkout and
+// only ever asked about that checkout's own entities. It is in the signature
+// because Plan 4's LastEditFunc serves both this and a host API adapter, and
+// the adapter genuinely needs it. Ignoring a parameter here is better than a
+// second function type that cmd/ would have to choose between.
 func gitLastEdit(root string) scorecard.LastEditFunc {
 	cache := map[string]struct {
 		t  time.Time
 		ok bool
 	}{}
-	return func(p string) (time.Time, bool) {
+	return func(_ string, p string) (time.Time, bool) {
 		if hit, seen := cache[p]; seen {
 			return hit.t, hit.ok
 		}
@@ -62,5 +68,5 @@ func gitLastEditUncached(root, p string) (time.Time, bool) {
 // tree, or a directory that was never a repository. docs-fresh renders
 // not-reported for every entity, which is the honest answer.
 func noLastEdit() scorecard.LastEditFunc {
-	return func(string) (time.Time, bool) { return time.Time{}, false }
+	return func(string, string) (time.Time, bool) { return time.Time{}, false }
 }

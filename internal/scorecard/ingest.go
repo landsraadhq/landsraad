@@ -36,6 +36,20 @@ type Reported struct {
 	GeneratedAt time.Time
 	Producer    string
 	SourceFile  string
+	// SourceRepo is the repository the CheckResults file came from. With
+	// R31 the file may live somewhere other than the entity it reports on,
+	// so the path alone no longer identifies it.
+	SourceRepo string
+}
+
+// Location renders where a reported result came from, matching
+// Entity.Location: "repo:path" when the repository is known, "path" when it
+// is not.
+func (r Reported) Location() string {
+	if r.SourceRepo == "" {
+		return r.SourceFile
+	}
+	return r.SourceRepo + ":" + r.SourceFile
 }
 
 type checkResultsFile struct {
@@ -52,8 +66,9 @@ type checkResultsFile struct {
 	} `yaml:"results"`
 }
 
-// Ingest is pipeline stage 6: read every results file, resolve entities,
-// apply precedence, and age out results older than staleAfterDays.
+// Ingest is pipeline stage 6: read every results file in every repository,
+// resolve entities, apply precedence, and age out results older than
+// staleAfterDays.
 //
 // Spec §6 fixes three rules here, because this file is written by CI jobs in
 // other people's repositories and is the most expensive contract in the
@@ -64,15 +79,39 @@ type checkResultsFile struct {
 //   - generatedAt is RFC 3339 with an explicit offset
 //   - newest generatedAt wins, and a tie is an error rather than a coin flip
 //
+// Ruling R31: a CheckResults file in one repository may report on an entity
+// defined in another, because a platform repository running one image-scan
+// job for every service is the natural shape and forbidding it would mean a
+// CI job may only report on entities it happens to sit beside. Spec §6
+// describes the file without saying whose entities it may name; this is the
+// answer.
+//
 // An absent directory is not an error. A repository reporting no external
 // results is normal, and every external check then renders not-reported —
 // which is visible in the scorecard rather than hidden.
-func Ingest(fsys fs.FS, cat *catalog.Catalog, staleAfterDays int, now time.Time, c *diag.Collector) map[catalog.Ref]map[string]Reported {
+func Ingest(src catalog.Sources, cat *catalog.Catalog, staleAfterDays int, now time.Time, c *diag.Collector) map[catalog.Ref]map[string]Reported {
 	out := map[catalog.Ref]map[string]Reported{}
+	// Sorted, via Sources.Names, so precedence and every tie diagnostic read
+	// the same on every run regardless of map iteration order.
+	for _, repo := range src.Names() {
+		fsys, ok := src.Get(repo)
+		if !ok {
+			continue
+		}
+		ingestRepo(repo, fsys, cat, out, c)
+	}
+	applyStaleness(out, staleAfterDays, now)
+	return out
+}
 
+// ingestRepo reads every results file in one repository's ChecksDir and
+// folds it into out, which is shared across every repository in the
+// catalog so precedence is resolved across all of them, not just within
+// one.
+func ingestRepo(repo string, fsys fs.FS, cat *catalog.Catalog, out map[catalog.Ref]map[string]Reported, c *diag.Collector) {
 	entries, err := fs.ReadDir(fsys, ChecksDir)
 	if err != nil {
-		return out
+		return
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
@@ -92,11 +131,11 @@ func Ingest(fsys fs.FS, cat *catalog.Catalog, staleAfterDays int, now time.Time,
 	v, err := schema.New(CheckResultsSchema)
 	if err != nil {
 		c.Add(diag.Diagnostic{
-			Severity: diag.SevError, File: ChecksDir, Line: 1,
+			Severity: diag.SevError, Repo: repo, File: ChecksDir, Line: 1,
 			Check:   "checks-schema",
 			Message: fmt.Sprintf("cannot compile the check-results schema: %v", err),
 		})
-		return out
+		return
 	}
 
 	for _, name := range names {
@@ -104,7 +143,7 @@ func Ingest(fsys fs.FS, cat *catalog.Catalog, staleAfterDays int, now time.Time,
 		data, err := fs.ReadFile(fsys, path)
 		if err != nil {
 			c.Add(diag.Diagnostic{
-				Severity: diag.SevError, File: path, Line: 1,
+				Severity: diag.SevError, Repo: repo, File: path, Line: 1,
 				Check:   "checks-unreadable",
 				Message: fmt.Sprintf("cannot read %s", path),
 			})
@@ -116,7 +155,7 @@ func Ingest(fsys fs.FS, cat *catalog.Catalog, staleAfterDays int, now time.Time,
 		var f checkResultsFile
 		if err := yaml.Unmarshal(data, &f); err != nil {
 			c.Add(diag.Diagnostic{
-				Severity: diag.SevError, File: path, Line: 1,
+				Severity: diag.SevError, Repo: repo, File: path, Line: 1,
 				Check:   "checks-parse",
 				Message: fmt.Sprintf("cannot read %s as check results", path),
 				Hint:    "the file must be a landsraad/v1 CheckResults document",
@@ -129,7 +168,7 @@ func Ingest(fsys fs.FS, cat *catalog.Catalog, staleAfterDays int, now time.Time,
 		generatedAt, err := time.Parse(time.RFC3339, f.GeneratedAt)
 		if err != nil {
 			c.Add(diag.Diagnostic{
-				Severity: diag.SevError, File: path, Line: 1,
+				Severity: diag.SevError, Repo: repo, File: path, Line: 1,
 				Check:   "checks-generated-at",
 				Message: fmt.Sprintf("generatedAt %q is not RFC 3339 with an offset", f.GeneratedAt),
 				Hint:    "for example 2026-09-08T14:00:00Z; the staleness arithmetic depends on it",
@@ -152,6 +191,7 @@ func Ingest(fsys fs.FS, cat *catalog.Catalog, staleAfterDays int, now time.Time,
 				GeneratedAt: generatedAt,
 				Producer:    f.Producer,
 				SourceFile:  path,
+				SourceRepo:  repo,
 			}
 			if out[ref] == nil {
 				out[ref] = map[string]Reported{}
@@ -163,20 +203,40 @@ func Ingest(fsys fs.FS, cat *catalog.Catalog, staleAfterDays int, now time.Time,
 			case cand.GeneratedAt.Equal(prev.GeneratedAt) && prev.Producer != cand.Producer:
 				// Spec §6: a tie is an error rather than a coin flip.
 				c.Add(diag.Diagnostic{
-					Severity: diag.SevError, File: path, Line: 1,
+					Severity: diag.SevError, Repo: repo, File: path, Line: 1,
 					Entity: ref.Name,
 					Check:  "checks-tie",
 					Message: fmt.Sprintf("producers %q and %q both report %s for %s at %s, so neither can win",
 						prev.Producer, cand.Producer, r.Check, ref, f.GeneratedAt),
 					Hint: "give the producers different generatedAt values, or have only one report this check",
 				})
+			case cand.GeneratedAt.Equal(prev.GeneratedAt) && prev.Location() != cand.Location():
+				// Same producer name, two repositories. Unreachable while
+				// one repository held every CheckResults file, which is why
+				// the rule above only ever compared producers. Under R31 it
+				// is reachable, and first-wins would be the coin flip.
+				c.Add(diag.Diagnostic{
+					Severity: diag.SevError, Repo: repo, File: path, Line: 1,
+					Entity: ref.Name,
+					Check:  "checks-tie",
+					Message: fmt.Sprintf("producer %q reports %s for %s at %s from both %s and %s, so neither can win",
+						cand.Producer, r.Check, ref, f.GeneratedAt, prev.Location(), cand.Location()),
+					Hint: "give the producers different generatedAt values, or have only one report this check",
+				})
 			}
 		}
 	}
+}
 
-	// Staleness is applied last, once precedence has picked a winner: ageing
-	// out a loser would be wasted work, and ageing out before precedence could
-	// let a stale-but-newer result lose to a fresh-but-older one.
+// applyStaleness ages out results older than staleAfterDays, once every
+// repository has been ingested and precedence has picked a winner for every
+// (entity, check) pair.
+//
+// It must run after the whole repository loop, not per repository: ageing
+// out before precedence has picked a winner could let a stale-but-newer
+// result lose to a fresh-but-older one, and under R31 that argument spans
+// repositories too.
+func applyStaleness(out map[catalog.Ref]map[string]Reported, staleAfterDays int, now time.Time) {
 	limit := time.Duration(staleAfterDays) * 24 * time.Hour
 	for ref, byCheck := range out {
 		for id, rep := range byCheck {
@@ -196,7 +256,6 @@ func Ingest(fsys fs.FS, cat *catalog.Catalog, staleAfterDays int, now time.Time,
 		}
 		out[ref] = byCheck
 	}
-	return out
 }
 
 // resolveEntity turns a results file's entity field into a ref.

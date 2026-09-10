@@ -11,7 +11,6 @@
 package scorecard
 
 import (
-	"io/fs"
 	"time"
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
@@ -62,16 +61,20 @@ type Result struct {
 	URL string
 }
 
-// LastEditFunc reports when a path was last changed, and whether that is
-// known at all.
+// LastEditFunc reports when a path in a given repository was last changed,
+// and whether that is known at all.
 //
 // It is injected because the answer comes from git, and nothing under
 // internal/ may shell out or touch os. In the local repository cmd/ supplies
 // it from `git log`; for a repository fetched over a host API there is no git
-// history and it costs one API call per service (spec §9, "known cost of D5").
-// A fetcher that cannot answer returns false, and docs-fresh reports
+// history and it costs one API call per service (spec §9, "known cost of
+// D5"). A fetcher that cannot answer returns false, and docs-fresh reports
 // not-reported rather than inventing a date.
-type LastEditFunc func(path string) (time.Time, bool)
+//
+// repo arrived with Plan 4. Without it, "services/api" names a different
+// directory in every repository in the catalog, and the local git history
+// would be asked about paths that only exist on a host somewhere.
+type LastEditFunc func(repo, path string) (time.Time, bool)
 
 // Env is everything a check needs from outside itself.
 //
@@ -79,7 +82,10 @@ type LastEditFunc func(path string) (time.Time, bool)
 // function of its inputs: a check that reads the clock has tests that fail at
 // midnight and a result that cannot be reproduced from a commit.
 type Env struct {
-	FS             fs.FS
+	// Sources replaced a single fs.FS in Plan 4. A merged catalog holds
+	// entities from several repositories, so a check reads through
+	// Sources.For(e) and never through an ambient filesystem (ruling R23).
+	Sources        catalog.Sources
 	Now            time.Time
 	MaxDocsAgeDays int
 	LastEdit       LastEditFunc

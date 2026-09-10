@@ -36,6 +36,15 @@ func HermeticChecks() []Check {
 	}
 }
 
+// missingSourceResult is a check's answer for an entity whose repository has
+// no filesystem. Error rather than fail: the service is not at fault, this
+// program is, and a fail would put a red mark on somebody's scorecard for a
+// bug in cmd/.
+func missingSourceResult(e *catalog.Entity, id string) Result {
+	return Result{Check: id, Status: StatusError,
+		Detail: fmt.Sprintf("no filesystem for repository %q", e.SourceRepo)}
+}
+
 func ownerSet(e *catalog.Entity, _ Env) Result {
 	if strings.TrimSpace(e.Metadata.Owner) == "" {
 		return Result{Check: "owner-set", Status: StatusFail, Detail: "metadata.owner is unset"}
@@ -54,7 +63,11 @@ func runbookPresent(e *catalog.Entity, env Env) Result {
 	if e.Spec.Runbook == "" {
 		return Result{Check: id, Status: StatusFail, Detail: "spec.runbook is unset"}
 	}
-	data, err := fs.ReadFile(env.FS, e.Spec.Runbook)
+	fsys, ok := env.Sources.For(e)
+	if !ok {
+		return missingSourceResult(e, id)
+	}
+	data, err := fs.ReadFile(fsys, e.Spec.Runbook)
 	if err != nil {
 		// Never pass for a file that could not be read: that is the
 		// exit-0-on-something-unexamined failure inside a single check.
@@ -102,7 +115,11 @@ func alertsParse(e *catalog.Entity, env Env) Result {
 	if e.Spec.Alerts == "" {
 		return Result{Check: id, Status: StatusFail, Detail: "spec.alerts is unset"}
 	}
-	data, err := fs.ReadFile(env.FS, e.Spec.Alerts)
+	fsys, ok := env.Sources.For(e)
+	if !ok {
+		return missingSourceResult(e, id)
+	}
+	data, err := fs.ReadFile(fsys, e.Spec.Alerts)
 	if err != nil {
 		return Result{Check: id, Status: StatusError,
 			Detail: fmt.Sprintf("cannot read %s", e.Spec.Alerts)}
@@ -167,8 +184,13 @@ func docsFresh(e *catalog.Entity, env Env) Result {
 		return Result{Check: id, Status: StatusFail, Detail: "spec.docs is unset"}
 	}
 
+	fsys, ok := env.Sources.For(e)
+	if !ok {
+		return missingSourceResult(e, id)
+	}
+
 	index := pathpkg.Join(e.Spec.Docs, "index.md")
-	if _, err := fs.Stat(env.FS, index); err != nil {
+	if _, err := fs.Stat(fsys, index); err != nil {
 		// Docs with no index page is a directory, not documentation.
 		return Result{Check: id, Status: StatusFail,
 			Detail: fmt.Sprintf("%s has no index.md", e.Spec.Docs)}
@@ -178,7 +200,7 @@ func docsFresh(e *catalog.Entity, env Env) Result {
 		return Result{Check: id, Status: StatusNotReported,
 			Detail: fmt.Sprintf("no last-edit date available for %s", e.Spec.Docs)}
 	}
-	edited, ok := env.LastEdit(e.Spec.Docs)
+	edited, ok := env.LastEdit(e.SourceRepo, e.Spec.Docs)
 	if !ok {
 		// A repository fetched over a host API has no git history. Passing
 		// here would give every such service full marks for freshness.

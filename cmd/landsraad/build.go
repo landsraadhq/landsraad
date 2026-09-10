@@ -50,10 +50,11 @@ func Build(fsys fs.FS, errOut io.Writer, opts BuildOptions) ([]emit.File, int) {
 		return nil, exitValidation
 	}
 
+	src := catalog.SingleSource(localRepoName(fsys), fsys)
 	std := standardsFor(fsys, errOut)
-	reported := scorecard.Ingest(fsys, cat, std.StaleAfterDays(), opts.Now, &c)
+	reported := scorecard.Ingest(src, cat, std.StaleAfterDays(), opts.Now, &c)
 	sc := scorecard.Score(cat, std, reported, scorecard.Env{
-		FS:             fsys,
+		Sources:        src,
 		Now:            opts.Now,
 		MaxDocsAgeDays: std.Param("docs-fresh", "maxAgeDays", 180),
 		LastEdit:       opts.LastEdit,

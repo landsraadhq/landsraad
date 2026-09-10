@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/config"
 	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/emit"
@@ -76,10 +77,11 @@ func computeScore(fsys fs.FS, errOut io.Writer, opts ScoreOptions) (*scorecard.S
 	if cat == nil || c.HasErrors() {
 		return nil, nil, &c, false
 	}
+	src := catalog.SingleSource(localRepoName(fsys), fsys)
 	std := standardsFor(fsys, errOut)
-	reported := scorecard.Ingest(fsys, cat, std.StaleAfterDays(), opts.Now, &c)
+	reported := scorecard.Ingest(src, cat, std.StaleAfterDays(), opts.Now, &c)
 	env := scorecard.Env{
-		FS:             fsys,
+		Sources:        src,
 		Now:            opts.Now,
 		MaxDocsAgeDays: std.Param("docs-fresh", "maxAgeDays", 180),
 		LastEdit:       opts.LastEdit,

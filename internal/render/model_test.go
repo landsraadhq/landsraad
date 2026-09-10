@@ -53,8 +53,8 @@ func input(t *testing.T, files fstest.MapFS, entities ...*catalog.Entity) Input 
 		files = fstest.MapFS{}
 	}
 	env := scorecard.Env{
-		FS: files, Now: testNow, MaxDocsAgeDays: 180,
-		LastEdit: func(string) (time.Time, bool) { return time.Time{}, false },
+		Sources: catalog.SingleSource("", files), Now: testNow, MaxDocsAgeDays: 180,
+		LastEdit: func(string, string) (time.Time, bool) { return time.Time{}, false },
 	}
 	sc := scorecard.Score(cat, std, nil, env, &c)
 	if ds := c.Diagnostics(); len(ds) != 0 {

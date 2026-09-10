@@ -36,7 +36,7 @@ func TestGitLastEditReadsRealHistory(t *testing.T) {
 	runGit("add", "docs/index.md")
 	runGit("commit", "-qm", "add docs")
 
-	got, ok := gitLastEdit(root)("docs")
+	got, ok := gitLastEdit(root)("", "docs")
 	if !ok {
 		t.Fatal("a committed path must have a last-edit date")
 	}
@@ -48,13 +48,13 @@ func TestGitLastEditReadsRealHistory(t *testing.T) {
 // The honest answer for a path git knows nothing about is "unknown", never a
 // date. A date we do not have silently passes docs-fresh.
 func TestGitLastEditReportsUnknownOutsideARepository(t *testing.T) {
-	if _, ok := gitLastEdit(t.TempDir())("docs"); ok {
+	if _, ok := gitLastEdit(t.TempDir())("", "docs"); ok {
 		t.Error("a directory that is not a git repository has no history")
 	}
 }
 
 func TestNoLastEditAlwaysReportsUnknown(t *testing.T) {
-	if _, ok := noLastEdit()("anything"); ok {
+	if _, ok := noLastEdit()("", "anything"); ok {
 		t.Error("noLastEdit must never claim to know a date")
 	}
 }

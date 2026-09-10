@@ -5,6 +5,8 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+
 	"github.com/landsraadhq/landsraad/internal/catalog"
 )
 
@@ -20,10 +22,10 @@ func svc(name string) *catalog.Entity {
 
 func env(files fstest.MapFS) Env {
 	return Env{
-		FS:             files,
+		Sources:        catalog.SingleSource("", files),
 		Now:            time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC),
 		MaxDocsAgeDays: 180,
-		LastEdit:       func(string) (time.Time, bool) { return time.Time{}, false },
+		LastEdit:       func(string, string) (time.Time, bool) { return time.Time{}, false },
 	}
 }
 
@@ -205,7 +207,7 @@ func TestDocsFreshUsesTheInjectedLastEditDate(t *testing.T) {
 
 	base := env(files)
 	recent := base
-	recent.LastEdit = func(string) (time.Time, bool) {
+	recent.LastEdit = func(string, string) (time.Time, bool) {
 		return base.Now.AddDate(0, 0, -10), true
 	}
 	if got := docsFreshFor(t, e, recent); got.Status != StatusPass {
@@ -213,7 +215,7 @@ func TestDocsFreshUsesTheInjectedLastEditDate(t *testing.T) {
 	}
 
 	old := base
-	old.LastEdit = func(string) (time.Time, bool) {
+	old.LastEdit = func(string, string) (time.Time, bool) {
 		return base.Now.AddDate(0, 0, -365), true
 	}
 	got := docsFreshFor(t, e, old)
@@ -245,7 +247,7 @@ func TestDocsFreshDetailReadsCorrectlyAtEveryCount(t *testing.T) {
 		{10, "edited 10 days ago"},
 	} {
 		at := base
-		at.LastEdit = func(string) (time.Time, bool) {
+		at.LastEdit = func(string, string) (time.Time, bool) {
 			return base.Now.AddDate(0, 0, -tc.daysOld), true
 		}
 		got := docsFreshFor(t, e, at)
@@ -267,11 +269,11 @@ func TestDocsFreshBoundaryIsInclusive(t *testing.T) {
 
 	en := env(files)
 	base := en.Now
-	en.LastEdit = func(string) (time.Time, bool) { return base.AddDate(0, 0, -180), true }
+	en.LastEdit = func(string, string) (time.Time, bool) { return base.AddDate(0, 0, -180), true }
 	if got := docsFreshFor(t, e, en); got.Status != StatusPass {
 		t.Errorf("exactly at the limit must pass, got %q", got.Status)
 	}
-	en.LastEdit = func(string) (time.Time, bool) { return base.AddDate(0, 0, -181), true }
+	en.LastEdit = func(string, string) (time.Time, bool) { return base.AddDate(0, 0, -181), true }
 	if got := docsFreshFor(t, e, en); got.Status != StatusFail {
 		t.Errorf("one day past the limit must fail, got %q", got.Status)
 	}
@@ -300,7 +302,7 @@ func TestDocsFreshRequiresAnIndex(t *testing.T) {
 	e := svc("api")
 	e.Spec.Docs = "services/api/docs"
 	en := env(fstest.MapFS{"services/api/docs/other.md": {Data: []byte("x\n")}})
-	en.LastEdit = func(string) (time.Time, bool) { return en.Now, true }
+	en.LastEdit = func(string, string) (time.Time, bool) { return en.Now, true }
 
 	got := docsFreshFor(t, e, en)
 	if got.Status != StatusFail {
@@ -324,4 +326,93 @@ func TestDocsFreshFailsWhenDocsAreUnset(t *testing.T) {
 func docsFreshFor(t *testing.T, e *catalog.Entity, en Env) Result {
 	t.Helper()
 	return run(t, "docs-fresh", e, en)
+}
+
+// runbook-present reads the runbook from the entity's own repository. Two
+// entities naming the same relative path in different repositories must get
+// different answers.
+func TestRunbookPresentReadsTheEntitysOwnRepository(t *testing.T) {
+	full := fstest.MapFS{"runbook.md": {Data: []byte("# Runbook\n\nCall the on-call.\n")}}
+	stub := fstest.MapFS{"runbook.md": {Data: []byte("# Runbook\n")}}
+	src := catalog.Sources{"full-repo": full, "stub-repo": stub}
+
+	good := &catalog.Entity{SourceRepo: "full-repo"}
+	good.Spec.Runbook = "runbook.md"
+	bad := &catalog.Entity{SourceRepo: "stub-repo"}
+	bad.Spec.Runbook = "runbook.md"
+
+	env := Env{Sources: src}
+	if got := runbookPresent(good, env); got.Status != StatusPass {
+		t.Errorf("full-repo: Status = %v, want %v (Detail %q)", got.Status, StatusPass, got.Detail)
+	}
+	got := runbookPresent(bad, env)
+	if got.Status != StatusFail {
+		t.Errorf("stub-repo: Status = %v, want %v", got.Status, StatusFail)
+	}
+	if got.Detail != "runbook.md has a heading and no content" {
+		t.Errorf("Detail = %q", got.Detail)
+	}
+}
+
+func TestChecksReportAnEntityWithNoFilesystem(t *testing.T) {
+	env := Env{Sources: catalog.Sources{"known": fstest.MapFS{}}}
+	e := &catalog.Entity{SourceRepo: "ghost"}
+	e.Spec.Runbook = "runbook.md"
+	e.Spec.Alerts = "alerts.yaml"
+
+	for _, tt := range []struct {
+		name string
+		run  func(*catalog.Entity, Env) Result
+	}{
+		{"runbook-present", runbookPresent},
+		{"alerts-parse", alertsParse},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.run(e, env)
+			if got.Status != StatusError {
+				t.Errorf("Status = %v, want %v", got.Status, StatusError)
+			}
+			if got.Detail != `no filesystem for repository "ghost"` {
+				t.Errorf("Detail = %q", got.Detail)
+			}
+		})
+	}
+}
+
+// docs-fresh asks for a last-edit date per repository. The same path in two
+// repositories is two different directories with two different histories.
+func TestDocsFreshAsksPerRepository(t *testing.T) {
+	docs := fstest.MapFS{"docs/index.md": {Data: []byte("# Docs\n")}}
+	src := catalog.Sources{"fresh": docs, "ancient": docs}
+	now := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+
+	var asked []string
+	env := Env{
+		Sources:        src,
+		Now:            now,
+		MaxDocsAgeDays: 180,
+		LastEdit: func(repo, path string) (time.Time, bool) {
+			asked = append(asked, repo+":"+path)
+			if repo == "fresh" {
+				return now.AddDate(0, 0, -3), true
+			}
+			return now.AddDate(0, 0, -400), true
+		},
+	}
+
+	fresh := &catalog.Entity{SourceRepo: "fresh"}
+	fresh.Spec.Docs = "docs"
+	ancient := &catalog.Entity{SourceRepo: "ancient"}
+	ancient.Spec.Docs = "docs"
+
+	if got := docsFresh(fresh, env); got.Status != StatusPass {
+		t.Errorf("fresh: Status = %v, want %v", got.Status, StatusPass)
+	}
+	if got := docsFresh(ancient, env); got.Status != StatusFail {
+		t.Errorf("ancient: Status = %v, want %v", got.Status, StatusFail)
+	}
+	want := []string{"fresh:docs", "ancient:docs"}
+	if diff := cmp.Diff(want, asked); diff != "" {
+		t.Errorf("LastEdit calls mismatch (-want +got):\n%s", diff)
+	}
 }

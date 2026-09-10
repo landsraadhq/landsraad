@@ -1,6 +1,7 @@
 package scorecard
 
 import (
+	"fmt"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -34,7 +35,7 @@ func TestIngestReadsAResultKeyedByRef(t *testing.T) {
 	}
 	var c diag.Collector
 
-	got := Ingest(fsys, cat, 14, now, &c)
+	got := Ingest(catalog.SingleSource("", fsys), cat, 14, now, &c)
 
 	if c.HasErrors() {
 		t.Fatalf("a well-formed results file must ingest cleanly: %+v", c.Diagnostics())
@@ -68,7 +69,7 @@ func TestIngestMarksAnOldResultStale(t *testing.T) {
 	}
 	var c diag.Collector
 
-	got := Ingest(fsys, cat, 14, now, &c)
+	got := Ingest(catalog.SingleSource("", fsys), cat, 14, now, &c)
 
 	r := got[catalog.Ref{Kind: catalog.KindService, Name: "api"}]["image-scanned"]
 	if r.Result.Status != StatusStale {
@@ -88,7 +89,7 @@ func TestIngestNewestResultWins(t *testing.T) {
 	}
 	var c diag.Collector
 
-	got := Ingest(fsys, cat, 14, now, &c)
+	got := Ingest(catalog.SingleSource("", fsys), cat, 14, now, &c)
 
 	r := got[catalog.Ref{Kind: catalog.KindService, Name: "api"}]["image-scanned"]
 	if r.Result.Status != StatusPass {
@@ -108,7 +109,7 @@ func TestIngestReportsATieBetweenProducers(t *testing.T) {
 	}
 	var c diag.Collector
 
-	Ingest(fsys, cat, 14, now, &c)
+	Ingest(catalog.SingleSource("", fsys), cat, 14, now, &c)
 
 	if !c.HasErrors() {
 		t.Fatal("two producers reporting the same (entity, check) at the same instant must be an error")
@@ -136,7 +137,7 @@ func TestIngestResolvesAnUnambiguousBareName(t *testing.T) {
 	}
 	var c diag.Collector
 
-	got := Ingest(fsys, cat, 14, now, &c)
+	got := Ingest(catalog.SingleSource("", fsys), cat, 14, now, &c)
 
 	if _, ok := got[catalog.Ref{Kind: catalog.KindService, Name: "api"}]["image-scanned"]; !ok {
 		t.Fatal("an unambiguous bare name must resolve")
@@ -171,7 +172,7 @@ func TestIngestRefusesAnAmbiguousBareName(t *testing.T) {
 	}
 	var c diag.Collector
 
-	got := Ingest(fsys, cat, 14, now, &c)
+	got := Ingest(catalog.SingleSource("", fsys), cat, 14, now, &c)
 
 	if len(got) != 0 {
 		t.Errorf("an ambiguous name must resolve to nothing, got %+v", got)
@@ -201,7 +202,7 @@ func TestIngestReportsAResultForAnEntityThatDoesNotExist(t *testing.T) {
 	}
 	var c diag.Collector
 
-	Ingest(fsys, cat, 14, now, &c)
+	Ingest(catalog.SingleSource("", fsys), cat, 14, now, &c)
 
 	if !c.HasErrors() {
 		t.Fatal("a result for an entity not in the catalog must be reported")
@@ -226,7 +227,7 @@ func TestIngestReportsAMalformedFile(t *testing.T) {
 	}
 	var c diag.Collector
 
-	Ingest(fsys, cat, 14, now, &c)
+	Ingest(catalog.SingleSource("", fsys), cat, 14, now, &c)
 
 	if !c.HasErrors() {
 		t.Fatal("a results file that does not validate must be an error")
@@ -248,7 +249,7 @@ func TestIngestReadsAShortDotYmlFilename(t *testing.T) {
 	}
 	var c diag.Collector
 
-	got := Ingest(fsys, cat, 14, now, &c)
+	got := Ingest(catalog.SingleSource("", fsys), cat, 14, now, &c)
 
 	if c.HasErrors() {
 		t.Fatalf("a well-formed short .yml results file must ingest cleanly: %+v", c.Diagnostics())
@@ -266,13 +267,84 @@ func TestIngestWithNoChecksDirectoryIsNotAnError(t *testing.T) {
 	cat := catalogOf(t, svc("api"))
 	var c diag.Collector
 
-	got := Ingest(fstest.MapFS{}, cat, 14, now, &c)
+	got := Ingest(catalog.SingleSource("", fstest.MapFS{}), cat, 14, now, &c)
 
 	if c.HasErrors() {
 		t.Errorf("an absent .landsraad/checks is not an error: %+v", c.Diagnostics())
 	}
 	if len(got) != 0 {
 		t.Errorf("nothing to ingest, got %+v", got)
+	}
+}
+
+// Ruling R31: a CheckResults file in one repository may report on an entity
+// defined in another. A platform repository running one image-scan job for
+// every service is the natural shape.
+func TestIngestReadsEveryRepository(t *testing.T) {
+	platform := fstest.MapFS{
+		".landsraad/checks/scan.yaml": {Data: []byte(
+			"apiVersion: landsraad/v1\nkind: CheckResults\nproducer: ci/image-scan\n" +
+				"generatedAt: 2026-09-09T12:00:00Z\nresults:\n" +
+				"  - { entity: service:edge, check: image-scanned, status: pass, detail: \"0 critical\" }\n")},
+	}
+	edge := fstest.MapFS{}
+	src := catalog.Sources{"platform": platform, "edge-gateway": edge}
+
+	var c diag.Collector
+	e := &catalog.Entity{SourceRepo: "edge-gateway", SourcePath: "service.yaml", NameLine: 4}
+	e.Kind = "Service"
+	e.Metadata.Name = "edge"
+	cat := catalog.NewCatalog([]*catalog.Entity{e}, &c)
+
+	now := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+	got := Ingest(src, cat, 14, now, &c)
+
+	if ds := c.Diagnostics(); len(ds) != 0 {
+		t.Fatalf("got %d diagnostics, want 0: %+v", len(ds), ds)
+	}
+	rep, ok := got[e.Ref()]["image-scanned"]
+	if !ok {
+		t.Fatal("image-scanned was not ingested for service:edge")
+	}
+	if rep.SourceRepo != "platform" {
+		t.Errorf("SourceRepo = %q, want %q", rep.SourceRepo, "platform")
+	}
+}
+
+// The tie rule used to compare producers only, which was sufficient while
+// one repository held every CheckResults file. Under R31 the same producer
+// name can report the same check at the same instant from two repositories,
+// and first-wins there is exactly the coin flip spec §6 forbids.
+func TestIngestTieAcrossRepositoriesWithTheSameProducer(t *testing.T) {
+	body := "apiVersion: landsraad/v1\nkind: CheckResults\nproducer: ci/image-scan\n" +
+		"generatedAt: 2026-09-09T12:00:00Z\nresults:\n" +
+		"  - { entity: service:edge, check: image-scanned, status: %s, detail: d }\n"
+	a := fstest.MapFS{".landsraad/checks/scan.yaml": {Data: []byte(fmt.Sprintf(body, "pass"))}}
+	b := fstest.MapFS{".landsraad/checks/scan.yaml": {Data: []byte(fmt.Sprintf(body, "fail"))}}
+	src := catalog.Sources{"alpha": a, "beta": b}
+
+	var c diag.Collector
+	e := &catalog.Entity{SourceRepo: "alpha", SourcePath: "service.yaml", NameLine: 4}
+	e.Kind = "Service"
+	e.Metadata.Name = "edge"
+	cat := catalog.NewCatalog([]*catalog.Entity{e}, &c)
+
+	Ingest(src, cat, 14, time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC), &c)
+
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(ds), ds)
+	}
+	want := `producer "ci/image-scan" reports image-scanned for service:edge at 2026-09-09T12:00:00Z ` +
+		`from both alpha:.landsraad/checks/scan.yaml and beta:.landsraad/checks/scan.yaml, so neither can win`
+	if ds[0].Message != want {
+		t.Errorf("Message = %q, want %q", ds[0].Message, want)
+	}
+	if ds[0].Hint != "give the producers different generatedAt values, or have only one report this check" {
+		t.Errorf("Hint = %q", ds[0].Hint)
+	}
+	if ds[0].Check != "checks-tie" {
+		t.Errorf("Check = %q, want %q", ds[0].Check, "checks-tie")
 	}
 }
 

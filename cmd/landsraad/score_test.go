@@ -38,7 +38,7 @@ func scoreOpts() ScoreOptions {
 		Format:   diagText(),
 		FailOn:   config.SevRequired,
 		Now:      testNow,
-		LastEdit: func(string) (time.Time, bool) { return time.Time{}, false },
+		LastEdit: func(string, string) (time.Time, bool) { return time.Time{}, false },
 	}
 }
 
