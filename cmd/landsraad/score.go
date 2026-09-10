@@ -49,26 +49,22 @@ func standardsFor(fsys fs.FS, errOut io.Writer) *config.Standards {
 	return std
 }
 
-// scoreHistoryFiles runs the pipeline and returns the history file it would
-// write. Extracted so the command and its test take the same path.
-func scoreHistoryFiles(fsys fs.FS, out, errOut io.Writer, opts ScoreOptions) []emit.File {
-	sc, _, _, ok := computeScore(fsys, errOut, opts)
-	if !ok || !opts.History {
-		return nil
-	}
-	// Discarding this error was destructive, not merely lossy: AppendHistory
-	// given no existing bytes produces a fresh file with one row, and the
-	// caller writes it straight over the real one. A history file that exists
-	// and cannot be read is therefore the case in which every recorded run is
-	// silently replaced by today's. Absent is the only readable-as-empty
-	// answer.
+// historyRow returns the history file this run appends, and whether the file
+// already on disk could be read.
+//
+// Discarding this error was destructive, not merely lossy: AppendHistory
+// given no existing bytes produces a fresh file with one row, and the caller
+// writes it straight over the real one. A history file that exists and cannot
+// be read is therefore the case in which every recorded run is silently
+// replaced by today's. Absent is the only readable-as-empty answer.
+func historyRow(fsys fs.FS, errOut io.Writer, sc *scorecard.Scorecard, now time.Time) ([]emit.File, bool) {
 	existing, err := fs.ReadFile(fsys, scorecard.HistoryPath)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		fmt.Fprintf(errOut, "error: cannot read %s: %v\n", scorecard.HistoryPath, err)
 		fmt.Fprintf(errOut, "  not appending this run: writing a fresh file would replace the history already recorded there\n")
-		return nil
+		return nil, false
 	}
-	return []emit.File{scorecard.AppendHistory(existing, sc, opts.Now)}
+	return []emit.File{scorecard.AppendHistory(existing, sc, now)}, true
 }
 
 // computeScore runs stages 1, 3, 4, 5, 6 and 7. It returns ok=false when the
@@ -95,26 +91,33 @@ func computeScore(fsys fs.FS, errOut io.Writer, opts ScoreOptions) (*scorecard.S
 	return sc, std, &c, true
 }
 
-// Score measures the catalog against the standard.
+// Score measures the catalog against the standard, returning the files to
+// write and an exit code.
+//
+// It writes nothing, the way Build does not (build.go): the caller owns the
+// one loop that touches the disk. Folding --history in here rather than
+// running the pipeline a second time beside it is also what stops the two
+// from disagreeing — and stops the whole scoring run happening twice, which
+// printed every stderr line standardsFor emits twice with it.
 //
 // Exit 3 when a check at or above --fail-on does not pass. Exit 2 when the
 // metadata itself is broken, because those are different problems for
 // different people (spec §12).
-func Score(fsys fs.FS, out, errOut io.Writer, opts ScoreOptions) int {
+func Score(fsys fs.FS, out, errOut io.Writer, opts ScoreOptions) ([]emit.File, int) {
 	sc, std, c, ok := computeScore(fsys, errOut, opts)
 	if !ok {
 		if err := opts.Format.Write(out, c.Diagnostics()); err != nil {
 			fmt.Fprintf(errOut, "error: cannot write diagnostics: %v\n", err)
-			return exitUsage
+			return nil, exitUsage
 		}
 		fmt.Fprintf(errOut, "refusing to score a catalog with errors; a score computed from broken metadata is a number nobody should act on\n")
-		return exitValidation
+		return nil, exitValidation
 	}
 
 	if opts.JSON {
 		if err := writeScoreJSON(out, sc); err != nil {
 			fmt.Fprintf(errOut, "error: cannot write scorecard: %v\n", err)
-			return exitUsage
+			return nil, exitUsage
 		}
 	} else {
 		writeScoreText(errOut, sc)
@@ -132,11 +135,34 @@ func Score(fsys fs.FS, out, errOut io.Writer, opts ScoreOptions) int {
 	if gated > 0 {
 		fmt.Fprintf(errOut, "\n%s failing at or above %q\n",
 			plural(gated, "check", "checks"), opts.FailOn)
-		return exitScorecard
+	} else {
+		fmt.Fprintf(errOut, "\nok: %s meet the standard\n",
+			plural(len(sc.Entities), "entity", "entities"))
 	}
-	fmt.Fprintf(errOut, "\nok: %s meet the standard\n",
-		plural(len(sc.Entities), "entity", "entities"))
-	return exitOK
+
+	// Last, so the reason for the exit code is the last thing on stderr. The
+	// "ok:" line above is about the scores and stays true — they were computed
+	// and they are clean; it is the trend that was not recorded.
+	files, historyOK := []emit.File(nil), true
+	if opts.History {
+		files, historyOK = historyRow(fsys, errOut, sc, opts.Now)
+	}
+
+	// A history file that could not be read preempts the gate, exactly as an
+	// unwritable scorecard already does above. Exit 3 is a claim about the
+	// services — "your service does not meet the standard" — and a CI job that
+	// treats it as the expected gate result would swallow the fact that
+	// --history did nothing at all. Exit 1 is spec §12's "usage or config
+	// error, whoever ran it", which is precisely who fixes a file this process
+	// cannot read. Exit 0 was the wrong answer either way: the run printed
+	// "error:" and then reported itself clean.
+	if !historyOK {
+		return files, exitUsage
+	}
+	if gated > 0 {
+		return files, exitScorecard
+	}
+	return files, exitOK
 }
 
 func writeScoreJSON(w io.Writer, sc *scorecard.Scorecard) error {
@@ -219,7 +245,9 @@ func newScoreCmd() *cobra.Command {
 		Short: "Landsraad Council — measure services against the team standard",
 		Long: "Score every entity against standards.yaml. Exit 3 when a check at or " +
 			"above --fail-on does not pass; exit 2 when the metadata itself is broken, " +
-			"because those are different problems for different people.",
+			"because those are different problems for different people; exit 1 when " +
+			"--history was asked for and the history already recorded could not be read " +
+			"— that run is refused rather than allowed to replace it.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			start := "."
@@ -251,19 +279,19 @@ func newScoreCmd() *cobra.Command {
 				JSON:     format == "json",
 				History:  history,
 			}
-			fsys := os.DirFS(resolved)
-
-			if history {
-				for _, f := range scoreHistoryFiles(fsys, cmd.OutOrStdout(), cmd.ErrOrStderr(), opts) {
-					full := filepath.Join(resolved, filepath.FromSlash(f.Path))
-					if err := os.WriteFile(full, f.Data, 0o644); err != nil {
-						return err
-					}
-					fmt.Fprintf(cmd.ErrOrStderr(), "  wrote %s\n", f.Path)
-				}
-			}
 			cmd.SilenceUsage = true
-			if code := Score(fsys, cmd.OutOrStdout(), cmd.ErrOrStderr(), opts); code != exitOK {
+			files, code := Score(os.DirFS(resolved), cmd.OutOrStdout(), cmd.ErrOrStderr(), opts)
+			// Written before the exit, not after it: a run whose gate tripped
+			// still belongs in the trend — a history that records only the
+			// good days is not a trend.
+			for _, f := range files {
+				full := filepath.Join(resolved, filepath.FromSlash(f.Path))
+				if err := os.WriteFile(full, f.Data, 0o644); err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.ErrOrStderr(), "  wrote %s\n", f.Path)
+			}
+			if code != exitOK {
 				os.Exit(code)
 			}
 			return nil
@@ -271,6 +299,7 @@ func newScoreCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&format, "format", "text", "text or json")
 	cmd.Flags().StringVar(&failOn, "fail-on", "required", "gate on required, or additionally on warn")
-	cmd.Flags().BoolVar(&history, "history", false, "append this run to "+scorecard.HistoryPath)
+	cmd.Flags().BoolVar(&history, "history", false,
+		"append this run to "+scorecard.HistoryPath+" (exit 1 if that file exists and cannot be read)")
 	return cmd
 }

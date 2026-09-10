@@ -47,7 +47,7 @@ func scoreOpts() ScoreOptions {
 func TestScoreExitsThreeWhenARequiredCheckFails(t *testing.T) {
 	var out, errOut bytes.Buffer
 
-	code := Score(scoreFS(), &out, &errOut, scoreOpts())
+	_, code := Score(scoreFS(), &out, &errOut, scoreOpts())
 
 	if code != exitScorecard {
 		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitScorecard, errOut.String())
@@ -130,7 +130,7 @@ spec:
 	fsys["services/api/docs/index.md"] = &fstest.MapFile{Data: []byte("# Docs\n\ncontent\n")}
 
 	var out, errOut bytes.Buffer
-	if code := Score(fsys, &out, &errOut, scoreOpts()); code != exitOK {
+	if _, code := Score(fsys, &out, &errOut, scoreOpts()); code != exitOK {
 		t.Fatalf("at tier 3 with --fail-on required, exit = %d, want %d; stderr:\n%s", code, exitOK, errOut.String())
 	}
 
@@ -138,7 +138,7 @@ spec:
 	opts.FailOn = config.SevWarn
 	out.Reset()
 	errOut.Reset()
-	if code := Score(fsys, &out, &errOut, opts); code != exitScorecard {
+	if _, code := Score(fsys, &out, &errOut, opts); code != exitScorecard {
 		t.Fatalf("--fail-on warn must gate on runbook-present, exit = %d, want %d", code, exitScorecard)
 	}
 }
@@ -171,7 +171,7 @@ spec:
 `)}
 
 	var out, errOut bytes.Buffer
-	if code := Score(fsys, &out, &errOut, scoreOpts()); code != exitValidation {
+	if _, code := Score(fsys, &out, &errOut, scoreOpts()); code != exitValidation {
 		t.Fatalf("exit = %d, want %d", code, exitValidation)
 	}
 }
@@ -190,7 +190,7 @@ func TestScoreExitsTwoWhenIngestReportsATie(t *testing.T) {
 		"apiVersion: landsraad/v1\nkind: CheckResults\nproducer: ci/b\ngeneratedAt: 2026-09-08T00:00:00Z\nresults:\n  - { entity: service:api, check: image-scanned, status: fail }\n")}
 
 	var out, errOut bytes.Buffer
-	if code := Score(fsys, &out, &errOut, scoreOpts()); code != exitValidation {
+	if _, code := Score(fsys, &out, &errOut, scoreOpts()); code != exitValidation {
 		t.Fatalf("exit = %d, want %d (a checks-tie error must gate the exit code); stderr:\n%s", code, exitValidation, errOut.String())
 	}
 }
@@ -219,7 +219,7 @@ spec:
 	opts := scoreOpts()
 	opts.Format = diag.JSON{}
 
-	if code := Score(fsys, &out, &errOut, opts); code != exitValidation {
+	if _, code := Score(fsys, &out, &errOut, opts); code != exitValidation {
 		t.Fatalf("exit = %d, want %d", code, exitValidation)
 	}
 	var ds []diag.Diagnostic
@@ -231,19 +231,46 @@ spec:
 	}
 }
 
-// --history writes the trend row. Without it, score is read-only.
+// --history writes the trend row. Without it, score is read-only — and this
+// test asserts BOTH halves: the previous version set History=true and checked
+// only that a file came back, so it would have passed just as happily against
+// a Score that appended to the history on every run whether or not it was
+// asked to.
 func TestScoreWritesHistoryOnlyWhenAsked(t *testing.T) {
 	var out, errOut bytes.Buffer
 	opts := scoreOpts()
 	opts.History = true
 
-	files := scoreHistoryFiles(scoreFS(), &out, &errOut, opts)
+	files, _ := Score(scoreFS(), &out, &errOut, opts)
 
 	if len(files) != 1 || files[0].Path != scorecard.HistoryPath {
 		t.Fatalf("want exactly one history file, got %+v", files)
 	}
 	if !strings.Contains(string(files[0].Data), "2026-09-09,service:api,1,team-payments,") {
 		t.Errorf("history row missing:\n%s", files[0].Data)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	if files, _ := Score(scoreFS(), &out, &errOut, scoreOpts()); len(files) != 0 {
+		t.Errorf("score without --history must write nothing, got %+v", files)
+	}
+}
+
+// Scoring must happen exactly once per run. --history used to run the whole
+// pipeline a second time beside Score, which printed every line standardsFor
+// writes directly to stderr twice — the fixture has no standards.yaml, so a
+// real `score --history` announced the default matrix two times.
+func TestScoreWithHistoryScoresOnlyOnce(t *testing.T) {
+	var out, errOut bytes.Buffer
+	opts := scoreOpts()
+	opts.History = true
+
+	Score(scoreFS(), &out, &errOut, opts)
+
+	const announcement = "no standards.yaml found; scoring against the published defaults\n"
+	if n := strings.Count(errOut.String(), announcement); n != 1 {
+		t.Errorf("the default matrix was announced %d times, want 1; stderr:\n%s", n, errOut.String())
 	}
 }
 
@@ -263,7 +290,7 @@ func TestScoreRefusesToReplaceAHistoryFileItCannotRead(t *testing.T) {
 	opts := scoreOpts()
 	opts.History = true
 
-	files := scoreHistoryFiles(fsys, &out, &errOut, opts)
+	files, code := Score(fsys, &out, &errOut, opts)
 
 	if len(files) != 0 {
 		t.Fatalf("nothing may be written over a history file that could not be read, got %+v", files)
@@ -272,5 +299,20 @@ func TestScoreRefusesToReplaceAHistoryFileItCannotRead(t *testing.T) {
 		"  not appending this run: writing a fresh file would replace the history already recorded there\n"
 	if !strings.Contains(errOut.String(), want) {
 		t.Errorf("stderr:\n%s\nmust contain:\n%s", errOut.String(), want)
+	}
+	// Refusing and then reporting success is the shape of the bug this
+	// guard was added to prevent, one level up: a CI job running
+	// `landsraad score --history` to record the trend went green forever
+	// while recording nothing, because the run printed "error:" and exited
+	// 0. Spec §12 reserves 0 for "clean", and 1 for a config error whoever
+	// ran it must fix — which is exactly a file this process cannot read.
+	if code != exitUsage {
+		t.Errorf("exit = %d, want %d; a run that printed \"error:\" must not also report itself clean", code, exitUsage)
+	}
+	// And it preempts the gate rather than being masked by it: this fixture
+	// is a tier-1 service failing required checks, so exit 3 is what a
+	// history-blind Score would have returned here.
+	if code == exitScorecard {
+		t.Errorf("the gate must not mask a --history that did nothing")
 	}
 }
