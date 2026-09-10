@@ -46,19 +46,76 @@ func TestClientSendsAuthAndHeaders(t *testing.T) {
 
 // A token must never reach a diagnostic, a log line or the generated site
 // (spec §14.1). The error path is where it would leak, because that is the
-// one place the request gets described back to the user.
+// one place the request gets described back to the user. Test both the
+// statusError path (response body) and the transport-error path.
 func TestClientErrorsNeverCarryTheToken(t *testing.T) {
-	c, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("upstream said secret-token-value"))
+	t.Run("short_body_on_status_error", func(t *testing.T) {
+		c, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("upstream said secret-token-value"))
+		})
+		_, _, err := c.Get(context.Background(), "/repos/o/r", nil, "")
+		if err == nil {
+			t.Fatal("Get succeeded on a 500")
+		}
+		if strings.Contains(err.Error(), "secret-token-value") {
+			t.Fatalf("token leaked into the error: %v", err)
+		}
 	})
-	_, _, err := c.Get(context.Background(), "/repos/o/r", nil, "")
-	if err == nil {
-		t.Fatal("Get succeeded on a 500")
-	}
-	if strings.Contains(err.Error(), "secret-token-value") {
-		t.Fatalf("token leaked into the error: %v", err)
-	}
+
+	t.Run("token_straddling_truncation_boundary", func(t *testing.T) {
+		// Create a body with the token starting at byte 190.
+		// Token "secret-token-value" is 18 chars, so it ends at 208.
+		// Truncation at 200 bytes would cut the token in half if redaction
+		// happens after truncation. The first 10 chars ("secret-tok")
+		// would leak through because the full token is no longer in the
+		// truncated string and thus won't be redacted.
+		padding := strings.Repeat("x", 190)
+		token := "secret-token-value" // 18 chars, gets cut to "secret-tok" by truncation
+		suffix := strings.Repeat("y", 50)
+		body := padding + token + suffix
+		if len(body) < 210 {
+			t.Fatalf("test setup error: body only %d bytes", len(body))
+		}
+
+		c, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(body))
+		})
+		_, _, err := c.Get(context.Background(), "/x", nil, "")
+		if err == nil {
+			t.Fatal("Get succeeded on a 500")
+		}
+		errStr := err.Error()
+		// The full token must not leak
+		if strings.Contains(errStr, token) {
+			t.Fatalf("full token leaked into the error: %v", err)
+		}
+		// The token prefix (straddling boundary) must not leak either
+		if strings.Contains(errStr, "secret-tok") {
+			t.Fatalf("token prefix leaked into the error: %v", err)
+		}
+	})
+
+	t.Run("transport_error_path", func(t *testing.T) {
+		// Trigger a transport error by pointing at a non-existent server.
+		c := NewClient(ClientOptions{
+			HTTP:        &http.Client{Timeout: 100 * time.Millisecond},
+			BaseURL:     "http://127.0.0.1:1", // unlikely to be listening
+			Token:       "secret-token-value",
+			AuthHeader:  "Authorization",
+			AuthPrefix:  "Bearer ",
+			MaxAttempts: 1,
+			Sleep:       func(time.Duration) {},
+		})
+		_, _, err := c.Get(context.Background(), "/x", nil, "")
+		if err == nil {
+			t.Fatal("Get succeeded against unreachable server")
+		}
+		if strings.Contains(err.Error(), "secret-token-value") {
+			t.Fatalf("token leaked into transport error: %v", err)
+		}
+	})
 }
 
 func TestClientRetriesServerErrorsThenGivesUp(t *testing.T) {

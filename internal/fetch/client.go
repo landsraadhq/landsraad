@@ -171,7 +171,7 @@ func (c *Client) once(ctx context.Context, target, endpoint, accept string) ([]b
 func (c *Client) statusError(resp *http.Response, endpoint string, body []byte) error {
 	se := &StatusError{
 		Status: resp.StatusCode, Method: http.MethodGet, Endpoint: endpoint,
-		Body:          c.redactString(summarise(body)),
+		Body:          summarise(c.redactString(string(body))),
 		RateRemaining: -1,
 	}
 	if v := resp.Header.Get("X-RateLimit-Remaining"); v != "" {
@@ -209,8 +209,8 @@ func (c *Client) redactString(s string) string {
 
 // summarise trims a response body to something printable. A host's error
 // body can be a full HTML page, and a diagnostic is one line.
-func summarise(body []byte) string {
-	s := strings.TrimSpace(string(body))
+func summarise(body string) string {
+	s := strings.TrimSpace(body)
 	s = strings.Join(strings.Fields(s), " ")
 	if len(s) > 200 {
 		s = s[:200] + "…"
