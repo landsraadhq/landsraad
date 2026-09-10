@@ -17,7 +17,7 @@
 
   function applyFilters() {
     if (!filters) { return; }
-    var selects = filters.querySelectorAll('select[data-filter]');
+    var selects = Array.prototype.slice.call(filters.querySelectorAll('select[data-filter]'));
     var visible = 0;
     rows().forEach(function (row) {
       var ok = true;

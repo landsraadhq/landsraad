@@ -7,7 +7,7 @@
 // artifact) — with the original source kept in a collapsed <details> so
 // someone debugging the missing bundle can still get at it.
 (function () {
-  var blocks = document.querySelectorAll('pre.mermaid');
+  var blocks = Array.prototype.slice.call(document.querySelectorAll('pre.mermaid'));
   if (!blocks.length) { return; }
 
   if (!window.mermaid) {

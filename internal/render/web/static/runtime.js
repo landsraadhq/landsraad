@@ -12,7 +12,7 @@
 (function () {
   var script = document.currentScript;
   var root = (script && script.getAttribute('data-root')) || '';
-  var badges = document.querySelectorAll('.runtime[data-ref]');
+  var badges = Array.prototype.slice.call(document.querySelectorAll('.runtime[data-ref]'));
   if (!badges.length) { return; }
 
   fetch(root + 'runtime.json', { cache: 'no-store' })
