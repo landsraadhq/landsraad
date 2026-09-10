@@ -8,14 +8,25 @@ import (
 	"github.com/landsraadhq/landsraad/internal/diag"
 )
 
-// CheckFiles verifies that every path an entity points at exists in the given
-// filesystem. Empty paths are skipped: these fields are optional, and "not
-// set" is a scorecard question, not a validation error.
+// CheckFiles verifies that every path an entity points at exists in the
+// repository that entity came from.
 //
-// Taking an fs.FS rather than a root path is what lets the platform build run
-// this against a fetched remote repo with no change.
-func CheckFiles(fsys fs.FS, cat *Catalog, c *diag.Collector) {
+// Empty paths are skipped: these fields are optional, and "not set" is a
+// scorecard question, not a validation error.
+//
+// It took a single fs.FS until Plan 4, which was correct for exactly as long
+// as a Catalog held one repository's entities. Taking a Sources rather than
+// a path is still what lets the platform build run this against a fetched
+// remote repository with no change — and because the sparse fetcher answers
+// Stat from its tree listing (ruling R24), this whole function costs zero
+// network requests against a remote repository.
+func CheckFiles(src Sources, cat *Catalog, c *diag.Collector) {
 	for _, e := range cat.entities {
+		fsys, ok := src.For(e)
+		if !ok {
+			c.Add(MissingSourceDiagnostic(e, "unknown-repo"))
+			continue
+		}
 		for _, f := range []struct {
 			field string
 			path  string

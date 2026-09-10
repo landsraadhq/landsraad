@@ -24,7 +24,7 @@ func TestCheckFilesAcceptsExistingPaths(t *testing.T) {
 	e.Spec.Alerts = "services/payments-worker/alerts.yaml"
 	cat := NewCatalog([]*Entity{e}, &c)
 
-	CheckFiles(repoFS(), cat, &c)
+	CheckFiles(SingleSource("monorepo", repoFS()), cat, &c)
 
 	if c.HasErrors() {
 		t.Errorf("existing paths must pass: %+v", c.Diagnostics())
@@ -37,7 +37,7 @@ func TestCheckFilesReportsMissingRunbook(t *testing.T) {
 	e.Spec.Runbook = "services/payments-worker/docs/nope.md"
 	cat := NewCatalog([]*Entity{e}, &c)
 
-	CheckFiles(repoFS(), cat, &c)
+	CheckFiles(SingleSource("monorepo", repoFS()), cat, &c)
 
 	if !c.HasErrors() {
 		t.Fatal("a runbook path that does not exist must be an error")
@@ -65,7 +65,7 @@ func TestCheckFilesReportsMissingAlerts(t *testing.T) {
 	e.Spec.Alerts = "services/payments-worker/alerts-nope.yaml"
 	cat := NewCatalog([]*Entity{e}, &c)
 
-	CheckFiles(repoFS(), cat, &c)
+	CheckFiles(SingleSource("monorepo", repoFS()), cat, &c)
 
 	if !c.HasErrors() {
 		t.Fatal("an alerts path that does not exist must be an error")
@@ -93,7 +93,7 @@ func TestCheckFilesRejectsFileWhereDirectoryExpected(t *testing.T) {
 	e.Spec.Docs = "services/payments-worker/docs/index.md" // a file, not a dir
 	cat := NewCatalog([]*Entity{e}, &c)
 
-	CheckFiles(repoFS(), cat, &c)
+	CheckFiles(SingleSource("monorepo", repoFS()), cat, &c)
 
 	if !c.HasErrors() {
 		t.Fatal("spec.docs must be a directory")
@@ -116,7 +116,7 @@ func TestCheckFilesIgnoresEmptyPaths(t *testing.T) {
 	e := ent("monorepo", "services/ledger-api/service.yaml", "ledger-api", KindService, 4)
 	cat := NewCatalog([]*Entity{e}, &c)
 
-	CheckFiles(repoFS(), cat, &c)
+	CheckFiles(SingleSource("monorepo", repoFS()), cat, &c)
 
 	if c.HasErrors() {
 		t.Errorf("an unset optional path is not a missing file: %+v", c.Diagnostics())
@@ -135,7 +135,7 @@ func TestCheckFilesReportsMissingPath(t *testing.T) {
 	e.Spec.Path = "services/payments-workr" // the typo this check exists to catch
 	cat := NewCatalog([]*Entity{e}, &c)
 
-	CheckFiles(repoFS(), cat, &c)
+	CheckFiles(SingleSource("monorepo", repoFS()), cat, &c)
 
 	if !c.HasErrors() {
 		t.Fatal("a spec.path that does not exist must be an error")
@@ -168,7 +168,7 @@ func TestCheckFilesAcceptsAPathThatNamesAFile(t *testing.T) {
 	e.Spec.Path = "services/payments-worker/alerts.yaml"
 	cat := NewCatalog([]*Entity{e}, &c)
 
-	CheckFiles(repoFS(), cat, &c)
+	CheckFiles(SingleSource("monorepo", repoFS()), cat, &c)
 
 	if c.HasErrors() {
 		t.Errorf("spec.path may name a file: %+v", c.Diagnostics())
@@ -212,7 +212,7 @@ func TestCheckFilesNamesWhyAPathIsInvalid(t *testing.T) {
 			tc.set(e)
 			cat := NewCatalog([]*Entity{e}, &c)
 
-			CheckFiles(repoFS(), cat, &c)
+			CheckFiles(SingleSource("monorepo", repoFS()), cat, &c)
 
 			if !c.HasErrors() {
 				t.Fatal("an invalid path must be an error")
@@ -240,9 +240,67 @@ func TestCheckFilesAcceptsDotAsAWholePath(t *testing.T) {
 	e.Spec.Path = "."
 	cat := NewCatalog([]*Entity{e}, &c)
 
-	CheckFiles(repoFS(), cat, &c)
+	CheckFiles(SingleSource("monorepo", repoFS()), cat, &c)
 
 	if c.HasErrors() {
 		t.Errorf("`path: .` is the single-service repo shape: %+v", c.Diagnostics())
+	}
+}
+
+// CheckFiles stats each entity's paths in the repository that entity came
+// from — not in whichever filesystem the caller happened to pass. Before
+// Plan 4 this test could not be written: there was only one filesystem.
+func TestCheckFilesUsesEachEntitysOwnRepository(t *testing.T) {
+	mono := fstest.MapFS{
+		"services/api/service.yaml": {Data: []byte("x")},
+		"services/api/runbook.md":   {Data: []byte("x")},
+	}
+	// edge has a runbook.md at its root and nothing under services/.
+	edge := fstest.MapFS{
+		"service.yaml": {Data: []byte("x")},
+		"runbook.md":   {Data: []byte("x")},
+	}
+	src := Sources{"monorepo": mono, "edge-gateway": edge}
+
+	inMono := &Entity{SourceRepo: "monorepo", SourcePath: "services/api/service.yaml", NameLine: 4}
+	inMono.Kind = "Service"
+	inMono.Metadata.Name = "api"
+	inMono.Spec.Runbook = "services/api/runbook.md"
+
+	inEdge := &Entity{SourceRepo: "edge-gateway", SourcePath: "service.yaml", NameLine: 4}
+	inEdge.Kind = "Service"
+	inEdge.Metadata.Name = "edge"
+	inEdge.Spec.Runbook = "runbook.md"
+
+	var c diag.Collector
+	cat := NewCatalog([]*Entity{inMono, inEdge}, &c)
+	CheckFiles(src, cat, &c)
+
+	if ds := c.Diagnostics(); len(ds) != 0 {
+		t.Fatalf("got %d diagnostics, want 0: %+v", len(ds), ds)
+	}
+}
+
+func TestCheckFilesReportsAnEntityWithNoFilesystem(t *testing.T) {
+	src := Sources{"monorepo": fstest.MapFS{}}
+
+	orphan := &Entity{SourceRepo: "ghost", SourcePath: "service.yaml", NameLine: 4}
+	orphan.Kind = "Service"
+	orphan.Metadata.Name = "api"
+	orphan.Spec.Runbook = "runbook.md"
+
+	var c diag.Collector
+	cat := NewCatalog([]*Entity{orphan}, &c)
+	CheckFiles(src, cat, &c)
+
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(ds), ds)
+	}
+	if ds[0].Message != `no filesystem for repository "ghost", which defines service:api` {
+		t.Errorf("Message = %q", ds[0].Message)
+	}
+	if ds[0].Check != "unknown-repo" {
+		t.Errorf("Check = %q, want %q", ds[0].Check, "unknown-repo")
 	}
 }

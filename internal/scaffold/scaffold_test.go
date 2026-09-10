@@ -60,7 +60,7 @@ func TestScaffoldValidatesOnTheFirstRun(t *testing.T) {
 	}
 
 	cat := catalog.NewCatalog(catalog.ParseAll("", files, &c), &c)
-	catalog.CheckFiles(fsys, cat, &c)
+	catalog.CheckFiles(catalog.SingleSource("", fsys), cat, &c)
 	cat.Resolve(catalog.LocalOnly, &c)
 
 	teams, err := fs.ReadFile(fsys, "teams.yaml")

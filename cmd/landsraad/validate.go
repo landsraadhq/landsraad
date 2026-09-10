@@ -62,7 +62,8 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter) int {
 	validateCheckResults(fsys, &c)
 
 	// 3. parse and merge — pure, no IO
-	cat := catalog.NewCatalog(catalog.ParseAll(localRepoName(fsys), files, &c), &c)
+	repo := localRepoName(fsys)
+	cat := catalog.NewCatalog(catalog.ParseAll(repo, files, &c), &c)
 
 	// 4. resolve — LocalOnly: this repo cannot see entities defined elsewhere
 	g := cat.Resolve(catalog.LocalOnly, &c)
@@ -70,7 +71,7 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter) int {
 
 	// 5. semantic checks
 	checkOwners(fsys, cat, &c)
-	catalog.CheckFiles(fsys, cat, &c)
+	catalog.CheckFiles(catalog.SingleSource(repo, fsys), cat, &c)
 
 	// 6. report
 	// out carries ONLY the selected format's payload, so `--format json` stays

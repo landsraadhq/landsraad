@@ -93,8 +93,9 @@ func loadCatalogScoped(fsys fs.FS, scope catalog.Scope, c *diag.Collector) (*cat
 		validator.Validate("", f.Path, f.Data, c)
 	}
 
-	cat := catalog.NewCatalog(catalog.ParseAll(localRepoName(fsys), files, c), c)
-	catalog.CheckFiles(fsys, cat, c)
+	repo := localRepoName(fsys)
+	cat := catalog.NewCatalog(catalog.ParseAll(repo, files, c), c)
+	catalog.CheckFiles(catalog.SingleSource(repo, fsys), cat, c)
 	g := cat.Resolve(scope, c)
 	reportCycles(cat, g, c)
 
