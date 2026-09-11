@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -88,23 +90,30 @@ type glRow struct {
 	Path string `json:"path"`
 }
 
-// listPath lists everything under prefix, following every page.
+// list lists dir, following every page: its immediate children, or with
+// recursive set everything beneath it.
 //
 // per_page is set to 100 because GitLab's default is 20, and a listing that
 // stops after twenty files is a portal missing services with nothing to
 // notice it by. X-Next-Page is empty on the last page, which is the
 // documented end condition.
-func (g *GitLab) listPath(ctx context.Context, f *FS, ref, prefix string) error {
+//
+// A successful listing marks dir listed even when it returns no rows, and a
+// recursive one marks every directory it names, as FromEntries does for a
+// complete listing: the response described their whole contents.
+func (g *GitLab) list(ctx context.Context, f *FS, ref, dir string, recursive bool) error {
 	page := 1
 	for {
 		q := url.Values{
-			"ref":       {ref},
-			"recursive": {"true"},
-			"per_page":  {"100"},
-			"page":      {strconv.Itoa(page)},
+			"ref":      {ref},
+			"per_page": {"100"},
+			"page":     {strconv.Itoa(page)},
 		}
-		if prefix != "." && prefix != "" {
-			q.Set("path", prefix)
+		if recursive {
+			q.Set("recursive", "true")
+		}
+		if dir != "." && dir != "" {
+			q.Set("path", dir)
 		}
 		body, header, err := g.c.Get(ctx, g.project()+"/repository/tree", q, "")
 		if err != nil {
@@ -114,18 +123,21 @@ func (g *GitLab) listPath(ctx context.Context, f *FS, ref, prefix string) error 
 		if err := json.Unmarshal(body, &rows); err != nil {
 			return fmt.Errorf("cannot read the tree listing: %w", err)
 		}
-		byDir := map[string][]Entry{}
+		byDir := map[string][]Entry{dir: nil}
 		for _, r := range rows {
 			switch r.Type {
 			case "blob":
 				byDir[path.Dir(r.Path)] = append(byDir[path.Dir(r.Path)], Entry{Path: r.Path, SHA: r.ID})
 			case "tree":
 				byDir[path.Dir(r.Path)] = append(byDir[path.Dir(r.Path)], Entry{Path: r.Path, Dir: true})
+				if _, seen := byDir[r.Path]; recursive && !seen {
+					byDir[r.Path] = nil
+				}
 				// "commit" is a submodule; see GitHub.Open.
 			}
 		}
-		for dir, entries := range byDir {
-			f.AddDir(dir, entries)
+		for d, entries := range byDir {
+			f.AddDir(d, entries)
 		}
 		next := header.Get("X-Next-Page")
 		if next == "" {
@@ -139,26 +151,111 @@ func (g *GitLab) listPath(ctx context.Context, f *FS, ref, prefix string) error 
 	}
 }
 
-// Open lists under each pattern's literal prefix rather than the whole
-// repository.
+// Open lists what the patterns can reach, proving each step with a listing
+// (ruling R45).
 //
 // GitLab has no truncation flag — it simply paginates — so a hundred-thousand
 // file monorepo would be a thousand requests for a listing of which
 // landsraad reads a handful of directories. Bounding by prefix is the same
 // economy ruling R28 buys on GitHub, taken on the cheap path rather than as
 // a fallback.
+//
+// Every prefix is reached from a real listing of the root. Before R45 the
+// root was only marked listed, by NewFS, so every root-level path read as
+// fs.ErrNotExist, and a runbook sitting in the repository was reported
+// missing. Prefixes go shallowest first, so a recursive listing of services
+// covers services/api before anything asks for it on its own.
 func (g *GitLab) Open(ctx context.Context, patterns []string) (*FS, error) {
 	ref, err := g.resolveRef(ctx)
 	if err != nil {
 		return nil, err
 	}
 	f := NewFS()
-	for _, prefix := range literalPrefixes(patterns) {
-		if err := g.listPath(ctx, f, ref, prefix); err != nil {
+	prefixes := literalPrefixes(patterns)
+	if prefixes[0] == "." {
+		// literalPrefixes returns "." alone. One recursive listing of the
+		// whole repository lists the root along with everything else.
+		if err := g.list(ctx, f, ref, ".", true); err != nil {
+			return nil, err
+		}
+		return f, nil
+	}
+	if err := g.list(ctx, f, ref, ".", false); err != nil {
+		return nil, err
+	}
+	sort.SliceStable(prefixes, func(i, j int) bool {
+		return strings.Count(prefixes[i], "/") < strings.Count(prefixes[j], "/")
+	})
+	for _, p := range prefixes {
+		if err := g.reach(ctx, f, ref, p); err != nil {
 			return nil, err
 		}
 	}
 	return f, nil
+}
+
+// reach makes dir and everything beneath it known, proving each step the
+// only way this adapter accepts: a listing of the parent that shows it.
+// Ancestors are listed one level at a time, root to parent, each skipped if
+// already listed — the discipline GitHub's truncated-tree descent follows —
+// and dir itself is listed recursively unless everything beneath it is
+// already known.
+//
+// A step its parent's listing does not show is absent. reach stops there,
+// with no request, and f answers fs.ErrNotExist beneath it because the
+// parent is listed. Open lists the root before anything calls this.
+func (g *GitLab) reach(ctx context.Context, f *FS, ref, dir string) error {
+	for _, a := range ancestorsOf(dir) {
+		shown, err := showsDir(f, a)
+		if err != nil || !shown {
+			return err
+		}
+		if !f.Listed(a) {
+			if err := g.list(ctx, f, ref, a, false); err != nil {
+				return err
+			}
+		}
+	}
+	shown, err := showsDir(f, dir)
+	if err != nil || !shown || covered(f, dir) {
+		return err
+	}
+	return g.list(ctx, f, ref, dir, true)
+}
+
+// showsDir reports whether dir's parent, which reach has already listed,
+// shows dir as a directory. fs.ErrNotExist is a plain no. Any other answer
+// means the parent was not listed after all: a bug in reach, not a fact
+// about the repository, so it is returned as an error.
+func showsDir(f *FS, dir string) (bool, error) {
+	info, err := fs.Stat(f, dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return info.IsDir(), nil
+}
+
+// covered reports whether dir and every directory beneath it are listed,
+// which is what a recursive listing of dir establishes. Listed(dir) alone no
+// longer says that: reach lists ancestors one level deep, so a directory can
+// be listed with nothing beneath it known.
+func covered(f *FS, dir string) bool {
+	if !f.Listed(dir) {
+		return false
+	}
+	prefix := dir + "/"
+	if dir == "." {
+		prefix = ""
+	}
+	for _, e := range f.Entries() {
+		if e.Dir && strings.HasPrefix(e.Path, prefix) && !f.Listed(e.Path) {
+			return false
+		}
+	}
+	return true
 }
 
 // literalPrefixes reduces glob patterns to the deepest directory that must
@@ -194,24 +291,24 @@ func literalPrefixes(patterns []string) []string {
 	return out
 }
 
-// Expand lists a directory that no pattern prefix covered — a spec.docs
-// somewhere else in the repository.
+// Expand lists a directory no pattern prefix covered — a spec.docs, or the
+// directory of a runbook or an alerts file — reaching it the way Open
+// reaches a prefix.
+//
+// A directory no listing shows costs no request and reads as absent: its
+// parent's listing is the proof. That replaced treating a 404 as absence.
+// GitLab answers 404 for a missing path only from 17.7 (200 and [] before
+// that), and also when Gitaly is down, so a 404 could turn an outage into
+// "your runbook is missing". Now a 404 can only come back for a directory
+// some listing showed, which means the listing is wrong, and it fails the
+// repository like any other error.
 func (g *GitLab) Expand(ctx context.Context, f *FS, dirs []string) error {
 	ref, err := g.resolveRef(ctx)
 	if err != nil {
 		return err
 	}
 	for _, d := range dirs {
-		if f.Listed(d) {
-			continue
-		}
-		if err := g.listPath(ctx, f, ref, d); err != nil {
-			if IsNotFound(err) {
-				// The directory is not there. f already answers Stat
-				// correctly; a 404 for a path the user named is a catalog
-				// problem for CheckFiles to report, not a fetch failure.
-				continue
-			}
+		if err := g.reach(ctx, f, ref, d); err != nil {
 			return err
 		}
 	}

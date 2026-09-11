@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -151,12 +152,12 @@ func TestGitLabFetchAndLastEdit(t *testing.T) {
 	}
 }
 
-// spec.docs can name a directory outside every pattern's literal prefix —
-// Open only covered "services", so "docs" is discovered solely by Expand.
-// The mock response gives docs a realistic nested shape: a file directly
-// inside it, plus a "sub" subdirectory (a "type": "tree" row) with a file
-// of its own beneath that — this is what exercises the tree-row branch in
-// listPath, which no other test in this file reaches.
+// spec.docs can name a directory outside every pattern's literal prefix.
+// Open's root listing shows that "docs" exists but lists only "services" in
+// full, so what is inside "docs" is learned solely by Expand. The mock
+// response gives docs a realistic nested shape: a file directly inside it,
+// plus a "sub" subdirectory (a "type": "tree" row) with a file of its own
+// beneath that, which drives list's tree-row branch on a recursive listing.
 //
 // GitLab's tree endpoint, queried at path=docs, returns docs's CHILDREN —
 // it never reports a row for "docs" itself, the same way `ls docs` never
@@ -179,6 +180,12 @@ func TestGitLabExpandListsADirectoryOutsideAnyPattern(t *testing.T) {
 			return
 		}
 		switch r.URL.Query().Get("path") {
+		case "":
+			// The root listing ruling R45 has Open make before any prefix.
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"id": "t-services", "name": "services", "type": "tree", "path": "services"},
+				{"id": "t-docs", "name": "docs", "type": "tree", "path": "docs"},
+			})
 		case "services":
 			json.NewEncoder(w).Encode([]map[string]any{
 				{"id": "b-svc", "name": "service.yaml", "type": "blob", "path": "services/api/service.yaml"},
@@ -292,35 +299,240 @@ func TestGitLabExpandIsFreeOnAnAlreadyListedDirectory(t *testing.T) {
 	}
 }
 
-// A directory a service.yaml names in spec.docs but which does not exist on
-// the host is a catalog problem for CheckFiles to report, not a fetch
-// failure — Expand must swallow the 404 rather than surface it as an error.
-func TestGitLabExpandTreatsA404AsAbsent(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("path") == "missing" {
+// gitlabTreeServer serves a repository holding exactly files — slash paths,
+// every parent directory implied — through GitLab's tree endpoint, the way
+// GitLab 17.7 and later answer it: full paths in every row, a directory's
+// immediate children unless recursive=true, and 404 for a path that is not
+// a directory. asked returns each listing served so far, in order, as the
+// path listed ("." for the root) with " (recursive)" appended when it was,
+// so a test can pin exactly what the adapter asked for.
+func gitlabTreeServer(t *testing.T, files ...string) (srv *httptest.Server, asked func() []string) {
+	t.Helper()
+	dirs := map[string]bool{".": true}
+	for _, f := range files {
+		for d := path.Dir(f); d != "."; d = path.Dir(d) {
+			dirs[d] = true
+		}
+	}
+	var mu sync.Mutex
+	var log []string
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/projects/group%2Fsub%2Fbilling/repository/tree" {
+			t.Errorf("unexpected request: %s", r.URL)
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		json.NewEncoder(w).Encode([]map[string]any{
-			{"id": "b-svc", "name": "service.yaml", "type": "blob", "path": "services/api/service.yaml"},
-		})
+		dir := r.URL.Query().Get("path")
+		if dir == "" {
+			dir = "."
+		}
+		recursive := r.URL.Query().Get("recursive") == "true"
+		mu.Lock()
+		if recursive {
+			log = append(log, dir+" (recursive)")
+		} else {
+			log = append(log, dir)
+		}
+		mu.Unlock()
+		if !dirs[dir] {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"message":"404 Tree Not Found"}`))
+			return
+		}
+		under := func(p string) bool {
+			if recursive {
+				return dir == "." || strings.HasPrefix(p, dir+"/")
+			}
+			return path.Dir(p) == dir
+		}
+		rows := []map[string]any{}
+		for d := range dirs {
+			if d != "." && under(d) {
+				rows = append(rows, map[string]any{"id": "t-" + d, "name": path.Base(d), "type": "tree", "path": d})
+			}
+		}
+		for _, f := range files {
+			if under(f) {
+				rows = append(rows, map[string]any{"id": gitBlobSHA([]byte(f)), "name": path.Base(f), "type": "blob", "path": f})
+			}
+		}
+		json.NewEncoder(w).Encode(rows)
 	}))
 	t.Cleanup(srv.Close)
+	return srv, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), log...)
+	}
+}
 
+// Ruling R45. Open at a non-root prefix used to leave the root marked listed
+// with nothing in it, so a root-level file read as fs.ErrNotExist — the
+// false answer ErrNotListed exists to prevent. The root is now listed because
+// something listed it.
+func TestGitLabOpenListsTheRootAtANonRootPrefix(t *testing.T) {
+	srv, asked := gitlabTreeServer(t, "RUNBOOK.md", "services/api/service.yaml")
+	g := newTestGitLab(t, srv, "main")
+
+	f, err := g.Open(context.Background(), []string{"services/*"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := fs.Stat(f, "RUNBOOK.md"); err != nil {
+		t.Errorf("Stat(RUNBOOK.md) = %v, want the root-level file", err)
+	}
+	if _, err := fs.Stat(f, "nope.md"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Stat(nope.md) = %v, want fs.ErrNotExist from the root listing", err)
+	}
+	if diff := cmp.Diff([]string{".", "services (recursive)"}, asked()); diff != "" {
+		t.Errorf("listings mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A prefix the root listing does not show is absent and costs nothing: no
+// request, and no failure. On GitLab 17.7 and later a listing of it answers
+// 404, which used to fail the whole repository (finding N1). GitHub and
+// discover.Find have always treated a pattern that matches nothing as not an
+// error.
+func TestGitLabOpenSkipsAPrefixTheRootDoesNotShow(t *testing.T) {
+	srv, asked := gitlabTreeServer(t, "services/api/service.yaml")
+	g := newTestGitLab(t, srv, "main")
+
+	f, err := g.Open(context.Background(), []string{"services/*", "workers/*"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := fs.Stat(f, "workers/billing/service.yaml"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Stat under the absent prefix = %v, want fs.ErrNotExist", err)
+	}
+	if diff := cmp.Diff([]string{".", "services (recursive)"}, asked()); diff != "" {
+		t.Errorf("listings mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A nested prefix is reached the way GitHub's descent reaches one: each
+// ancestor listed one level deep, and the prefix listed whole once its
+// parent shows it. Prefixes go shallowest first, so services/api, which a
+// recursive listing of services already covers, costs nothing more.
+func TestGitLabOpenReachesANestedPrefixShallowestFirst(t *testing.T) {
+	srv, asked := gitlabTreeServer(t,
+		"apps/team-a/api/service.yaml", "apps/team-b/web/service.yaml", "services/api/service.yaml")
+	g := newTestGitLab(t, srv, "main")
+
+	f, err := g.Open(context.Background(), []string{"services/api/*", "apps/team-a/*", "services/*"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := fs.Stat(f, "apps/team-a/api/service.yaml"); err != nil {
+		t.Errorf("Stat under the nested prefix: %v", err)
+	}
+	// apps/team-b is in apps' one-level listing and was never descended into:
+	// that is "never looked", not "absent".
+	if _, err := fs.Stat(f, "apps/team-b/web/service.yaml"); !errors.Is(err, ErrNotListed) {
+		t.Errorf("Stat beside the nested prefix = %v, want ErrNotListed", err)
+	}
+	want := []string{".", "services (recursive)", "apps", "apps/team-a (recursive)"}
+	if diff := cmp.Diff(want, asked()); diff != "" {
+		t.Errorf("listings mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// Expand descends the same way, and a directory its parent's listing does
+// not show reads as absent, with no request for it. This is the case the
+// spec traces for R45: listing the root alone would have turned
+// docs/runbooks, under a docs that exists, from "does not exist" into "never
+// looked". It replaces TestGitLabExpandTreatsA404AsAbsent, which proved
+// absence with a 404 that GitLab also sends when Gitaly is down.
+func TestGitLabExpandProvesAbsenceWithAListing(t *testing.T) {
+	srv, asked := gitlabTreeServer(t, "docs/index.md", "services/api/service.yaml")
 	g := newTestGitLab(t, srv, "main")
 	f, err := g.Open(context.Background(), []string{"services/*"})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 
-	if err := g.Expand(context.Background(), f, []string{"missing"}); err != nil {
-		t.Fatalf("Expand with a 404'd directory returned an error: %v", err)
+	if err := g.Expand(context.Background(), f, []string{"docs/runbooks", "missing"}); err != nil {
+		t.Fatalf("Expand: %v", err)
 	}
-	if f.Listed("missing") {
-		t.Errorf("a 404'd directory was recorded as listed")
+
+	for _, p := range []string{"docs/runbooks/api.md", "missing/index.md"} {
+		if _, err := fs.Stat(f, p); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("Stat(%s) = %v, want fs.ErrNotExist", p, err)
+		}
 	}
-	if _, err := fs.Stat(f, "missing"); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("Stat(missing) = %v, want fs.ErrNotExist", err)
+	// docs is listed one level deep to learn it holds no runbooks. Nothing
+	// asks for docs/runbooks or missing, which no listing showed.
+	if diff := cmp.Diff([]string{".", "services (recursive)", "docs"}, asked()); diff != "" {
+		t.Errorf("listings mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// Because reach lists ancestors one level deep, "listed" no longer means
+// "everything beneath it is known". Expand of a directory Open only listed as
+// an ancestor must still list all of it: spec.docs names a tree, and
+// contentSet walks every page in it.
+func TestGitLabExpandListsAllOfADirectoryTheDescentOnlyListedOneLevelOf(t *testing.T) {
+	srv, asked := gitlabTreeServer(t,
+		"apps/team-a/api/service.yaml", "apps/guide/index.md", "apps/guide/deep/page.md")
+	g := newTestGitLab(t, srv, "main")
+	f, err := g.Open(context.Background(), []string{"apps/team-a/*"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	if err := g.Expand(context.Background(), f, []string{"apps"}); err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+
+	if _, err := fs.Stat(f, "apps/guide/deep/page.md"); err != nil {
+		t.Errorf("Stat two levels below the expanded directory: %v", err)
+	}
+	want := []string{".", "apps", "apps/team-a (recursive)", "apps (recursive)"}
+	if diff := cmp.Diff(want, asked()); diff != "" {
+		t.Errorf("listings mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A 404 from GitLab is not evidence that a directory is absent: GitLab also
+// answers it when Gitaly is down, and for a repository with no commits.
+// landsraad only asks for a directory some listing has shown, so a 404 for
+// one means the listing is not what landsraad believes, and the repository
+// fails instead of reading as a repository with nothing in it.
+func TestGitLabA404ForAListedDirectoryFailsTheRepository(t *testing.T) {
+	root := []map[string]any{
+		{"id": "t-services", "name": "services", "type": "tree", "path": "services"},
+		{"id": "t-docs", "name": "docs", "type": "tree", "path": "docs"},
+	}
+	for _, tt := range []struct {
+		name   string
+		gone   string // the path query that answers 404; "" is the root
+		expand []string
+	}{
+		{name: "the root listing", gone: ""},
+		{name: "a directory the root listing showed", gone: "docs", expand: []string{"docs"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Query().Get("path") {
+				case tt.gone:
+					w.WriteHeader(http.StatusNotFound)
+				case "":
+					json.NewEncoder(w).Encode(root)
+				default:
+					json.NewEncoder(w).Encode([]map[string]any{})
+				}
+			}))
+			t.Cleanup(srv.Close)
+			g := newTestGitLab(t, srv, "main")
+
+			f, err := g.Open(context.Background(), []string{"services/*"})
+			if err == nil && tt.expand != nil {
+				err = g.Expand(context.Background(), f, tt.expand)
+			}
+			if !IsNotFound(err) {
+				t.Errorf("err = %v, want the 404 returned as a failure", err)
+			}
+		})
 	}
 }
 
