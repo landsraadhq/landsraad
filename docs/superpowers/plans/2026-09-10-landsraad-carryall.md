@@ -1935,14 +1935,33 @@ func FromEntries(entries []Entry) *FS {
 	return f
 }
 
-// AddDir records the contents of one directory. Used by R28's fallback,
-// which learns the repository one listing at a time. A directory row among
-// entries says that directory exists; only AddDir on that directory says
-// what is inside it.
+// AddDir records the contents of one directory. Used by R28's fallback and
+// by GitLab's prefix listing, which learn the repository one listing at a
+// time. A directory row among entries says that directory exists; only
+// AddDir on that directory says what is inside it.
+//
+// It also records dir ITSELF, and every ancestor, as a directory that
+// exists — without marking any of them listed. Successfully listing a
+// directory is proof it is there, so recording that is a fact just learned,
+// not an assumption. Without it, a directory reached only through Expand
+// (a spec.docs outside the configured paths, which is the case Expand exists
+// for) had entries for its children and none for itself, so fs.WalkDir over
+// it failed on the stat of its own root. Found by review in Task 10.
+//
+// The asymmetry with `listed` is the three-answer property and must hold:
+// after AddDir("shared/docs", …), "shared" EXISTS but its contents are still
+// unknown, so Stat("shared/other") is ErrNotListed — not ErrNotExist, which
+// would be landsraad claiming a file is absent from a directory it never
+// looked in.
 func (f *FS) AddDir(dir string, entries []Entry) {
 	f.listed[dir] = true
 	for _, e := range entries {
 		f.entries[e.Path] = e
+	}
+	for d := dir; d != "." && d != "/" && d != ""; d = path.Dir(d) {
+		if _, ok := f.entries[d]; !ok {
+			f.entries[d] = Entry{Path: d, Dir: true}
+		}
 	}
 }
 
