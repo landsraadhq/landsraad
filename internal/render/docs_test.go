@@ -10,6 +10,7 @@ import (
 	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/emit"
+	"github.com/landsraadhq/landsraad/internal/fetch"
 	"github.com/landsraadhq/landsraad/internal/render/md"
 )
 
@@ -212,8 +213,13 @@ func TestAnUnreadableDocumentIsReportedAndSkipped(t *testing.T) {
 		t.Fatalf("got %d diagnostics, want 1: %+v", len(ds), ds)
 	}
 	got := ds[0]
-	if got.Message != "cannot read services/api/docs/broken.md" {
-		t.Errorf("Message = %q, want %q", got.Message, "cannot read services/api/docs/broken.md")
+	// The error itself, not just the path. "cannot read X" collapsed a
+	// permission problem, an EISDIR and fetch.ErrNotFetched into one
+	// sentence, and the last of those is a landsraad bug that reads as the
+	// user's mistake.
+	want := "cannot read services/api/docs/broken.md: open services/api/docs/broken.md: permission denied"
+	if got.Message != want {
+		t.Errorf("Message = %q, want %q", got.Message, want)
 	}
 	if got.Hint != "the file is named by spec.docs or spec.runbook" {
 		t.Errorf("Hint = %q, want %q", got.Hint, "the file is named by spec.docs or spec.runbook")
@@ -322,11 +328,53 @@ func TestAnUnreadableRunbookRendersDistinctlyAndNeverLinksToAMissingPage(t *test
 		t.Fatalf("got %d diagnostics, want 1: %+v", len(ds), ds)
 	}
 	got := ds[0]
-	if got.Message != "cannot read services/api/RUNBOOK.md" {
-		t.Errorf("Message = %q, want %q", got.Message, "cannot read services/api/RUNBOOK.md")
+	want := "cannot read services/api/RUNBOOK.md: open services/api/RUNBOOK.md: permission denied"
+	if got.Message != want {
+		t.Errorf("Message = %q, want %q", got.Message, want)
 	}
 	if got.Line == 0 {
 		t.Error("Line must not be 0")
+	}
+}
+
+// A file that is in the repository and whose content was never fetched is a
+// landsraad bug, and must read as one.
+//
+// fetch.ErrNotFetched exists precisely so this is not reported as a missing
+// file — "a missing-file diagnostic would send somebody to look for a file
+// that is sitting in their repository". The renderer then dropped the error
+// and said "cannot read X", which sends them exactly there.
+func TestADocumentThatWasListedButNeverFetchedReadsAsALandsraadBug(t *testing.T) {
+	e := ent("api", catalog.KindService, "team-payments", 1)
+	e.Spec.Docs = "services/api/docs"
+	in := input(t, fstest.MapFS{
+		"services/api/docs/index.md": {Data: []byte("# API\n\nThe overview.\n")},
+	}, e)
+
+	// A sparse filesystem that listed the page and never fetched its bytes:
+	// what cmd/'s content planner leaves behind when it forgets a file.
+	remote := fetch.NewFS()
+	remote.AddDir("services/api/docs", []fetch.Entry{
+		{Path: "services/api/docs/index.md", SHA: "0123456789abcdef0123456789abcdef01234567", Size: 20},
+	})
+	in.Sources = catalog.SingleSource("", remote)
+
+	var c diag.Collector
+	Site(in, &c)
+
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(ds), ds)
+	}
+	got := ds[0]
+	wantMsg := "services/api/docs/index.md is in the repository but its content was never fetched"
+	if got.Message != wantMsg {
+		t.Errorf("Message = %q, want %q", got.Message, wantMsg)
+	}
+	wantHint := "this is a landsraad bug, not a problem with your catalog: " +
+		"cmd/'s contentSet must name every file a stage reads"
+	if got.Hint != wantHint {
+		t.Errorf("Hint = %q, want %q", got.Hint, wantHint)
 	}
 }
 

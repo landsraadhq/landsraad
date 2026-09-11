@@ -1,6 +1,7 @@
 package render
 
 import (
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -13,6 +14,7 @@ import (
 	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/emit"
+	"github.com/landsraadhq/landsraad/internal/fetch"
 	"github.com/landsraadhq/landsraad/internal/render/md"
 )
 
@@ -198,6 +200,35 @@ func relativeURL(fromURL, toURL string) string {
 	return strings.Join(parts, "/")
 }
 
+// unreadableDoc reports a document that could not be read, saying which of
+// the two very different reasons it was.
+//
+// fetch.ErrNotFetched means the file is sitting in the repository and cmd/'s
+// content planner never asked the host for it. That is a landsraad bug, and
+// it gets catalog.MissingSourceDiagnostic's treatment: saying so is the
+// difference between somebody fixing their catalog (which is fine) and
+// somebody filing this. Discarding the error made the two indistinguishable
+// — and made a plain permission error indistinguishable from both.
+func unreadableDoc(e *catalog.Entity, repoPath string, err error) diag.Diagnostic {
+	if errors.Is(err, fetch.ErrNotFetched) {
+		return diag.Diagnostic{
+			Severity: diag.SevError, File: repoPath, Line: 1,
+			Entity:  e.Metadata.Name,
+			Check:   "docs-unreadable",
+			Message: fmt.Sprintf("%s is in the repository but its content was never fetched", repoPath),
+			Hint: "this is a landsraad bug, not a problem with your catalog: cmd/'s contentSet " +
+				"must name every file a stage reads",
+		}
+	}
+	return diag.Diagnostic{
+		Severity: diag.SevError, File: repoPath, Line: 1,
+		Entity:  e.Metadata.Name,
+		Check:   "docs-unreadable",
+		Message: fmt.Sprintf("cannot read %s: %v", repoPath, err),
+		Hint:    "the file is named by spec.docs or spec.runbook",
+	}
+}
+
 // docsFor renders one entity's documentation.
 //
 // Every failure is reported and skipped. One unreadable document must not
@@ -243,13 +274,7 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 	render := func(repoPath, relURL, searchURL string) (md.Doc, RenderedDoc, bool) {
 		data, err := fs.ReadFile(fsys, repoPath)
 		if err != nil {
-			c.Add(diag.Diagnostic{
-				Severity: diag.SevError, File: repoPath, Line: 1,
-				Entity:  e.Metadata.Name,
-				Check:   "docs-unreadable",
-				Message: fmt.Sprintf("cannot read %s", repoPath),
-				Hint:    "the file is named by spec.docs or spec.runbook",
-			})
+			c.Add(unreadableDoc(e, repoPath, err))
 			return md.Doc{}, RenderedDoc{}, false
 		}
 		linker := docLinker{

@@ -1,11 +1,14 @@
 package catalog
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
+	pathpkg "path"
 	"strings"
 
 	"github.com/landsraadhq/landsraad/internal/diag"
+	"github.com/landsraadhq/landsraad/internal/fetch"
 )
 
 // CheckFiles verifies that every path an entity points at exists in the
@@ -72,6 +75,28 @@ func CheckFiles(src Sources, cat *Catalog, c *diag.Collector) {
 			}
 			info, err := fs.Stat(fsys, f.path)
 			if err != nil {
+				// A file nobody looked for is not a file that is not there.
+				// fetch.ErrNotListed means no listing ever covered this
+				// path's directory, so this program does not know whether
+				// the file exists -- and saying "does not exist" is a
+				// statement about somebody's repository that may simply be
+				// false. It matters more since the fetch planner stopped
+				// asking for unlisted paths: this function is now what
+				// diagnoses them.
+				if errors.Is(err, fetch.ErrNotListed) {
+					c.Add(diag.Diagnostic{
+						Severity: diag.SevError,
+						Repo:     e.SourceRepo,
+						File:     e.SourcePath,
+						Line:     e.NameLine,
+						Entity:   e.Metadata.Name,
+						Check:    "unlisted-path",
+						Message: fmt.Sprintf("%s points at %q, which landsraad never looked for: no listing of %q was ever fetched",
+							f.field, f.path, pathpkg.Dir(f.path)),
+						Hint: "widen this repository's `paths:` in repos.yaml to cover it, or move the file under a path that is already listed",
+					})
+					continue
+				}
 				c.Add(diag.Diagnostic{
 					Severity: diag.SevError,
 					Repo:     e.SourceRepo,

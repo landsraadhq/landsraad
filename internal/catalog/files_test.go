@@ -5,6 +5,7 @@ import (
 	"testing/fstest"
 
 	"github.com/landsraadhq/landsraad/internal/diag"
+	"github.com/landsraadhq/landsraad/internal/fetch"
 )
 
 func repoFS() fstest.MapFS {
@@ -302,5 +303,48 @@ func TestCheckFilesReportsAnEntityWithNoFilesystem(t *testing.T) {
 	}
 	if ds[0].Check != "unknown-repo" {
 		t.Errorf("Check = %q, want %q", ds[0].Check, "unknown-repo")
+	}
+}
+
+// A path in a directory no listing ever covered is not a path that does not
+// exist, and must not be reported as one.
+//
+// fetch.ErrNotListed exists for this distinction, and CheckFiles collapsed
+// it into "which does not exist" — a statement about somebody's repository
+// that may simply be false. It matters more since the fetch planner stopped
+// asking the host for unlisted paths: this function is now what diagnoses
+// them.
+func TestCheckFilesSaysWhenItNeverLookedRatherThanThatTheFileIsGone(t *testing.T) {
+	// A sparse filesystem that listed services/api and nothing else, the way
+	// `paths: [services/*]` leaves a repository whose runbook lives under
+	// docs/.
+	remote := fetch.NewFS()
+	remote.AddDir("services/api", []fetch.Entry{
+		{Path: "services/api/service.yaml", SHA: "0123456789abcdef0123456789abcdef01234567"},
+	})
+
+	var c diag.Collector
+	e := ent("edge-gateway", "services/api/service.yaml", "api", KindService, 4)
+	e.Spec.Path = "services/api"
+	e.Spec.Runbook = "docs/runbooks/api.md"
+	cat := NewCatalog([]*Entity{e}, &c)
+
+	CheckFiles(SingleSource("edge-gateway", remote), cat, &c)
+
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(ds), ds)
+	}
+	d := ds[0]
+	if d.Check != "unlisted-path" {
+		t.Errorf("Check = %q, want %q", d.Check, "unlisted-path")
+	}
+	want := `spec.runbook points at "docs/runbooks/api.md", which landsraad never looked for: no listing of "docs/runbooks" was ever fetched`
+	if d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+	wantHint := "widen this repository's `paths:` in repos.yaml to cover it, or move the file under a path that is already listed"
+	if d.Hint != wantHint {
+		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, wantHint)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
+	"github.com/landsraadhq/landsraad/internal/fetch"
 )
 
 func svc(name string) *catalog.Entity {
@@ -414,5 +415,64 @@ func TestDocsFreshAsksPerRepository(t *testing.T) {
 	want := []string{"fresh:docs", "ancient:docs"}
 	if diff := cmp.Diff(want, asked); diff != "" {
 		t.Errorf("LastEdit calls mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A file that is in the repository and whose content was never fetched is a
+// landsraad bug, and the detail on the scorecard must say so.
+//
+// fetch.ErrNotFetched is deliberately not fs.ErrNotExist, because "a
+// missing-file diagnostic would send somebody to look for a file that is
+// sitting in their repository". Every consumer then dropped the error and
+// rendered "cannot read services/api/runbook.md", which sends them exactly
+// there — with a red mark on their scorecard for a bug in cmd/.
+func TestUnfetchedFilesReadAsALandsraadBugNotAMissingFile(t *testing.T) {
+	// A sparse filesystem that listed both files and fetched neither.
+	remote := fetch.NewFS()
+	remote.AddDir("services/api", []fetch.Entry{
+		{Path: "services/api/runbook.md", SHA: "0123456789abcdef0123456789abcdef01234567", Size: 12},
+		{Path: "services/api/alerts.yaml", SHA: "89abcdef0123456789abcdef0123456789abcdef", Size: 12},
+	})
+	env := Env{Sources: catalog.SingleSource("", remote), Now: time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)}
+
+	for _, tt := range []struct{ check, path string }{
+		{"runbook-present", "services/api/runbook.md"},
+		{"alerts-parse", "services/api/alerts.yaml"},
+	} {
+		t.Run(tt.check, func(t *testing.T) {
+			e := svc("api")
+			e.Spec.Runbook = "services/api/runbook.md"
+			e.Spec.Alerts = "services/api/alerts.yaml"
+
+			got := run(t, tt.check, e, env)
+			if got.Status != StatusError {
+				t.Errorf("Status = %q, want %q", got.Status, StatusError)
+			}
+			want := tt.path + " is in the repository but its content was never fetched; " +
+				"this is a landsraad bug, not a problem with your catalog"
+			if got.Detail != want {
+				t.Errorf("Detail = %q, want %q", got.Detail, want)
+			}
+		})
+	}
+}
+
+// Every other read failure carries the error itself. "cannot read X"
+// collapsed a permission problem, an EISDIR and a truncated read into one
+// sentence that says nothing about any of them.
+func TestAnUnreadableRunbookCarriesTheError(t *testing.T) {
+	e := svc("api")
+	e.Spec.Runbook = "services/api/runbook.md"
+	env := Env{
+		Sources: catalog.SingleSource("", fstest.MapFS{}),
+		Now:     time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC),
+	}
+	got := run(t, "runbook-present", e, env)
+	if got.Status != StatusError {
+		t.Errorf("Status = %q, want %q", got.Status, StatusError)
+	}
+	want := "cannot read services/api/runbook.md: open services/api/runbook.md: file does not exist"
+	if got.Detail != want {
+		t.Errorf("Detail = %q, want %q", got.Detail, want)
 	}
 }

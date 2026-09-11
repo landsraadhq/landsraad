@@ -1,6 +1,7 @@
 package scorecard
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	pathpkg "path"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/diag"
+	"github.com/landsraadhq/landsraad/internal/fetch"
 )
 
 // daysAgo renders a whole-day age the way a person says it, covering the two
@@ -52,6 +54,26 @@ func ownerSet(e *catalog.Entity, _ Env) Result {
 	return Result{Check: "owner-set", Status: StatusPass, Detail: e.Metadata.Owner}
 }
 
+// unreadable says why a file a check needed could not be read.
+//
+// fetch.ErrNotFetched means the file is sitting in the repository and cmd/'s
+// content planner never asked the host for its bytes. The sentinel exists
+// precisely so this is not reported as a missing file — the package comment
+// says a missing-file diagnostic "would send somebody to look for a file
+// that is sitting in their repository" — and then every consumer dropped the
+// error and said "cannot read X", which sends them exactly there.
+//
+// Everything else gets the error itself. "cannot read X" collapsed a
+// permission problem, an EISDIR and a truncated read into one sentence that
+// says nothing about any of them.
+func unreadable(p string, err error) string {
+	if errors.Is(err, fetch.ErrNotFetched) {
+		return fmt.Sprintf("%s is in the repository but its content was never fetched; "+
+			"this is a landsraad bug, not a problem with your catalog", p)
+	}
+	return fmt.Sprintf("cannot read %s: %v", p, err)
+}
+
 // runbookPresent requires a runbook that exists and says something.
 //
 // Spec §5.3 words it as "runbook exists and non-empty". A file holding only a
@@ -71,8 +93,7 @@ func runbookPresent(e *catalog.Entity, env Env) Result {
 	if err != nil {
 		// Never pass for a file that could not be read: that is the
 		// exit-0-on-something-unexamined failure inside a single check.
-		return Result{Check: id, Status: StatusError,
-			Detail: fmt.Sprintf("cannot read %s", e.Spec.Runbook)}
+		return Result{Check: id, Status: StatusError, Detail: unreadable(e.Spec.Runbook, err)}
 	}
 	if bodyIsEmpty(data) {
 		return Result{Check: id, Status: StatusFail,
@@ -121,8 +142,7 @@ func alertsParse(e *catalog.Entity, env Env) Result {
 	}
 	data, err := fs.ReadFile(fsys, e.Spec.Alerts)
 	if err != nil {
-		return Result{Check: id, Status: StatusError,
-			Detail: fmt.Sprintf("cannot read %s", e.Spec.Alerts)}
+		return Result{Check: id, Status: StatusError, Detail: unreadable(e.Spec.Alerts, err)}
 	}
 	var rules alertRules
 	if err := yaml.Unmarshal(data, &rules); err != nil {
