@@ -109,6 +109,38 @@ func TestGitHubExpandListsADocsTree(t *testing.T) {
 	}
 }
 
+// vendor/docs sits under vendor, a directory no pattern here reaches — the
+// same "spec.docs outside every walked subtree" layout GitLab's Expand was
+// found to mishandle. GitHub's Expand fails at this layout too, just more
+// quietly: listDir looks vendor/docs up in the shas map that record()
+// populates during a listing, finds nothing (only vendor itself was ever
+// recorded, from root's initial one-level listing in walk() — nobody ever
+// listed vendor's own contents), and returns nil having made no request and
+// added nothing to f. Unlike GitLab, this never reaches AddDir, so fs.go's
+// fix for the same underlying gap does not help GitHub here — fixing this
+// would need an adapter-side change to listDir/expandRecursive, which is
+// out of scope for this task; recorded for a ruling rather than made.
+func TestGitHubExpandCannotReachADirectoryOutsideAnyWalkedSubtree(t *testing.T) {
+	var listed []string
+	g := newTestGitHub(t, bigRepoServer(t, &listed), "trunk")
+	f, err := g.Open(context.Background(), []string{"services/*"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	if err := g.Expand(context.Background(), f, []string{"vendor/docs"}); err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if _, err := fs.Stat(f, "vendor/docs"); !errors.Is(err, ErrNotListed) {
+		t.Errorf("Stat vendor/docs = %v, want ErrNotListed -- Expand silently did nothing for a directory outside every walked subtree", err)
+	}
+	for _, s := range listed {
+		if s == "t-vendor" {
+			t.Errorf("vendor's tree was fetched even though Expand should never have found its sha")
+		}
+	}
+}
+
 // Expand on an already-complete listing costs nothing. This is what lets
 // cmd/ call it unconditionally rather than branching on which host, which
 // ref, and whether the listing happened to be truncated.

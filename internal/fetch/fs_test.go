@@ -133,6 +133,73 @@ func TestAddDirMakesADirectoryKnown(t *testing.T) {
 	}
 }
 
+// Successfully listing a directory is proof the directory itself exists —
+// a fact AddDir must record, not merely the fact of its children. This is
+// exactly the case Expand exists to serve: spec.docs naming a directory no
+// Open pattern ever covered. Before this fix, AddDir recorded only the
+// children, so fs.Stat and fs.WalkDir on the directory itself — which is
+// precisely what render/docs.go calls — failed even though the directory
+// unambiguously exists.
+func TestAddDirMakesTheDirectoryItselfKnown(t *testing.T) {
+	f := NewFS()
+	f.AddDir("shared/docs", []Entry{
+		{Path: "shared/docs/index.md", SHA: "a"},
+	})
+
+	info, err := fs.Stat(f, "shared/docs")
+	if err != nil {
+		t.Fatalf("Stat shared/docs: %v", err)
+	}
+	if !info.IsDir() {
+		t.Errorf("shared/docs.IsDir() = false, want true")
+	}
+
+	var walked []string
+	if err := fs.WalkDir(f, "shared/docs", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		walked = append(walked, p)
+		return nil
+	}); err != nil {
+		t.Fatalf("WalkDir shared/docs: %v", err)
+	}
+	if diff := cmp.Diff([]string{"shared/docs", "shared/docs/index.md"}, walked); diff != "" {
+		t.Errorf("WalkDir mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// AddDir's new ancestor-recording must not also mark those ancestors
+// listed: listed means "I know this directory's whole contents", and
+// AddDir("shared/docs", ...) only ever told us about shared/docs, not
+// about shared. Collapsing the two would turn an honest "never looked"
+// into a false "does not exist" for every other entry under shared.
+func TestAddDirDoesNotMarkAncestorsListed(t *testing.T) {
+	f := NewFS()
+	f.AddDir("shared/docs", []Entry{
+		{Path: "shared/docs/index.md", SHA: "a"},
+	})
+
+	// shared now exists...
+	info, err := fs.Stat(f, "shared")
+	if err != nil {
+		t.Fatalf("Stat shared: %v", err)
+	}
+	if !info.IsDir() {
+		t.Errorf("shared.IsDir() = false, want true")
+	}
+
+	// ...but nothing ever listed shared's own contents, so a sibling of
+	// shared/docs must read as "never looked", not "does not exist".
+	_, err = fs.Stat(f, "shared/other")
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Error("shared/other reported as ErrNotExist; shared was never listed, so this is a false claim")
+	}
+	if !errors.Is(err, ErrNotListed) {
+		t.Errorf("error = %v, want ErrNotListed", err)
+	}
+}
+
 func TestEntriesAreSorted(t *testing.T) {
 	f := FromEntries([]Entry{
 		{Path: "z.md", SHA: "1"}, {Path: "a.md", SHA: "2"}, {Path: "m.md", SHA: "3"},

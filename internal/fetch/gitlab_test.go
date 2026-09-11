@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func newTestGitLab(t *testing.T, srv *httptest.Server, ref string) *GitLab {
@@ -156,14 +158,13 @@ func TestGitLabFetchAndLastEdit(t *testing.T) {
 // of its own beneath that — this is what exercises the tree-row branch in
 // listPath, which no other test in this file reaches.
 //
-// This test deliberately does not assert fs.Stat(f, "docs") itself.
 // GitLab's tree endpoint, queried at path=docs, returns docs's CHILDREN —
 // it never reports a row for "docs" itself, the same way `ls docs` never
-// prints "docs". So "docs" never gains an Entry of its own from this call,
-// only "docs/sub" does (a genuine child row of the docs query). GitHub's
-// own Expand test (TestGitHubExpandListsADocsTree) follows the identical
-// convention: it asserts files *within* the expanded directory, never Stat
-// on the expansion target itself.
+// prints "docs". Without AddDir also recording that dir itself exists
+// (fs.go), "docs" would never gain an Entry of its own from this call, and
+// fs.Stat(f, "docs") — what render/docs.go's fs.WalkDir needs first — would
+// fail even though docs unambiguously exists. This test asserts on "docs"
+// itself for exactly that reason.
 func TestGitLabExpandListsADirectoryOutsideAnyPattern(t *testing.T) {
 	blobs := map[string]string{"b-idx": "# Docs\n", "b-deep": "deep page\n"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -204,14 +205,19 @@ func TestGitLabExpandListsADirectoryOutsideAnyPattern(t *testing.T) {
 		t.Fatalf("Expand: %v", err)
 	}
 
-	// docs/sub is a nested "type": "tree" row, and must be recognised as a
-	// directory — this is the branch no other test in this file reaches.
-	info, err := fs.Stat(f, "docs/sub")
-	if err != nil {
-		t.Fatalf("Stat docs/sub: %v", err)
-	}
-	if !info.IsDir() {
-		t.Errorf("docs/sub.IsDir() = false, want true")
+	// docs itself — the exact argument passed to Expand, covered by no
+	// pattern's prefix and never returned by GitLab as a row of itself —
+	// must be recognised as a directory. This is the property render/docs.go
+	// depends on: it calls fs.WalkDir(fsys, e.Spec.Docs, ...), which Stats
+	// the root before walking it.
+	for _, dir := range []string{"docs", "docs/sub"} {
+		info, err := fs.Stat(f, dir)
+		if err != nil {
+			t.Fatalf("Stat %s: %v", dir, err)
+		}
+		if !info.IsDir() {
+			t.Errorf("%s.IsDir() = false, want true", dir)
+		}
 	}
 
 	// Its children, one level and two levels down, are reachable.
@@ -221,10 +227,10 @@ func TestGitLabExpandListsADirectoryOutsideAnyPattern(t *testing.T) {
 		}
 	}
 
-	// Walking from docs/sub — a directory that does have its own Entry —
-	// visits every file beneath it.
+	// Walking from docs itself — what render/docs.go actually does —
+	// visits every file beneath it, at every depth.
 	var walked []string
-	err = fs.WalkDir(f, "docs/sub", func(p string, d fs.DirEntry, err error) error {
+	err = fs.WalkDir(f, "docs", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -234,10 +240,11 @@ func TestGitLabExpandListsADirectoryOutsideAnyPattern(t *testing.T) {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("WalkDir docs/sub: %v", err)
+		t.Fatalf("WalkDir docs: %v", err)
 	}
-	if want := []string{"docs/sub/deep.md"}; len(walked) != 1 || walked[0] != want[0] {
-		t.Errorf("WalkDir docs/sub visited %v, want %v", walked, want)
+	want := []string{"docs/index.md", "docs/sub/deep.md"}
+	if diff := cmp.Diff(want, walked); diff != "" {
+		t.Errorf("WalkDir docs mismatch (-want +got):\n%s", diff)
 	}
 
 	// Expand made the content fetchable, not just listed.

@@ -113,10 +113,32 @@ func FromEntries(entries []Entry) *FS {
 // which learns the repository one listing at a time. A directory row among
 // entries says that directory exists; only AddDir on that directory says
 // what is inside it.
+//
+// Successfully listing dir is also proof that dir itself exists, and so is
+// every ancestor up to the root: a directory cannot be listable unless its
+// parents are real. AddDir records that too, because it is a fact just
+// learned, not an assumption — without it, a directory reached only through
+// Expand (spec.docs naming a path no Open pattern covered) never gets an
+// Entry of its own, only its children do, and fs.Stat and fs.WalkDir on the
+// directory itself — exactly what render/docs.go calls — fail even though
+// the directory unambiguously exists.
+//
+// None of those ancestors are marked listed. listed means "this directory's
+// whole contents are known", and AddDir(dir, entries) only ever told us
+// that about dir. Marking shared listed because shared/docs was AddDir'd
+// would claim knowledge of every other entry under shared that was never
+// asked for — collapsing the three-answer property (exists-with-content,
+// exists-but-unlisted, never-looked) that the rest of *FS depends on. See
+// TestAddDirDoesNotMarkAncestorsListed.
 func (f *FS) AddDir(dir string, entries []Entry) {
 	f.listed[dir] = true
 	for _, e := range entries {
 		f.entries[e.Path] = e
+	}
+	for d := dir; d != "." && d != "/"; d = path.Dir(d) {
+		if _, ok := f.entries[d]; !ok {
+			f.entries[d] = Entry{Path: d, Dir: true}
+		}
 	}
 }
 
