@@ -1,5 +1,5 @@
 #!/bin/sh
-# The three rules CONTRIBUTING.md says are enforced, enforced for everyone.
+# The rules CONTRIBUTING.md says are enforced, enforced for everyone.
 #
 # They were previously checked only by Claude Code PreToolUse hooks in
 # .claude/settings.json, which run inside one agent workflow and nowhere else.

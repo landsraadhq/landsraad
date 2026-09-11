@@ -579,12 +579,13 @@ internal/diag/         Diagnostic, Collector, Formatter interface + formats
 internal/discover/     Find(fs.FS, patterns) — stage 1
 internal/catalog/      Entity types, ParseAll, merge, refs, graph, CheckFiles
 internal/schema/       embedded JSON Schema; *Validator value, no globals
-internal/fetch/        Fetcher interface returning an fs.FS; fs.go is the
-                       sparse filesystem, client.go the shared
-                       HTTP half, github.go/githubwalk.go/gitlab.go the
-                       adapters. The only package under internal/ that
-                       speaks HTTP, and it makes every request before a
-                       stage runs.
+internal/fetch/        fetch.go declares the Fetcher and Cache interfaces;
+                       fs.go is the sparse filesystem; client.go the shared
+                       HTTP half; github.go/githubwalk.go/gitlab.go the
+                       adapters; blobs.go the parallel blob-fetch worker
+                       pool and FetchError. The only package under
+                       internal/ that speaks HTTP, and it makes every
+                       request before a stage runs.
 internal/scorecard/    checks, ingest, scoring, history
 internal/render/       site generation, goldmark pipeline, search index
 internal/render/md/    admonition extension
