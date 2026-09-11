@@ -3,11 +3,13 @@ package fetch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -144,6 +146,174 @@ func TestGitLabFetchAndLastEdit(t *testing.T) {
 	want := time.Date(2026, 7, 15, 9, 0, 0, 0, time.UTC)
 	if !edited.Equal(want) {
 		t.Errorf("LastEdit = %v, want %v (the offset must be honoured)", edited, want)
+	}
+}
+
+// spec.docs can name a directory outside every pattern's literal prefix —
+// Open only covered "services", so "docs" is discovered solely by Expand.
+// The mock response gives docs a realistic nested shape: a file directly
+// inside it, plus a "sub" subdirectory (a "type": "tree" row) with a file
+// of its own beneath that — this is what exercises the tree-row branch in
+// listPath, which no other test in this file reaches.
+//
+// This test deliberately does not assert fs.Stat(f, "docs") itself.
+// GitLab's tree endpoint, queried at path=docs, returns docs's CHILDREN —
+// it never reports a row for "docs" itself, the same way `ls docs` never
+// prints "docs". So "docs" never gains an Entry of its own from this call,
+// only "docs/sub" does (a genuine child row of the docs query). GitHub's
+// own Expand test (TestGitHubExpandListsADocsTree) follows the identical
+// convention: it asserts files *within* the expanded directory, never Stat
+// on the expansion target itself.
+func TestGitLabExpandListsADirectoryOutsideAnyPattern(t *testing.T) {
+	blobs := map[string]string{"b-idx": "# Docs\n", "b-deep": "deep page\n"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/raw") {
+			for sha, body := range blobs {
+				if strings.Contains(r.URL.Path, sha) {
+					w.Write([]byte(body))
+					return
+				}
+			}
+			t.Errorf("unexpected blob request: %s", r.URL.Path)
+			return
+		}
+		switch r.URL.Query().Get("path") {
+		case "services":
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"id": "b-svc", "name": "service.yaml", "type": "blob", "path": "services/api/service.yaml"},
+			})
+		case "docs":
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"id": "b-idx", "name": "index.md", "type": "blob", "path": "docs/index.md"},
+				{"id": "d-sub", "name": "sub", "type": "tree", "path": "docs/sub"},
+				{"id": "b-deep", "name": "deep.md", "type": "blob", "path": "docs/sub/deep.md"},
+			})
+		default:
+			t.Errorf("unexpected path query: %q", r.URL.Query().Get("path"))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	g := newTestGitLab(t, srv, "main")
+	f, err := g.Open(context.Background(), []string{"services/*"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	if err := g.Expand(context.Background(), f, []string{"docs"}); err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+
+	// docs/sub is a nested "type": "tree" row, and must be recognised as a
+	// directory — this is the branch no other test in this file reaches.
+	info, err := fs.Stat(f, "docs/sub")
+	if err != nil {
+		t.Fatalf("Stat docs/sub: %v", err)
+	}
+	if !info.IsDir() {
+		t.Errorf("docs/sub.IsDir() = false, want true")
+	}
+
+	// Its children, one level and two levels down, are reachable.
+	for _, p := range []string{"docs/index.md", "docs/sub/deep.md"} {
+		if _, err := fs.Stat(f, p); err != nil {
+			t.Errorf("Stat %s after Expand: %v", p, err)
+		}
+	}
+
+	// Walking from docs/sub — a directory that does have its own Entry —
+	// visits every file beneath it.
+	var walked []string
+	err = fs.WalkDir(f, "docs/sub", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			walked = append(walked, p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir docs/sub: %v", err)
+	}
+	if want := []string{"docs/sub/deep.md"}; len(walked) != 1 || walked[0] != want[0] {
+		t.Errorf("WalkDir docs/sub visited %v, want %v", walked, want)
+	}
+
+	// Expand made the content fetchable, not just listed.
+	if err := g.Fetch(context.Background(), f, []string{"docs/index.md", "docs/sub/deep.md"}); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if got, err := fs.ReadFile(f, "docs/index.md"); err != nil || string(got) != "# Docs\n" {
+		t.Errorf("ReadFile docs/index.md = %q, %v", got, err)
+	}
+	if got, err := fs.ReadFile(f, "docs/sub/deep.md"); err != nil || string(got) != "deep page\n" {
+		t.Errorf("ReadFile docs/sub/deep.md = %q, %v", got, err)
+	}
+}
+
+// Expand on an already-listed directory costs nothing — this is what lets
+// cmd/ call it unconditionally rather than checking Listed itself first.
+func TestGitLabExpandIsFreeOnAnAlreadyListedDirectory(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": "b-idx", "name": "index.md", "type": "blob", "path": "docs/index.md"},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	g := newTestGitLab(t, srv, "main")
+	// "." lists the whole repository recursively in one call — GitLab has
+	// no truncation to fall back from, so this single request already
+	// covers docs.
+	f, err := g.Open(context.Background(), []string{"."})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if !f.Listed("docs") {
+		t.Fatalf("docs was not listed by Open(\".\") — test setup is wrong")
+	}
+
+	before := requests
+	if err := g.Expand(context.Background(), f, []string{"docs"}); err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if requests != before {
+		t.Errorf("Expand made %d requests against an already-listed directory, want 0", requests-before)
+	}
+}
+
+// A directory a service.yaml names in spec.docs but which does not exist on
+// the host is a catalog problem for CheckFiles to report, not a fetch
+// failure — Expand must swallow the 404 rather than surface it as an error.
+func TestGitLabExpandTreatsA404AsAbsent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("path") == "missing" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": "b-svc", "name": "service.yaml", "type": "blob", "path": "services/api/service.yaml"},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	g := newTestGitLab(t, srv, "main")
+	f, err := g.Open(context.Background(), []string{"services/*"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	if err := g.Expand(context.Background(), f, []string{"missing"}); err != nil {
+		t.Fatalf("Expand with a 404'd directory returned an error: %v", err)
+	}
+	if f.Listed("missing") {
+		t.Errorf("a 404'd directory was recorded as listed")
+	}
+	if _, err := fs.Stat(f, "missing"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Stat(missing) = %v, want fs.ErrNotExist", err)
 	}
 }
 
