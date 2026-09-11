@@ -14,8 +14,8 @@ import (
 	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/emit"
-	"github.com/landsraadhq/landsraad/internal/fetch"
 	"github.com/landsraadhq/landsraad/internal/render/md"
+	"github.com/landsraadhq/landsraad/internal/sparsefs"
 )
 
 // DocLink is one entry in an entity's documentation nav.
@@ -203,14 +203,14 @@ func relativeURL(fromURL, toURL string) string {
 // unreadableDoc reports a document that could not be read, saying which of
 // the two very different reasons it was.
 //
-// fetch.ErrNotFetched means the file is sitting in the repository and cmd/'s
+// sparsefs.ErrNotFetched means the file is sitting in the repository and cmd/'s
 // content planner never asked the host for it. That is a landsraad bug, and
 // it gets catalog.MissingSourceDiagnostic's treatment: saying so is the
 // difference between somebody fixing their catalog (which is fine) and
 // somebody filing this. Discarding the error made the two indistinguishable
 // — and made a plain permission error indistinguishable from both.
 func unreadableDoc(e *catalog.Entity, repoPath string, err error) diag.Diagnostic {
-	if errors.Is(err, fetch.ErrNotFetched) {
+	if errors.Is(err, sparsefs.ErrNotFetched) {
 		return diag.Diagnostic{
 			Severity: diag.SevError, File: repoPath, Line: 1,
 			Entity:  e.Metadata.Name,

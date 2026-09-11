@@ -11,7 +11,7 @@ import (
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/diag"
-	"github.com/landsraadhq/landsraad/internal/fetch"
+	"github.com/landsraadhq/landsraad/internal/sparsefs"
 )
 
 // daysAgo renders a whole-day age the way a person says it, covering the two
@@ -56,7 +56,7 @@ func ownerSet(e *catalog.Entity, _ Env) Result {
 
 // unreadable says why a file a check needed could not be read.
 //
-// fetch.ErrNotFetched means the file is sitting in the repository and cmd/'s
+// sparsefs.ErrNotFetched means the file is sitting in the repository and cmd/'s
 // content planner never asked the host for its bytes. The sentinel exists
 // precisely so this is not reported as a missing file — the package comment
 // says a missing-file diagnostic "would send somebody to look for a file
@@ -67,7 +67,7 @@ func ownerSet(e *catalog.Entity, _ Env) Result {
 // permission problem, an EISDIR and a truncated read into one sentence that
 // says nothing about any of them.
 func unreadable(p string, err error) string {
-	if errors.Is(err, fetch.ErrNotFetched) {
+	if errors.Is(err, sparsefs.ErrNotFetched) {
 		return fmt.Sprintf("%s is in the repository but its content was never fetched; "+
 			"this is a landsraad bug, not a problem with your catalog", p)
 	}

@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/landsraadhq/landsraad/internal/diag"
-	"github.com/landsraadhq/landsraad/internal/fetch"
+	"github.com/landsraadhq/landsraad/internal/sparsefs"
 )
 
 // CheckFiles verifies that every path an entity points at exists in the
@@ -76,14 +76,14 @@ func CheckFiles(src Sources, cat *Catalog, c *diag.Collector) {
 			info, err := fs.Stat(fsys, f.path)
 			if err != nil {
 				// A file nobody looked for is not a file that is not there.
-				// fetch.ErrNotListed means no listing ever covered this
+				// sparsefs.ErrNotListed means no listing ever covered this
 				// path's directory, so this program does not know whether
 				// the file exists -- and saying "does not exist" is a
 				// statement about somebody's repository that may simply be
 				// false. It matters more since the fetch planner stopped
 				// asking for unlisted paths: this function is now what
 				// diagnoses them.
-				if errors.Is(err, fetch.ErrNotListed) {
+				if errors.Is(err, sparsefs.ErrNotListed) {
 					c.Add(diag.Diagnostic{
 						Severity: diag.SevError,
 						Repo:     e.SourceRepo,

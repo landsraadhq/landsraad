@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+
+	"github.com/landsraadhq/landsraad/internal/sparsefs"
 )
 
 func testEntries() []Entry {
@@ -116,6 +118,82 @@ func TestUnlistedDirectoryIsNotNotExist(t *testing.T) {
 	}
 	if !errors.Is(err, ErrNotListed) {
 		t.Errorf("error = %v, want ErrNotListed", err)
+	}
+}
+
+// A complete listing proves absence at every depth, not just one level
+// down.
+//
+// lookup used to consult the IMMEDIATE parent's listed flag alone, so a
+// dangling path whose parent directory is itself absent read as
+// ErrNotListed — "landsraad never looked" — about a repository landsraad
+// had listed in full. CheckFiles then told the reader to widen a `paths:`
+// that was already `.`, about a file that really was missing, and the
+// identical mistake in a local checkout said missing-file correctly.
+func TestACompleteListingProvesAbsenceAtAnyDepth(t *testing.T) {
+	f := FromEntries([]Entry{
+		{Path: "docs/index.md", SHA: "a"},
+	})
+
+	for _, name := range []string{
+		"docs/runbooks/api.md", // two levels below the deepest listing
+		"docs/runbooks",        // the absent directory itself
+		"apps/edge/runbook.md", // no ancestor of this exists at all
+	} {
+		_, err := fs.Stat(f, name)
+		if errors.Is(err, ErrNotListed) {
+			t.Errorf("Stat %s = ErrNotListed; the whole repository was listed, so this is not "+
+				"a file nobody looked for", name)
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("Stat %s: error = %v, want ErrNotExist", name, err)
+		}
+	}
+}
+
+// The climb stops at the nearest LISTED ancestor, and a present-but-unlisted
+// directory on the way down still means "never looked".
+//
+// This is R28's truncated-tree fallback: the root listing saw apps/ and the
+// descent never went into it. Collapsing this into ErrNotExist would be the
+// false claim the sentinel exists to prevent, in the other direction.
+func TestAPresentButUnlistedAncestorStillReadsAsNeverLooked(t *testing.T) {
+	f := NewFS()
+	f.AddDir(".", []Entry{
+		{Path: "services", Dir: true},
+		{Path: "apps", Dir: true},
+	})
+	f.AddDir("services", []Entry{{Path: "services/api", Dir: true}})
+
+	// apps is in the root listing and was never descended into.
+	_, err := fs.Stat(f, "apps/edge/runbook.md")
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Error("apps/edge/runbook.md reported as ErrNotExist; apps was never listed, so this is a false claim")
+	}
+	if !errors.Is(err, ErrNotListed) {
+		t.Errorf("error = %v, want ErrNotListed", err)
+	}
+
+	// services/api is present but unlisted for the same reason.
+	if _, err := fs.Stat(f, "services/api/runbook.md"); !errors.Is(err, ErrNotListed) {
+		t.Errorf("services/api/runbook.md: error = %v, want ErrNotListed", err)
+	}
+}
+
+// The sentinels are the same values as internal/sparsefs', not copies of
+// them.
+//
+// internal/catalog, internal/render and internal/scorecard match on
+// sparsefs.ErrNotFetched while *FS returns fetch.ErrNotFetched. Re-declaring
+// either with its own errors.New would make every errors.Is in those three
+// packages silently false, and every one of their tests reads the resulting
+// message rather than the identity — so nothing else here would notice.
+func TestSentinelsAreTheSameValuesAsSparsefs(t *testing.T) {
+	if ErrNotFetched != sparsefs.ErrNotFetched {
+		t.Error("fetch.ErrNotFetched is not sparsefs.ErrNotFetched; every stage's errors.Is is now false")
+	}
+	if ErrNotListed != sparsefs.ErrNotListed {
+		t.Error("fetch.ErrNotListed is not sparsefs.ErrNotListed; every stage's errors.Is is now false")
 	}
 }
 

@@ -25,6 +25,8 @@ import (
 	"path"
 	"sort"
 	"time"
+
+	"github.com/landsraadhq/landsraad/internal/sparsefs"
 )
 
 // Entry is one path in a repository's tree.
@@ -43,14 +45,22 @@ type Entry struct {
 // requested. It is a bug in cmd/'s content planner, never a user's mistake,
 // and it is deliberately not ErrNotExist: a missing-file diagnostic would
 // send somebody to look for a file that is sitting in their repository.
-var ErrNotFetched = errors.New("content was listed but never fetched")
+//
+// Declared in internal/sparsefs, which imports nothing, so that the pipeline
+// stages that have to recognise it — internal/catalog, internal/render,
+// internal/scorecard — can do so without importing this package and pulling
+// net/http into their dependency graphs. This is the same value, so
+// errors.Is cannot tell fetch.ErrNotFetched from sparsefs.ErrNotFetched.
+var ErrNotFetched = sparsefs.ErrNotFetched
 
 // ErrNotListed means nothing is known about this path's directory, because
 // no listing ever covered it. Also a planner bug, and also deliberately not
 // ErrNotExist — see spec §14.1 on why telling somebody a file does not
 // exist, when the truth is that landsraad never looked, is worse than
 // saying nothing.
-var ErrNotListed = errors.New("directory was never listed")
+//
+// Declared in internal/sparsefs, for the reason above.
+var ErrNotListed = sparsefs.ErrNotListed
 
 // FS is a repository whose metadata arrives before its content.
 //
@@ -210,6 +220,35 @@ func (f *FS) ReadDir(name string) ([]fs.DirEntry, error) {
 
 // lookup resolves a path to its entry, distinguishing the three answers a
 // sparse filesystem has and a complete one does not.
+//
+// Absent from entries is not yet an answer: whether that is a fact about the
+// repository or a fact about what landsraad bothered to list depends on
+// whether anything ever enumerated a directory the path has to pass through.
+// Consulting only the IMMEDIATE parent was wrong for every path more than
+// one level below the deepest listing. A complete recursive listing holding
+// docs/index.md and no docs/runbooks marks docs listed and leaves
+// docs/runbooks out of entries, which is proof that docs/runbooks/api.md is
+// not there — and the immediate-parent rule answered ErrNotListed,
+// "landsraad never looked for it", about a repository landsraad had listed
+// in full. CheckFiles then told somebody to widen a `paths:` that was
+// already `.`, about a file that really was missing.
+//
+// So climb: the nearest listed ancestor decides. If the segment directly
+// below it is absent from entries, nothing beneath that segment can exist
+// and the answer is ErrNotExist. If that segment is present, the path
+// disappears somewhere below a directory nobody enumerated, and the honest
+// answer is ErrNotListed — which is what keeps
+// TestAddDirDoesNotMarkAncestorsListed and TestUnlistedDirectoryIsNotNotExist
+// true.
+//
+// The climb is exactly as trustworthy as listed, and "." is the one key
+// NewFS sets without proof: a GitLab repository opened on non-root prefixes
+// has a root marked listed whose contents nobody enumerated. The climb
+// INHERITS that, it does not introduce it — the immediate-parent rule
+// already gave the same confident answer for any path one level down, and
+// this only makes deeper paths agree with it. Making the root's flag honest
+// at construction is the separate, known root-listing fix; it is not
+// something a reader of lookup can do.
 func (f *FS) lookup(op, name string) (Entry, error) {
 	if !fs.ValidPath(name) {
 		return Entry{}, &fs.PathError{Op: op, Path: name, Err: fs.ErrInvalid}
@@ -220,10 +259,16 @@ func (f *FS) lookup(op, name string) (Entry, error) {
 	if e, ok := f.entries[name]; ok {
 		return e, nil
 	}
-	// Absent. Whether that is a fact about the repository or a fact about
-	// what landsraad bothered to list depends on the parent.
-	if f.listed[path.Dir(name)] {
-		return Entry{}, &fs.PathError{Op: op, Path: name, Err: fs.ErrNotExist}
+	for child, dir := name, path.Dir(name); ; child, dir = dir, path.Dir(dir) {
+		if f.listed[dir] {
+			if _, ok := f.entries[child]; !ok {
+				return Entry{}, &fs.PathError{Op: op, Path: name, Err: fs.ErrNotExist}
+			}
+			break
+		}
+		if dir == "." {
+			break
+		}
 	}
 	return Entry{}, &fs.PathError{Op: op, Path: name, Err: ErrNotListed}
 }
