@@ -578,3 +578,50 @@ func TestValidateAcceptsAWellFormedCheckResultsFile(t *testing.T) {
 		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitOK, errOut.String())
 	}
 }
+
+// Carry-forward from Task 4/12: both the service.yaml schema-validate loop
+// and validateCheckResults used to hardcode Validate("", ...), so a
+// diagnostic never said which repository it came from once a build read
+// more than one. diag.Text.Write does not render Repo at all, so the exact-
+// message text was untouched by the bug and by this fix; JSON is the only
+// format that carries the field, so this test decodes it directly rather
+// than pattern-matching stderr.
+func TestValidateThreadsTheRepoNameIntoSchemaDiagnostics(t *testing.T) {
+	fsys := genFS()
+	fsys["services/api/service.yaml"] = &fstest.MapFile{Data: []byte("apiVersion: landsraad/v1\nkind: Service\n")}
+	fsys[".landsraad/checks/scan.yaml"] = &fstest.MapFile{Data: []byte(
+		"apiVersion: landsraad/v1\nkind: CheckResults\ngeneratedAt: not-a-date\nresults:\n  - { entity: service:api, check: x, status: pass }\n")}
+
+	var out, errOut bytes.Buffer
+	Validate(fsys, &out, &errOut, diag.JSON{})
+
+	var ds []diag.Diagnostic
+	if err := json.Unmarshal(out.Bytes(), &ds); err != nil {
+		t.Fatalf("stdout must be valid JSON: %v; stderr:\n%s", err, errOut.String())
+	}
+
+	var sawServiceSchema, sawChecksSchema bool
+	for _, d := range ds {
+		if d.Check != "schema" {
+			continue
+		}
+		switch d.File {
+		case "services/api/service.yaml":
+			sawServiceSchema = true
+			if d.Repo != "monorepo" {
+				t.Errorf("service.yaml schema diagnostic Repo = %q, want %q", d.Repo, "monorepo")
+			}
+		case ".landsraad/checks/scan.yaml":
+			sawChecksSchema = true
+			if d.Repo != "monorepo" {
+				t.Errorf("checks-file schema diagnostic Repo = %q, want %q", d.Repo, "monorepo")
+			}
+		}
+	}
+	if !sawServiceSchema {
+		t.Fatalf("expected a schema diagnostic for services/api/service.yaml, got %+v", ds)
+	}
+	if !sawChecksSchema {
+		t.Fatalf("expected a schema diagnostic for .landsraad/checks/scan.yaml, got %+v", ds)
+	}
+}

@@ -43,63 +43,81 @@ func loadCatalog(fsys fs.FS, c *diag.Collector) (*catalog.Catalog, *config.Teams
 	return cat, teams
 }
 
-// loadCatalogScoped is the same composition at a caller-chosen scope, also
-// returning the resolved graph.
-//
-// build needs both: spec §7.1 makes a dangling reference a hard failure
-// under build and a recorded-and-skipped one under validate, because a
-// service repo's CI cannot see entities defined elsewhere. And the portal's
-// dependency pages are drawn from the Graph, which is a value produced BY
-// Resolve rather than state on Catalog (spec §3.1).
+// loadCatalogScoped is the single-repository composition: stages 1, 3, 4
+// and 5 against one filesystem. validate, gen and score all end here, and
+// ruling R30 keeps them there.
 func loadCatalogScoped(fsys fs.FS, scope catalog.Scope, c *diag.Collector) (*catalog.Catalog, *catalog.Graph, *config.Teams) {
-	paths := patternsFor(fsys, c)
-	found, err := discover.Find(fsys, paths)
+	v := defaultValidator(c)
+	if v == nil {
+		return nil, nil, nil
+	}
+	repo := localRepoName(fsys)
+	entities := parseRepo(repo, fsys, patternsFor(fsys, c), v, c)
+	return assemble(entities, catalog.SingleSource(repo, fsys), scope, fsys, c)
+}
+
+// parseRepo runs stages 1 and 3 for one repository: find the catalog files,
+// read them, validate their shape, parse them into entities.
+//
+// It stops there — deliberately. Under ruling R25 cmd/ has to fetch a
+// repository's *content* before stages 4 onwards can run, and it cannot
+// know which files to fetch until the entities are parsed. That is the
+// whole reason this is a separate function from assemble.
+func parseRepo(name string, fsys fs.FS, patterns []string, v *schema.Validator, c *diag.Collector) []*catalog.Entity {
+	found, err := discover.Find(fsys, patterns)
 	if err != nil {
 		c.Add(diag.Diagnostic{
-			Severity: diag.SevError, File: "repos.yaml", Line: 1,
+			Severity: diag.SevError, Repo: name, File: "repos.yaml", Line: 1,
 			Check:   "discover",
 			Message: fmt.Sprintf("cannot search for %s files: %v", discover.Filename, err),
 		})
-		return nil, nil, nil
+		return nil
 	}
-	// Matching nothing at all must be an error here too: gen and score both
-	// call loadCatalog, and without this check an empty-matching repos.yaml
-	// produces a valid-looking empty catalog that gen writes as empty
-	// artifacts and gen --check certifies as up to date forever. Compare
-	// Validate's identical check in validate.go.
 	if len(found) == 0 {
+		// A warning per repository, where it used to be one error for the
+		// whole run. With several repositories, "no service.yaml anywhere"
+		// and "the third repository's paths are wrong" are different
+		// problems, and the second is the apps/-instead-of-services/ bug
+		// the strict repos.yaml decoding already exists to catch. assemble
+		// still errors when the WHOLE catalog is empty.
 		c.Add(diag.Diagnostic{
-			Severity: diag.SevError,
-			File:     "repos.yaml",
-			Line:     1,
-			Check:    "no-entities",
-			Message: fmt.Sprintf("no %s found under any configured path (%s)",
-				discover.Filename, strings.Join(paths, ", ")),
-			Hint: "add a repos.yaml listing the paths your services live under",
+			Severity: diag.SevWarn, Repo: name, File: "repos.yaml", Line: 1,
+			Check: "no-entities",
+			Message: fmt.Sprintf("no %s found in %s under any configured path (%s)",
+				discover.Filename, repoLabel(name), strings.Join(patterns, ", ")),
+			Hint: "check this repository's `paths:` in repos.yaml",
 		})
+		return nil
 	}
 	files := discover.Load(fsys, found, c)
+	for _, f := range files {
+		// name, not "": schema.Validator.Validate takes a repo and the
+		// single-repository caller had nothing to give it. A schema error in
+		// the third repository must say which repository.
+		v.Validate(name, f.Path, f.Data, c)
+	}
+	return catalog.ParseAll(name, files, c)
+}
 
-	validator, err := schema.Default()
-	if err != nil {
+// assemble runs stages 4 and 5 over every repository's entities at once, and
+// loads the configuration that lives in the repository the command is
+// standing in (ruling R34).
+func assemble(entities []*catalog.Entity, src catalog.Sources, scope catalog.Scope, cfg fs.FS, c *diag.Collector) (*catalog.Catalog, *catalog.Graph, *config.Teams) {
+	if len(entities) == 0 {
 		c.Add(diag.Diagnostic{
-			Severity: diag.SevError, File: "schema", Line: 1,
-			Check:   "schema-compile",
-			Message: fmt.Sprintf("cannot compile the embedded schema: %v", err),
+			Severity: diag.SevError, File: "repos.yaml", Line: 1,
+			Check:   "no-entities",
+			Message: fmt.Sprintf("no %s found in any configured repository", discover.Filename),
+			Hint:    "add a repos.yaml listing the paths your services live under",
 		})
 		return nil, nil, nil
 	}
-	for _, f := range files {
-		validator.Validate("", f.Path, f.Data, c)
-	}
-
-	repo := localRepoName(fsys)
-	cat := catalog.NewCatalog(catalog.ParseAll(repo, files, c), c)
-	catalog.CheckFiles(catalog.SingleSource(repo, fsys), cat, c)
+	cat := catalog.NewCatalog(entities, c)
+	catalog.CheckFiles(src, cat, c)
 	g := cat.Resolve(scope, c)
 	reportCycles(cat, g, c)
 
-	teamsData, err := fs.ReadFile(fsys, "teams.yaml")
+	teamsData, err := fs.ReadFile(cfg, "teams.yaml")
 	if err != nil {
 		c.Add(diag.Diagnostic{
 			Severity: diag.SevError, File: "teams.yaml", Line: 1,
@@ -112,6 +130,31 @@ func loadCatalogScoped(fsys fs.FS, scope catalog.Scope, c *diag.Collector) (*cat
 	teams := config.LoadTeams("teams.yaml", teamsData, c)
 	teams.ValidateOwners(cat, c)
 	return cat, g, teams
+}
+
+// repoLabel names a repository in a message, or says "this repository" when
+// there is no name — which is the ordinary case for a checkout with no
+// repos.yaml, where "no service.yaml found in  under any path" would read
+// as a bug.
+func repoLabel(name string) string {
+	if name == "" {
+		return "this repository"
+	}
+	return name
+}
+
+// defaultValidator compiles the embedded schema once per command.
+func defaultValidator(c *diag.Collector) *schema.Validator {
+	v, err := schema.Default()
+	if err != nil {
+		c.Add(diag.Diagnostic{
+			Severity: diag.SevError, File: "schema", Line: 1,
+			Check:   "schema-compile",
+			Message: fmt.Sprintf("cannot compile the embedded schema: %v", err),
+		})
+		return nil
+	}
+	return v
 }
 
 // Gen writes the derived artifacts, or under check reports which are stale.

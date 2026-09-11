@@ -50,6 +50,13 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter) int {
 	}
 	files := discover.Load(fsys, paths, &c)
 
+	// repo names this repository in every diagnostic below: schema
+	// violations, check-results violations, and — a few lines down —
+	// parsed-entity provenance. Computed once, here, so the schema-validate
+	// loop and validateCheckResults do not hardcode "" the way the parse
+	// step below always named repo correctly.
+	repo := localRepoName(fsys)
+
 	// 2. schema — structural validation, the precise messages
 	validator, err := schema.Default()
 	if err != nil {
@@ -57,12 +64,11 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter) int {
 		return exitUsage
 	}
 	for _, file := range files {
-		validator.Validate("", file.Path, file.Data, &c)
+		validator.Validate(repo, file.Path, file.Data, &c)
 	}
-	validateCheckResults(fsys, &c)
+	validateCheckResults(fsys, repo, &c)
 
 	// 3. parse and merge — pure, no IO
-	repo := localRepoName(fsys)
 	cat := catalog.NewCatalog(catalog.ParseAll(repo, files, &c), &c)
 
 	// 4. resolve — LocalOnly: this repo cannot see entities defined elsewhere
@@ -99,7 +105,11 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter) int {
 // need the merged catalog and a clock, which would make validate neither
 // hermetic nor offline — and being both is what lets it run in every service
 // repo's PR CI with no tokens and no network.
-func validateCheckResults(fsys fs.FS, c *diag.Collector) {
+//
+// repo is this repository's name, for provenance on any schema diagnostic —
+// the same reason the caller now threads it through the service.yaml
+// validation loop above, rather than hardcoding "".
+func validateCheckResults(fsys fs.FS, repo string, c *diag.Collector) {
 	entries, err := fs.ReadDir(fsys, scorecard.ChecksDir)
 	if err != nil {
 		// No directory is not a problem: most repositories report no external
@@ -129,7 +139,7 @@ func validateCheckResults(fsys fs.FS, c *diag.Collector) {
 			})
 			continue
 		}
-		v.Validate("", path, data, c)
+		v.Validate(repo, path, data, c)
 	}
 }
 
