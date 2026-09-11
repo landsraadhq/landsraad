@@ -726,6 +726,50 @@ func TestARunbookThatIsTheDocsIndexIsNotReportedUnreadable(t *testing.T) {
 	}
 }
 
+// Ruling R41: Repo names the repository that holds File, not the
+// repository the command is standing in. A satellite entity's docs
+// diagnostic must therefore carry the satellite's repository — otherwise a
+// multi-repository build prints this line with no repository prefix beside
+// lines that have one, telling the reader the file is local when it is in
+// a fetched repository.
+func TestADocDiagnosticFromASatelliteEntityCarriesItsRepository(t *testing.T) {
+	e := ent("api", catalog.KindService, "team-payments", 1)
+	e.SourceRepo = "edge-gateway"
+	e.Spec.Docs = "services/api/docs"
+	files := fstest.MapFS{
+		"services/api/docs/broken.md": {Data: []byte("# Broken\n\nUnreachable.\n")},
+	}
+	in := Input{Sources: catalog.Sources{
+		"edge-gateway": failFS{MapFS: files, path: "services/api/docs/broken.md"},
+	}}
+	dt, err := templateSet(webFS, "doc.html")
+	if err != nil {
+		t.Fatalf("templateSet: %v", err)
+	}
+
+	var c diag.Collector
+	docsFor(in, e, dt, md.New(), &c)
+
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(ds), ds)
+	}
+	got := ds[0]
+	if got.Repo != "edge-gateway" {
+		t.Errorf("Repo = %q, want %q", got.Repo, "edge-gateway")
+	}
+	if got.File != "services/api/docs/broken.md" {
+		t.Errorf("File = %q, want %q", got.File, "services/api/docs/broken.md")
+	}
+	if got.Check != "docs-unreadable" {
+		t.Errorf("Check = %q, want %q", got.Check, "docs-unreadable")
+	}
+	wantMsg := "cannot read services/api/docs/broken.md: open services/api/docs/broken.md: permission denied"
+	if got.Message != wantMsg {
+		t.Errorf("Message = %q, want %q", got.Message, wantMsg)
+	}
+}
+
 // Two entities in different repositories naming the same relative docs path
 // must render different documents. Before Plan 4 there was one fs.FS for the
 // whole catalog, so the second entity would have silently rendered the

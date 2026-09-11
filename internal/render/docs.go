@@ -213,6 +213,7 @@ func unreadableDoc(e *catalog.Entity, repoPath string, err error) diag.Diagnosti
 	if errors.Is(err, sparsefs.ErrNotFetched) {
 		return diag.Diagnostic{
 			Severity: diag.SevError, File: repoPath, Line: 1,
+			Repo:    e.SourceRepo,
 			Entity:  e.Metadata.Name,
 			Check:   "docs-unreadable",
 			Message: fmt.Sprintf("%s is in the repository but its content was never fetched", repoPath),
@@ -222,6 +223,7 @@ func unreadableDoc(e *catalog.Entity, repoPath string, err error) diag.Diagnosti
 	}
 	return diag.Diagnostic{
 		Severity: diag.SevError, File: repoPath, Line: 1,
+		Repo:    e.SourceRepo,
 		Entity:  e.Metadata.Name,
 		Check:   "docs-unreadable",
 		Message: fmt.Sprintf("cannot read %s: %v", repoPath, err),
@@ -285,6 +287,7 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 		if err != nil {
 			c.Add(diag.Diagnostic{
 				Severity: diag.SevError, File: repoPath, Line: 1,
+				Repo:    e.SourceRepo,
 				Entity:  e.Metadata.Name,
 				Check:   "docs-render",
 				Message: fmt.Sprintf("cannot render %s: %v", repoPath, err),
@@ -312,6 +315,7 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 		if err != nil {
 			c.Add(diag.Diagnostic{
 				Severity: diag.SevError, File: e.Spec.Docs, Line: 1,
+				Repo:    e.SourceRepo,
 				Entity:  e.Metadata.Name,
 				Check:   "docs-unreadable",
 				Message: fmt.Sprintf("cannot read the documentation directory %s: %v", e.Spec.Docs, err),
@@ -372,6 +376,7 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 		if !emit.ValidPath(sitePath) {
 			c.Add(diag.Diagnostic{
 				Severity: diag.SevWarn, File: repoPath, Line: 1,
+				Repo:   e.SourceRepo,
 				Entity: e.Metadata.Name,
 				Check:  "docs-filename",
 				Message: fmt.Sprintf("cannot publish %s: its name would make the page path %q, which landsraad cannot write",
