@@ -500,3 +500,36 @@ func TestFailureMessage(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildExitsWhenReposYAMLIsMalformed pins newBuildCmd's own openRepos
+// gate (RunE: "if c.HasErrors() { os.Exit(exitUsage) }"), which had no
+// subprocess test of its own even though serve's identical gate
+// (TestServeWithoutWatchExitsWhenReposYAMLIsMalformed) does.
+//
+// This asserts today's ACTUAL behaviour, not a considered one: build exits
+// 1 (exitUsage) for the same malformed repos.yaml that validate and serve
+// exit 2 (exitValidation) for. repos-url is somebody's YAML being wrong,
+// which is what exitValidation means everywhere else in this codebase, so
+// build looks like the odd one out. But exit codes are a one-way door here,
+// and resolving that asymmetry is a decision for Q to make deliberately,
+// not a side effect of the task that happened to notice it. This test
+// exists to make the inconsistency visible and pinned, not to endorse it.
+func TestBuildExitsWhenReposYAMLIsMalformed(t *testing.T) {
+	dir := materialize(t, map[string]string{
+		"teams.yaml": "teams:\n  - name: team-payments\n    members: [alice]\n    slack: \"#pay\"\n    pagerduty: PAY\n",
+		"repos.yaml": "repos:\n  - url: git@github.com:org/monorepo.git\n    paths: [services/*]\n",
+		"services/ledger-api/service.yaml": "apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: ledger-api\n" +
+			"  owner: team-payments\n  tier: 1\n  lifecycle: production\nspec:\n" +
+			"  path: services/ledger-api\n",
+	})
+	r := run(t, dir, "build")
+	if r.exitCode != exitUsage {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", r.exitCode, exitUsage, r.stderr)
+	}
+	want := "error: repos.yaml:2 [repos-url]\n" +
+		"  repository url must begin with https://, got \"git@github.com:org/monorepo.git\"\n" +
+		"  hint: write it as https://github.com/org/monorepo\n"
+	if r.stderr != want {
+		t.Errorf("stderr = %q, want %q", r.stderr, want)
+	}
+}

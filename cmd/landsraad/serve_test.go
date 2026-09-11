@@ -394,7 +394,7 @@ func TestRebuildAfterAGoodBuildKeepsServingLastGoodSite(t *testing.T) {
 	}
 }
 
-// TestRebuildRefusesAMalformedReposYAML is Task 13 fix-round-1 finding #1,
+// TestOpenReposReportsAMalformedReposYAML is Task 13 fix-round-1 finding #1,
 // re-pinned at its Task 14 home.
 //
 // Before Task 14, singleRepoWorkspace's diagnostics went into a throwaway
@@ -408,9 +408,15 @@ func TestRebuildAfterAGoodBuildKeepsServingLastGoodSite(t *testing.T) {
 // edit to it after startup needs a restart, like any other remote. The gate
 // this test pins moved with the parse: it is openRepos's own collector,
 // checked once in newServeCmd's RunE before Serve is ever called, exactly
-// as build and validate both refuse on the same diagnostic. That is what
-// this test now exercises directly, rather than through newRebuild.
-func TestRebuildRefusesAMalformedReposYAML(t *testing.T) {
+// as build and validate both refuse on the same diagnostic.
+//
+// This test exercises only the collector openRepos fills, not the refusal
+// itself -- newServeCmd's gate is an inline os.Exit in RunE, the same
+// un-extracted shape newBuildCmd's own gate already has, and there is no
+// second caller here to justify extracting one just to make this test more
+// direct. TestServeWithoutWatchExitsWhenReposYAMLIsMalformed and its
+// --watch sibling below pin the actual refusal, through the real binary.
+func TestOpenReposReportsAMalformedReposYAML(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "teams.yaml",
 		"teams:\n  - name: team-payments\n    members: [alice]\n    slack: \"#pay\"\n    pagerduty: PAY\n")
@@ -513,14 +519,22 @@ func TestWithLocalOnAnAllRemoteWorkspace(t *testing.T) {
 // repos.yaml, like every remote it names, is read once, at startup -- so an
 // edit to its paths: needs a restart just as much as an edit to a remote
 // repository does. Exact-string tested per the project's rule that every
-// new user-facing string ships with one.
+// new user-facing string ships with one -- against an independent literal,
+// not against watchHelp itself: comparing the flag's Usage to the same
+// constant newServeCmd registered it with proves only that cobra stores
+// what it is given, and would still pass with the whole sentence below
+// deleted.
 func TestWatchFlagHelpAdmitsReposYAMLIsReadOnce(t *testing.T) {
 	flag := newServeCmd().Flags().Lookup("watch")
 	if flag == nil {
 		t.Fatal("newServeCmd has no --watch flag")
 	}
-	if flag.Usage != watchHelp {
-		t.Errorf("--watch help = %q, want %q", flag.Usage, watchHelp)
+	want := "rebuild when a file changes. Only the local repository is watched: " +
+		"remote repositories are fetched once at startup, and picking up a " +
+		"change in one needs a restart. repos.yaml itself is also read only " +
+		"once, so an edit to it (most often its paths:) needs a restart too"
+	if flag.Usage != want {
+		t.Errorf("--watch help = %q, want %q", flag.Usage, want)
 	}
 }
 
@@ -609,6 +623,44 @@ func TestServeWithoutWatchExitsWhenReposYAMLIsMalformed(t *testing.T) {
 	}
 }
 
+// TestServeWithWatchAlsoExitsWhenReposYAMLIsMalformed is
+// TestServeWithoutWatchExitsWhenReposYAMLIsMalformed's --watch counterpart,
+// and the two must behave identically here.
+//
+// Before Task 14, --watch tolerated a bad first build (repos.yaml or
+// otherwise): the server stayed up answering 503, because a later save
+// could fix it (TestServeWithWatchRespondsThenRecoversAfterAFailedFirstBuild
+// pins exactly that, for a broken catalog). repos.yaml is different since
+// Task 14 -- it is read exactly once, before the first build, so no later
+// save can ever reach it, and errInitialBuildFailed's own doc comment says
+// as much: "There is no later save that could fix it and nothing to
+// serve." --watch must not be read as a reason to tolerate this one.
+//
+// Nothing here currently makes --watch special-case this gate, and nothing
+// should: the risk is a future change that guards the openRepos gate with
+// `if !watch`, reasoning by analogy to the broken-catalog case above. The
+// sibling test above would not catch that regression, since it never
+// passes --watch at all.
+func TestServeWithWatchAlsoExitsWhenReposYAMLIsMalformed(t *testing.T) {
+	dir := materialize(t, map[string]string{
+		"teams.yaml": "teams:\n  - name: team-payments\n    members: [alice]\n    slack: \"#pay\"\n    pagerduty: PAY\n",
+		"repos.yaml": "repos:\n  - url: git@github.com:org/monorepo.git\n    paths: [services/*]\n",
+		"services/ledger-api/service.yaml": "apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: ledger-api\n" +
+			"  owner: team-payments\n  tier: 1\n  lifecycle: production\nspec:\n" +
+			"  path: services/ledger-api\n",
+	})
+	r := run(t, dir, "serve", "--watch")
+	if r.exitCode != exitValidation {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", r.exitCode, exitValidation, r.stderr)
+	}
+	want := "error: repos.yaml:2 [repos-url]\n" +
+		"  repository url must begin with https://, got \"git@github.com:org/monorepo.git\"\n" +
+		"  hint: write it as https://github.com/org/monorepo\n"
+	if r.stderr != want {
+		t.Errorf("stderr = %q, want %q", r.stderr, want)
+	}
+}
+
 // utcNow is the clock newServeCmd injects, spelled once so the tests exercise
 // the same shape the command does.
 func utcNow() time.Time { return time.Now().UTC() }
@@ -619,7 +671,7 @@ func utcNow() time.Time { return time.Now().UTC() }
 // only returns on an error, and the --watch goroutine and its fsnotify watcher
 // live as long as the process. The two tests that call Serve in a goroutine
 // (TestServeWithWatchRespondsThenRecoversAfterAFailedFirstBuild and
-// TestServeWithWatchRebuildsOnAChange) therefore each leak one goroutine, one
+// TestServeWithWatchReflectsAnEditAfterAGoodBuild) therefore each leak one goroutine, one
 // listener and one fsnotify file descriptor for the lifetime of the test
 // binary. That is deliberate and it is affordable at two.
 //
