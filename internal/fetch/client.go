@@ -27,6 +27,10 @@ type ClientOptions struct {
 	// Sleep is how the client waits between retries. Injected so the test
 	// suite runs in milliseconds instead of in the backoff schedule.
 	Sleep func(time.Duration)
+	// Now is the client's clock, read only to judge whether a retry could
+	// outlast a spent rate limit (ruling R44). Injected for the reason Sleep
+	// is, and defaulted the same way.
+	Now func() time.Time
 }
 
 // Client is one host's API, already authenticated.
@@ -39,13 +43,14 @@ type Client struct {
 	headers     map[string]string
 	maxAttempts int
 	sleep       func(time.Duration)
+	now         func() time.Time
 }
 
 func NewClient(o ClientOptions) *Client {
 	c := &Client{
 		http: o.HTTP, base: strings.TrimSuffix(o.BaseURL, "/"),
 		token: o.Token, authHeader: o.AuthHeader, authPrefix: o.AuthPrefix,
-		headers: o.Headers, maxAttempts: o.MaxAttempts, sleep: o.Sleep,
+		headers: o.Headers, maxAttempts: o.MaxAttempts, sleep: o.Sleep, now: o.Now,
 	}
 	if c.http == nil {
 		c.http = &http.Client{Timeout: 30 * time.Second}
@@ -55,6 +60,9 @@ func NewClient(o ClientOptions) *Client {
 	}
 	if c.sleep == nil {
 		c.sleep = time.Sleep
+	}
+	if c.now == nil {
+		c.now = time.Now
 	}
 	return c
 }
@@ -131,7 +139,11 @@ func (c *Client) Get(ctx context.Context, endpoint string, query url.Values, acc
 		if !retryable(err) || attempt == c.maxAttempts {
 			return nil, nil, err
 		}
-		c.sleep(backoff(attempt, err))
+		wait := backoff(attempt, err)
+		if c.tooEarlyToRetry(err, wait) {
+			return nil, nil, err
+		}
+		c.sleep(wait)
 	}
 	return nil, nil, last
 }
@@ -259,6 +271,22 @@ func retryable(err error) bool {
 		return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 	}
 	return se.Status/100 == 5 || IsRateLimited(err)
+}
+
+// tooEarlyToRetry reports a spent rate limit that waiting wait cannot
+// outlast: the host named when its quota returns, and a retry after wait
+// would still come before that. Retrying then spends a request, and the
+// build's time, to be told the same thing, and failureMessage already names
+// the reset time, which is the advice that helps (ruling R44).
+//
+// A host that sent Retry-After is obeyed instead: it said how long to wait,
+// and backoff already waits exactly that.
+func (c *Client) tooEarlyToRetry(err error, wait time.Duration) bool {
+	var se *StatusError
+	if !IsRateLimited(err) || !errors.As(err, &se) || se.RetryAfter > 0 || se.RateReset.IsZero() {
+		return false
+	}
+	return c.now().Add(wait).Before(se.RateReset)
 }
 
 // backoff is 1s, 2s, 4s, unless the host said how long to wait.

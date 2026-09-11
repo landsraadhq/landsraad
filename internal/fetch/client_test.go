@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func testClient(t *testing.T, h http.HandlerFunc) (*Client, *httptest.Server) {
@@ -304,6 +307,82 @@ func TestGetDoesNotRetryACancelledRequest(t *testing.T) {
 			}
 			if sleeps != 0 {
 				t.Errorf("slept %d times before giving up on a cancelled request, want 0", sleeps)
+			}
+		})
+	}
+}
+
+// Ruling R44. A 403 for a spent quota names when the quota returns, and a
+// retry that fires before then cannot succeed: it spends a request, and the
+// build's time, to be told the same thing. The client used to retry at 1s and
+// 2s regardless. A reset inside the backoff is still worth waiting for, and a
+// host that sends Retry-After is still obeyed.
+func TestClientDoesNotRetryARateLimitBeforeItResets(t *testing.T) {
+	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name      string
+		headers   map[string]string
+		wantCalls int
+		wantSleep []time.Duration
+	}{
+		{
+			name: "reset an hour away: one call, no sleeps",
+			headers: map[string]string{
+				"X-RateLimit-Remaining": "0",
+				"X-RateLimit-Reset":     strconv.FormatInt(now.Add(time.Hour).Unix(), 10),
+			},
+			wantCalls: 1,
+		},
+		{
+			name: "reset inside the backoff: retried as before",
+			headers: map[string]string{
+				"X-RateLimit-Remaining": "0",
+				"X-RateLimit-Reset":     strconv.FormatInt(now.Unix(), 10),
+			},
+			wantCalls: 3, wantSleep: []time.Duration{time.Second, 2 * time.Second},
+		},
+		{
+			name:      "no reset named: retried as before",
+			headers:   map[string]string{"X-RateLimit-Remaining": "0"},
+			wantCalls: 3, wantSleep: []time.Duration{time.Second, 2 * time.Second},
+		},
+		{
+			name: "Retry-After is obeyed whatever the reset says",
+			headers: map[string]string{
+				"X-RateLimit-Remaining": "0",
+				"X-RateLimit-Reset":     strconv.FormatInt(now.Add(time.Hour).Unix(), 10),
+				"Retry-After":           "7",
+			},
+			wantCalls: 3, wantSleep: []time.Duration{7 * time.Second, 7 * time.Second},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				for k, v := range tt.headers {
+					w.Header().Set(k, v)
+				}
+				w.WriteHeader(http.StatusForbidden)
+			}))
+			t.Cleanup(srv.Close)
+			var slept []time.Duration
+			c := NewClient(ClientOptions{
+				HTTP: srv.Client(), BaseURL: srv.URL, MaxAttempts: 3,
+				Sleep: func(d time.Duration) { slept = append(slept, d) },
+				Now:   func() time.Time { return now },
+			})
+
+			_, _, err := c.Get(context.Background(), "/repos/o/r", nil, "")
+
+			if !IsRateLimited(err) {
+				t.Fatalf("err = %v, want the rate limit returned", err)
+			}
+			if calls != tt.wantCalls {
+				t.Errorf("calls = %d, want %d", calls, tt.wantCalls)
+			}
+			if diff := cmp.Diff(tt.wantSleep, slept); diff != "" {
+				t.Errorf("sleeps mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
