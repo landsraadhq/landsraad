@@ -10,6 +10,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
@@ -92,10 +93,90 @@ type workspace struct {
 	// a ref which no tree listing answers and no blob cache can hold
 	// (ruling R35). Nothing else touches a Fetcher after openRepos returns.
 	fetchers map[string]fetch.Fetcher
+	// edits is where that one caller puts the errors it cannot return.
+	// Shared by pointer across WithLocal, because serve --watch builds from
+	// a per-rebuild copy while the LastEditFunc it scores with was built
+	// once, at startup, against this original.
+	edits *lastEditLog
 }
 
 func (w *workspace) Sources() catalog.Sources { return w.sources }
 func (w *workspace) Failures() []repoFailure  { return w.failures }
+
+// RecordLastEditFailure notes that a host could not answer docs-fresh.
+func (w *workspace) RecordLastEditFailure(repo string, err error) { w.edits.record(repo, err) }
+
+// TakeLastEditFailures returns what the scoring pass recorded, and empties
+// the log so the next build reports its own failures rather than every
+// failure since startup.
+func (w *workspace) TakeLastEditFailures() []repoEditFailure { return w.edits.take() }
+
+// repoEditFailure is one repository whose host could not say when a path was
+// last changed.
+type repoEditFailure struct {
+	Repo string
+	Err  error
+}
+
+// lastEditLog is the errors docs-fresh cannot return.
+//
+// scorecard.LastEditFunc answers (time.Time, bool) and has no error channel:
+// false means "this host has no answer". An expired token, a spent rate
+// limit and a host 500 all arrived as an error that multiLastEdit discarded,
+// so every entity in every remote repository rendered docs-fresh:
+// not-reported — byte-identical to a host that genuinely has no answer — and
+// build exited 0 with a portal carrying no banner. That is exactly the
+// silent degradation reportFetchFailures exists to prevent for phases 1 and
+// 2, and it was visible in neither stderr nor the artifact.
+//
+// It lives on the workspace because that is the value multiLastEdit already
+// captures, and because a host failure is a fact about a repository the
+// workspace owns. Build drains it after Score and before render.Input.
+//
+// Behind a mutex. Score calls LastEditFunc from one goroutine today, and
+// nothing in LastEditFunc's signature says it must.
+type lastEditLog struct {
+	mu   sync.Mutex
+	errs map[string]error
+}
+
+func newLastEditLog() *lastEditLog { return &lastEditLog{errs: map[string]error{}} }
+
+// record keeps the FIRST error per repository. A repository whose token died
+// fails for every path in every entity it holds; saying so once is the
+// point, and a hundred identical lines would bury the one that matters.
+//
+// A nil receiver records nothing, and that is a real state rather than a
+// swallowed failure: a workspace with no fetchers — every test literal in
+// this package, and openRepos' early return — has no remote host that could
+// fail, because multiLastEdit returns before it ever reaches one.
+func (l *lastEditLog) record(repo string, err error) {
+	if l == nil || err == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, seen := l.errs[repo]; !seen {
+		l.errs[repo] = err
+	}
+}
+
+// take drains the log, sorted by repository so a banner and a diagnostic
+// read the same on every run.
+func (l *lastEditLog) take() []repoEditFailure {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]repoEditFailure, 0, len(l.errs))
+	for repo, err := range l.errs {
+		out = append(out, repoEditFailure{Repo: repo, Err: err})
+	}
+	clear(l.errs)
+	sort.Slice(out, func(i, j int) bool { return out[i].Repo < out[j].Repo })
+	return out
+}
 
 // FetcherFor returns the adapter behind a repository, if it has one. The
 // local repository has none: its history comes from git.
@@ -137,6 +218,9 @@ func (w *workspace) WithLocal(fsys fs.FS) *workspace {
 		sources:  w.sources.With(w.local, fsys),
 		patterns: w.patterns, local: w.local, failures: w.failures,
 		fetchers: w.fetchers,
+		// Shared, not copied: the LastEditFunc scoring this rebuild was
+		// built from the original workspace at startup and writes there.
+		edits: w.edits,
 	}
 }
 
@@ -152,7 +236,7 @@ func (w *workspace) WithLocal(fsys fs.FS) *workspace {
 func openRepos(ctx context.Context, o reposOptions, c *diag.Collector) *workspace {
 	v := defaultValidator(c)
 	if v == nil {
-		return &workspace{sources: catalog.Sources{}, patterns: map[string][]string{}, fetchers: map[string]fetch.Fetcher{}}
+		return &workspace{sources: catalog.Sources{}, patterns: map[string][]string{}, fetchers: map[string]fetch.Fetcher{}, edits: newLastEditLog()}
 	}
 	repos := loadReposFile(o.RootFS, c)
 
@@ -163,6 +247,7 @@ func openRepos(ctx context.Context, o reposOptions, c *diag.Collector) *workspac
 		sources:  catalog.Sources{},
 		patterns: map[string][]string{},
 		fetchers: map[string]fetch.Fetcher{},
+		edits:    newLastEditLog(),
 	}
 	var failures []repoFailure
 

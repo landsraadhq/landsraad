@@ -76,6 +76,17 @@ func Build(root fs.FS, w *workspace, errOut io.Writer, opts BuildOptions) ([]emi
 		LastEdit:       opts.LastEdit,
 	}, &c)
 
+	// docs-fresh is the one check that asks a host API from inside a stage
+	// (ruling R35), and scorecard.LastEditFunc has no way to report that the
+	// host refused. Drain what it recorded here — after Score, before
+	// render.Input — so a dead token reaches stderr AND the artifact instead
+	// of rendering as not-reported for every entity in every remote
+	// repository.
+	editFails := w.TakeLastEditFailures()
+	for _, f := range editFails {
+		c.Add(lastEditDiagnostic(f))
+	}
+
 	// nil History and unreadable History are different answers, and the
 	// scorecard page renders them differently. Discarding the error collapsed
 	// a permission problem, an EISDIR and a truncated read into "no file",
@@ -100,7 +111,7 @@ func Build(root fs.FS, w *workspace, errOut io.Writer, opts BuildOptions) ([]emi
 		HistoryUnreadable: historyErr != nil && !errors.Is(historyErr, fs.ErrNotExist),
 		Sources:           w.Sources(), Mermaid: opts.Mermaid,
 		GeneratedAt: opts.Now, Version: opts.Version,
-		Notice: partialBanner(w.Failures()),
+		Notice: partialBanner(w.Failures(), editFails),
 	}
 	files := render.Site(in, &c)
 
@@ -182,6 +193,33 @@ func failureMessage(f repoFailure) string {
 	}
 }
 
+// lastEditDiagnostic reports a host that could not say when a repository's
+// files last changed.
+//
+// SevWarn, not SevError: everything else in the portal is still true, and
+// refusing to build over a rate-limited commits endpoint would fail a build
+// whose catalog is fine. But it cannot be silent — "docs-fresh:
+// not-reported" for a whole repository and "nobody has dated these docs" are
+// opposite facts that render identically.
+//
+// The hint names only the per-repository variable. failureMessage can also
+// name the host-wide one because a repoFailure carries the kind HostKind
+// resolved; nothing reaches here but a repository name, and inventing
+// GITHUB_TOKEN for what might be a self-hosted GitLab is the guess that
+// comment exists to avoid.
+func lastEditDiagnostic(f repoEditFailure) diag.Diagnostic {
+	return diag.Diagnostic{
+		Severity: diag.SevWarn,
+		Repo:     f.Repo,
+		File:     "repos.yaml",
+		Line:     1,
+		Check:    "docs-fresh-unavailable",
+		Message:  fmt.Sprintf("cannot ask %s's host when its files last changed: %v", f.Repo, f.Err),
+		Hint: fmt.Sprintf("docs-fresh is reported as not-reported for every entity in this repository; "+
+			"check that %s is current and that the host is reachable", tokenVarName(f.Repo)),
+	}
+}
+
 // partialBanner is the degraded-mode notice stamped into every page.
 //
 // It NAMES the repositories. partialNotice, the scaffold this replaces,
@@ -191,21 +229,42 @@ func failureMessage(f repoFailure) string {
 // actually failed. This is that -- partialNotice was deleted in Plan 4
 // Task 13 (ruling R32). A build with no fetch failures renders an empty
 // Notice: see TestPartialBanner's "none" case.
-func partialBanner(fails []repoFailure) string {
-	if len(fails) == 0 {
-		return ""
+//
+// It carries two degraded modes, because there are two. A repository that
+// could not be fetched is missing from the catalog entirely; a repository
+// whose host would not answer docs-fresh is in the catalog with its
+// freshness data missing. Both are things a reader of this portal has to
+// know before trusting it, and the second used to be announced nowhere at
+// all.
+func partialBanner(fails []repoFailure, edits []repoEditFailure) string {
+	var parts []string
+	if len(fails) > 0 {
+		names := make([]string, 0, len(fails))
+		for _, f := range fails {
+			names = append(names, f.Name)
+		}
+		sort.Strings(names)
+		possessive := "their"
+		if len(names) == 1 {
+			possessive = "its"
+		}
+		parts = append(parts, fmt.Sprintf("This portal is incomplete: %s could not be read, so %s services are "+
+			"missing from this catalog.", englishList(names), possessive))
 	}
-	names := make([]string, 0, len(fails))
-	for _, f := range fails {
-		names = append(names, f.Name)
+	if len(edits) > 0 {
+		names := make([]string, 0, len(edits))
+		for _, f := range edits {
+			names = append(names, f.Repo)
+		}
+		sort.Strings(names)
+		hosts, possessive := "their hosts", "their"
+		if len(names) == 1 {
+			hosts, possessive = "its host", "its"
+		}
+		parts = append(parts, fmt.Sprintf("Documentation freshness is unknown for %s: %s did not answer, "+
+			"so docs-fresh is not reported for %s services.", englishList(names), hosts, possessive))
 	}
-	sort.Strings(names)
-	possessive := "their"
-	if len(names) == 1 {
-		possessive = "its"
-	}
-	return fmt.Sprintf("This portal is incomplete: %s could not be read, so %s services are "+
-		"missing from this catalog.", englishList(names), possessive)
+	return strings.Join(parts, " ")
 }
 
 // englishList renders "a", "a and b", "a, b and c". A banner is read by a
@@ -279,6 +338,13 @@ func multiLastEdit(ctx context.Context, root string, w *workspace) scorecard.Las
 		}
 		t, known, err := f.LastEdit(ctx, p)
 		if err != nil {
+			// Recorded, not swallowed. false is still the right answer for
+			// docs-fresh — there is no date — but false alone is
+			// indistinguishable from a host that genuinely has none, and an
+			// expired token produces it for every entity in this
+			// repository. Build drains this after Score and turns it into a
+			// diagnostic and a banner (see lastEditLog).
+			w.RecordLastEditFailure(repo, err)
 			return time.Time{}, false
 		}
 		return t, known

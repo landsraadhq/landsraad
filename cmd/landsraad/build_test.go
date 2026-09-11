@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"io/fs"
@@ -387,6 +388,102 @@ func TestBuildAllowPartialNamesTheFailures(t *testing.T) {
 	}
 }
 
+// errFetcher is a host that refuses to say when anything last changed.
+//
+// Only LastEdit is reachable: these tests build a workspace directly rather
+// than through openRepos, so a call to Open, Expand or Fetch would mean the
+// test is exercising something it did not mean to.
+type errFetcher struct{ err error }
+
+func (f errFetcher) Open(context.Context, []string) (*fetch.FS, error) {
+	panic("errFetcher.Open: openRepos is not part of this test")
+}
+func (f errFetcher) Expand(context.Context, *fetch.FS, []string) error {
+	panic("errFetcher.Expand: openRepos is not part of this test")
+}
+func (f errFetcher) Fetch(context.Context, *fetch.FS, []string) error {
+	panic("errFetcher.Fetch: openRepos is not part of this test")
+}
+func (f errFetcher) LastEdit(context.Context, string) (time.Time, bool, error) {
+	return time.Time{}, false, f.err
+}
+
+// remoteWithTwoDocumentedServices is a fetched repository holding two
+// entities that both have documentation, so docs-fresh asks its host twice.
+func remoteWithTwoDocumentedServices() fstest.MapFS {
+	service := func(name string) []byte {
+		return []byte("apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: " + name +
+			"\n  owner: team-payments\n  tier: 1\n  lifecycle: production\nspec:\n  path: " + name +
+			"\n  docs: " + name + "/docs\n")
+	}
+	return fstest.MapFS{
+		"edge/service.yaml":   {Data: service("edge")},
+		"edge/docs/index.md":  {Data: []byte("# Edge\n\nHow the gateway works.\n")},
+		"relay/service.yaml":  {Data: service("relay")},
+		"relay/docs/index.md": {Data: []byte("# Relay\n\nHow the relay works.\n")},
+	}
+}
+
+// A host that cannot answer docs-fresh must reach stderr AND the artifact.
+//
+// scorecard.LastEditFunc is (time.Time, bool) with no error channel, and
+// multiLastEdit used to discard the error: an expired GITHUB_TOKEN, a spent
+// rate limit or a host 500 during Score rendered as "docs-fresh:
+// not-reported" for every entity in every remote repository, byte-identical
+// to a host that genuinely has no answer, with build exiting 0 and the
+// portal carrying no banner. That is the silent degradation
+// reportFetchFailures exists to prevent for phases 1 and 2.
+func TestBuildReportsAHostThatCannotAnswerDocsFresh(t *testing.T) {
+	w := &workspace{
+		sources: catalog.Sources{
+			"platform":     goodFixtureFS(t),
+			"edge-gateway": remoteWithTwoDocumentedServices(),
+		},
+		patterns: map[string][]string{"platform": {"services/*"}, "edge-gateway": {"*"}},
+		local:    "platform",
+		fetchers: map[string]fetch.Fetcher{
+			"edge-gateway": errFetcher{err: errors.New("GET /repos/org/edge-gateway/commits: HTTP 401: Bad credentials")},
+		},
+		edits: newLastEditLog(),
+	}
+
+	var errOut bytes.Buffer
+	files, code := Build(goodFixtureFS(t), w, &errOut, BuildOptions{
+		Now: buildNow, Version: "test",
+		LastEdit: multiLastEdit(context.Background(), t.TempDir(), w),
+	})
+	if code != exitOK {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitOK, errOut.String())
+	}
+
+	wantDiag := "warn: repos.yaml:1 [docs-fresh-unavailable]\n" +
+		"  cannot ask edge-gateway's host when its files last changed: " +
+		"GET /repos/org/edge-gateway/commits: HTTP 401: Bad credentials\n" +
+		"  hint: docs-fresh is reported as not-reported for every entity in this repository; " +
+		"check that LANDSRAAD_TOKEN_EDGE_GATEWAY is current and that the host is reachable\n"
+	if got := errOut.String(); !strings.Contains(got, wantDiag) {
+		t.Errorf("stderr =\n%s\nmust contain\n%s", got, wantDiag)
+	}
+	// Once, not once per file. Both entities in this repository asked, and a
+	// repository whose token died fails for every path in it.
+	if n := strings.Count(errOut.String(), "[docs-fresh-unavailable]"); n != 1 {
+		t.Errorf("the failure is reported %d times, want 1: two entities asked the same dead host", n)
+	}
+
+	wantBanner := "Documentation freshness is unknown for edge-gateway: its host did not answer, " +
+		"so docs-fresh is not reported for its services."
+	var found bool
+	for _, f := range files {
+		if strings.Contains(string(f.Data), wantBanner) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("no generated page carries the banner %q", wantBanner)
+	}
+}
+
 // The refusal trailer goes through plural: TestBuildRefusesAFailedFetch
 // pins the singular ("1 repository"); this pins the plural two failures
 // produce ("2 repositories"). Exercised directly against
@@ -416,27 +513,50 @@ func TestPartialBanner(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
 		fails []repoFailure
+		edits []repoEditFailure
 		want  string
 	}{
-		{"none", nil, ""},
+		{"none", nil, nil, ""},
 		{
 			"one",
-			[]repoFailure{{Name: "billing"}},
+			[]repoFailure{{Name: "billing"}}, nil,
 			"This portal is incomplete: billing could not be read, so its services are missing from this catalog.",
 		},
 		{
 			"two, named in sorted order",
-			[]repoFailure{{Name: "edge-gateway"}, {Name: "billing"}},
+			[]repoFailure{{Name: "edge-gateway"}, {Name: "billing"}}, nil,
 			"This portal is incomplete: billing and edge-gateway could not be read, so their services are missing from this catalog.",
 		},
 		{
 			"three",
-			[]repoFailure{{Name: "c"}, {Name: "a"}, {Name: "b"}},
+			[]repoFailure{{Name: "c"}, {Name: "a"}, {Name: "b"}}, nil,
 			"This portal is incomplete: a, b and c could not be read, so their services are missing from this catalog.",
+		},
+		// Fix round 2: a host that answered the tree listing and then refused
+		// the commits endpoint is a second degraded mode. The repository IS in
+		// the catalog; what is missing is every docs-fresh result in it.
+		{
+			"one repository's docs-fresh went unanswered",
+			nil, []repoEditFailure{{Repo: "edge-gateway", Err: errors.New("boom")}},
+			"Documentation freshness is unknown for edge-gateway: its host did not answer, " +
+				"so docs-fresh is not reported for its services.",
+		},
+		{
+			"two, named in sorted order",
+			nil, []repoEditFailure{{Repo: "edge-gateway"}, {Repo: "billing"}},
+			"Documentation freshness is unknown for billing and edge-gateway: their hosts did not answer, " +
+				"so docs-fresh is not reported for their services.",
+		},
+		{
+			"both degraded modes at once",
+			[]repoFailure{{Name: "billing"}}, []repoEditFailure{{Repo: "edge-gateway"}},
+			"This portal is incomplete: billing could not be read, so its services are missing from this catalog. " +
+				"Documentation freshness is unknown for edge-gateway: its host did not answer, " +
+				"so docs-fresh is not reported for its services.",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := partialBanner(tt.fails); got != tt.want {
+			if got := partialBanner(tt.fails, tt.edits); got != tt.want {
 				t.Errorf("partialBanner = %q, want %q", got, tt.want)
 			}
 		})
