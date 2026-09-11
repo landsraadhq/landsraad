@@ -190,20 +190,22 @@ func (w *workspace) FetcherFor(name string) (fetch.Fetcher, bool) {
 // Sorted by Sources.Names so entity order — and therefore which entity wins
 // a name collision, and every diagnostic's order — does not depend on map
 // iteration.
-func (w *workspace) ParseAll(v *schema.Validator, c *diag.Collector) []*catalog.Entity {
+func (w *workspace) ParseAll(v *schema.Validator, c *diag.Collector) parseResult {
 	// solo, computed once from the same source count assemble will see
 	// (assemble receives this same workspace's Sources()): a build reading
 	// exactly one repository must get the single rich "no entities" error
 	// parseRepo produces when solo, not the per-repository warning that
 	// exists to distinguish repositories in a multi-repository build.
 	solo := len(w.sources) <= 1
-	var out []*catalog.Entity
+	var out parseResult
 	for _, name := range w.sources.Names() {
 		fsys, ok := w.sources.Get(name)
 		if !ok {
 			continue
 		}
-		out = append(out, parseRepo(name, fsys, w.patterns[name], solo, v, c)...)
+		p := parseRepo(name, fsys, w.patterns[name], solo, v, c)
+		out.entities = append(out.entities, p.entities...)
+		out.found += p.found
 	}
 	return out
 }
@@ -318,7 +320,7 @@ func openRepos(ctx context.Context, o reposOptions, c *diag.Collector) *workspac
 			// to it never surfaces. ParseAll makes the real, kept decision
 			// once every repository is in the workspace.
 			var scratch diag.Collector
-			parsed := parseRepo(name, fsys, patterns, false, v, &scratch)
+			parsed := parseRepo(name, fsys, patterns, false, v, &scratch).entities
 
 			// Expand before contentSet: a spec.docs directory outside the
 			// configured paths may not be listed yet, and contentSet walks

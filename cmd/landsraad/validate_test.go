@@ -861,3 +861,34 @@ func TestValidateSatelliteRefusesARepositoryWithATeamsFile(t *testing.T) {
 		t.Errorf("stdout = %q, want nothing: a refusal has no diagnostics to format", out.String())
 	}
 }
+
+// Ruling R42. Since Plan 4, assemble returned on an empty catalog before it
+// read teams.yaml, so a run where every service.yaml failed to parse hid
+// every teams.yaml problem too, and the user met them one run later. The
+// catalog is still empty; teams.yaml is still read.
+func TestLoadCatalogStillReportsTeamsWhenEveryServiceFailsToParse(t *testing.T) {
+	fsys := genFS()
+	delete(fsys, "teams.yaml")
+	fsys["services/api/service.yaml"] = &fstest.MapFile{Data: []byte("apiVersion: [unterminated\n")}
+	var c diag.Collector
+
+	loadCatalog(fsys, &c)
+
+	// Collector.Diagnostics sorts by file, so services/ comes before teams.yaml.
+	want := []diag.Diagnostic{
+		{
+			Severity: diag.SevError, Repo: "monorepo", File: "services/api/service.yaml", Line: 1,
+			Check:   "yaml-parse",
+			Message: "cannot parse YAML: yaml: line 1: did not find expected ',' or ']'",
+		},
+		{
+			Severity: diag.SevError, File: "teams.yaml", Line: 1,
+			Check:   "missing-teams",
+			Message: "teams.yaml not found at the repository root, so no owner can be resolved",
+			Hint:    "run `landsraad init` to create one",
+		},
+	}
+	if diff := cmp.Diff(want, c.Diagnostics()); diff != "" {
+		t.Errorf("diagnostics mismatch (-want +got):\n%s", diff)
+	}
+}

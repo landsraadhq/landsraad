@@ -56,8 +56,19 @@ func loadCatalogScoped(fsys fs.FS, scope catalog.Scope, c *diag.Collector) (*cat
 	// composition (validate, gen, score — ruling R30), so the "no entities"
 	// diagnostic below must be the one error main always produced, not the
 	// per-repository warning that exists for the multi-repository case.
-	entities := parseRepo(repo, fsys, patternsFor(fsys, c), true, v, c)
-	return assemble(entities, catalog.SingleSource(repo, fsys), scope, fsys, c)
+	p := parseRepo(repo, fsys, patternsFor(fsys, c), true, v, c)
+	return assemble(p, catalog.SingleSource(repo, fsys), scope, fsys, c)
+}
+
+// parseResult is stage 3's output: the entities, and how many catalog files
+// were found to parse them from. The count travels with the entities because
+// assemble's "no service.yaml found" is a claim about files, and only the
+// thing that looked for them knows (ruling R42). It used to be inferred from
+// the entities, which reported files that were found and failed to parse as
+// files that were never there.
+type parseResult struct {
+	entities []*catalog.Entity
+	found    int
 }
 
 // parseRepo runs stages 1 and 3 for one repository: find the catalog files,
@@ -78,7 +89,7 @@ func loadCatalogScoped(fsys fs.FS, scope catalog.Scope, c *diag.Collector) (*cat
 // repository's paths are wrong". assemble mirrors this decision from the
 // source count it already has, so the two never disagree about whether a
 // run was solo.
-func parseRepo(name string, fsys fs.FS, patterns []string, solo bool, v *schema.Validator, c *diag.Collector) []*catalog.Entity {
+func parseRepo(name string, fsys fs.FS, patterns []string, solo bool, v *schema.Validator, c *diag.Collector) parseResult {
 	found, err := discover.Find(fsys, patterns)
 	if err != nil {
 		c.Add(diag.Diagnostic{
@@ -86,7 +97,7 @@ func parseRepo(name string, fsys fs.FS, patterns []string, solo bool, v *schema.
 			Check:   "discover",
 			Message: fmt.Sprintf("cannot search for %s files: %v", discover.Filename, err),
 		})
-		return nil
+		return parseResult{}
 	}
 	if len(found) == 0 {
 		if solo {
@@ -102,7 +113,7 @@ func parseRepo(name string, fsys fs.FS, patterns []string, solo bool, v *schema.
 					discover.Filename, strings.Join(patterns, ", ")),
 				Hint: "add a repos.yaml listing the paths your services live under",
 			})
-			return nil
+			return parseResult{}
 		}
 		// A warning per repository, where a single-repository run gets one
 		// error instead (above). With several repositories, "no service.yaml
@@ -117,7 +128,7 @@ func parseRepo(name string, fsys fs.FS, patterns []string, solo bool, v *schema.
 				discover.Filename, repoLabel(name), strings.Join(patterns, ", ")),
 			Hint: "check this repository's `paths:` in repos.yaml",
 		})
-		return nil
+		return parseResult{}
 	}
 	files := discover.Load(fsys, found, c)
 	for _, f := range files {
@@ -126,40 +137,20 @@ func parseRepo(name string, fsys fs.FS, patterns []string, solo bool, v *schema.
 		// the third repository must say which repository.
 		v.Validate(name, f.Path, f.Data, c)
 	}
-	return catalog.ParseAll(name, files, c)
+	return parseResult{entities: catalog.ParseAll(name, files, c), found: len(found)}
 }
 
 // assemble runs stages 4 and 5 over every repository's entities at once, and
 // loads the configuration that lives in the repository the command is
 // standing in (ruling R34).
-func assemble(entities []*catalog.Entity, src catalog.Sources, scope catalog.Scope, cfg fs.FS, c *diag.Collector) (*catalog.Catalog, *catalog.Graph, *config.Teams) {
-	if len(entities) == 0 {
-		// len(src) > 1 mirrors parseRepo's solo flag exactly, from the same
-		// source of truth every caller already has (SingleSource for a
-		// single repository; workspace.Sources() for the fetched-workspace
-		// path). Below that count, a solo parseRepo call has already
-		// reported the one rich error a single-repository run produces —
-		// adding a second, thinner "no entities" diagnostic here would be
-		// the duplicate-with-lost-detail regression a single-repository run
-		// must never show. Above it, no per-repository warning can say
-		// whether the WHOLE catalog is empty, which is what this reports.
-		if len(src) > 1 {
-			c.Add(diag.Diagnostic{
-				Severity: diag.SevError, File: "repos.yaml", Line: 1,
-				Check:   "no-entities",
-				Message: fmt.Sprintf("no %s found in any configured repository", discover.Filename),
-				Hint:    "add a repos.yaml listing the paths your services live under",
-			})
-		}
-		return nil, nil, nil
-	}
-	cat := catalog.NewCatalog(entities, c)
-	catalog.CheckFiles(src, cat, c)
-	g := cat.Resolve(scope, c)
-	reportCycles(cat, g, c)
-
-	teamsData, err := fs.ReadFile(cfg, "teams.yaml")
-	if err != nil {
+func assemble(p parseResult, src catalog.Sources, scope catalog.Scope, cfg fs.FS, c *diag.Collector) (*catalog.Catalog, *catalog.Graph, *config.Teams) {
+	// teams.yaml first, so its own mistakes are reported whether or not any
+	// entity parsed. The empty-catalog return below used to come before this
+	// read, so since Plan 4 a run where every service.yaml failed to parse
+	// also hid every teams.yaml problem, and the user met them one run later
+	// (ruling R42).
+	var teams *config.Teams
+	if data, err := fs.ReadFile(cfg, "teams.yaml"); err != nil {
 		c.Add(diag.Diagnostic{
 			Severity: diag.SevError, File: "teams.yaml", Line: 1,
 			// validate's id and message for the same absent file (ruling R43).
@@ -169,9 +160,41 @@ func assemble(entities []*catalog.Entity, src catalog.Sources, scope catalog.Sco
 			Message: "teams.yaml not found at the repository root, so no owner can be resolved",
 			Hint:    "run `landsraad init` to create one",
 		})
+	} else {
+		teams = config.LoadTeams("teams.yaml", data, c)
+	}
+
+	if len(p.entities) == 0 {
+		// len(src) > 1 mirrors parseRepo's solo flag exactly, from the same
+		// source of truth every caller already has (SingleSource for a
+		// single repository; workspace.Sources() for the fetched-workspace
+		// path). Below that count, a solo parseRepo call has already
+		// reported the one rich error a single-repository run produces —
+		// adding a second, thinner "no entities" diagnostic here would be
+		// the duplicate-with-lost-detail regression a single-repository run
+		// must never show. Above it, no per-repository warning can say
+		// whether the WHOLE catalog is empty, which is what this reports.
+		//
+		// p.found == 0 because the message is a claim about files. When
+		// every file that was found failed to parse, the parse errors have
+		// already said why the catalog is empty (ruling R42).
+		if len(src) > 1 && p.found == 0 {
+			c.Add(diag.Diagnostic{
+				Severity: diag.SevError, File: "repos.yaml", Line: 1,
+				Check:   "no-entities",
+				Message: fmt.Sprintf("no %s found in any configured repository", discover.Filename),
+				Hint:    "add a repos.yaml listing the paths your services live under",
+			})
+		}
 		return nil, nil, nil
 	}
-	teams := config.LoadTeams("teams.yaml", teamsData, c)
+	cat := catalog.NewCatalog(p.entities, c)
+	catalog.CheckFiles(src, cat, c)
+	g := cat.Resolve(scope, c)
+	reportCycles(cat, g, c)
+	if teams == nil {
+		return nil, nil, nil
+	}
 	teams.ValidateOwners(cat, c)
 	return cat, g, teams
 }

@@ -289,7 +289,7 @@ spec:
 	if v == nil {
 		t.Fatalf("defaultValidator returned nil; diagnostics: %+v", c.Diagnostics())
 	}
-	entities := w.ParseAll(v, &c)
+	entities := w.ParseAll(v, &c).entities
 	if len(entities) != 1 || entities[0].Metadata.Name != "api" {
 		t.Fatalf("ParseAll = %+v, want exactly the api entity", entities)
 	}
@@ -341,9 +341,9 @@ func TestParseRepoZeroFoundSoloExactMessage(t *testing.T) {
 	fsys := fstest.MapFS{"teams.yaml": {Data: []byte("x")}}
 	v := schemaValidatorForTest(t)
 	var c diag.Collector
-	entities := parseRepo("monorepo", fsys, []string{"services/*"}, true, v, &c)
-	if entities != nil {
-		t.Fatalf("entities = %+v, want nil", entities)
+	p := parseRepo("monorepo", fsys, []string{"services/*"}, true, v, &c)
+	if p.entities != nil || p.found != 0 {
+		t.Fatalf("parseRepo = %+v, want no entities and nothing found", p)
 	}
 	ds := c.Diagnostics()
 	if len(ds) != 1 {
@@ -372,9 +372,9 @@ func TestParseRepoZeroFoundMultiExactMessage(t *testing.T) {
 	fsys := fstest.MapFS{"teams.yaml": {Data: []byte("x")}}
 	v := schemaValidatorForTest(t)
 	var c diag.Collector
-	entities := parseRepo("monorepo", fsys, []string{"services/*"}, false, v, &c)
-	if entities != nil {
-		t.Fatalf("entities = %+v, want nil", entities)
+	p := parseRepo("monorepo", fsys, []string{"services/*"}, false, v, &c)
+	if p.entities != nil || p.found != 0 {
+		t.Fatalf("parseRepo = %+v, want no entities and nothing found", p)
 	}
 	ds := c.Diagnostics()
 	if len(ds) != 1 {
@@ -399,7 +399,7 @@ func TestParseRepoZeroFoundMultiExactMessage(t *testing.T) {
 // assemble must add nothing more — not even a thinner echo of it.
 func TestAssembleZeroEntitiesSoloAddsNoDiagnostic(t *testing.T) {
 	var c diag.Collector
-	cat, g, teams := assemble(nil, catalog.SingleSource("monorepo", fstest.MapFS{}), catalog.FullCatalog, fstest.MapFS{}, &c)
+	cat, g, teams := assemble(parseResult{}, catalog.SingleSource("monorepo", fstest.MapFS{}), catalog.FullCatalog, teamsOnly(), &c)
 	if cat != nil || g != nil || teams != nil {
 		t.Fatalf("assemble = (%v, %v, %v), want all nil", cat, g, teams)
 	}
@@ -414,7 +414,7 @@ func TestAssembleZeroEntitiesSoloAddsNoDiagnostic(t *testing.T) {
 func TestAssembleZeroEntitiesMultiExactMessage(t *testing.T) {
 	src := catalog.Sources{"repo-a": fstest.MapFS{}, "repo-b": fstest.MapFS{}}
 	var c diag.Collector
-	cat, g, teams := assemble(nil, src, catalog.FullCatalog, fstest.MapFS{}, &c)
+	cat, g, teams := assemble(parseResult{}, src, catalog.FullCatalog, teamsOnly(), &c)
 	if cat != nil || g != nil || teams != nil {
 		t.Fatalf("assemble = (%v, %v, %v), want all nil", cat, g, teams)
 	}
@@ -456,11 +456,11 @@ func TestWorkspaceParseAllThenAssembleMultiRepoZeroMatchKeepsBothDiagnostics(t *
 	}
 	v := schemaValidatorForTest(t)
 	var c diag.Collector
-	entities := w.ParseAll(v, &c)
-	if len(entities) != 0 {
-		t.Fatalf("entities = %+v, want none", entities)
+	p := w.ParseAll(v, &c)
+	if len(p.entities) != 0 || p.found != 0 {
+		t.Fatalf("ParseAll = %+v, want no entities and nothing found", p)
 	}
-	cat, g, teams := assemble(entities, w.Sources(), catalog.FullCatalog, fstest.MapFS{"teams.yaml": {Data: []byte("x")}}, &c)
+	cat, g, teams := assemble(p, w.Sources(), catalog.FullCatalog, teamsOnly(), &c)
 	if cat != nil || g != nil || teams != nil {
 		t.Fatalf("assemble = (%v, %v, %v), want all nil", cat, g, teams)
 	}
@@ -512,4 +512,30 @@ func schemaValidatorForTest(t *testing.T) *schema.Validator {
 		t.Fatalf("schema.Default(): %v", err)
 	}
 	return v
+}
+
+// teamsOnly is a repository root holding nothing but a valid teams.yaml.
+// Since ruling R42, assemble reads teams.yaml even for an empty catalog, so
+// a test about something else gives it one with nothing to report.
+func teamsOnly() fstest.MapFS {
+	return fstest.MapFS{"teams.yaml": genFS()["teams.yaml"]}
+}
+
+// The other half of ruling R42. In a multi-repository run, "no service.yaml
+// found in any configured repository" is a claim about files, and it used to
+// be made about entities: when every file that was found failed to parse, it
+// fired on top of the parse errors that already said why the catalog was
+// empty, and told the reader their files were not there.
+func TestAssembleDoesNotSayNothingWasFoundWhenFilesFailedToParse(t *testing.T) {
+	src := catalog.Sources{"repo-a": fstest.MapFS{}, "repo-b": fstest.MapFS{}}
+	var c diag.Collector
+
+	cat, g, teams := assemble(parseResult{found: 2}, src, catalog.FullCatalog, teamsOnly(), &c)
+
+	if cat != nil || g != nil || teams != nil {
+		t.Fatalf("assemble = (%v, %v, %v), want all nil for an empty catalog", cat, g, teams)
+	}
+	if ds := c.Diagnostics(); len(ds) != 0 {
+		t.Errorf("assemble added %+v; the parse errors that emptied the catalog have already said why", ds)
+	}
 }
