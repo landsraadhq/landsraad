@@ -536,6 +536,38 @@ func TestGitLabA404ForAListedDirectoryFailsTheRepository(t *testing.T) {
 	}
 }
 
+// A non-recursive listing only proves what it enumerated one level down
+// from dir. GitLab's documented contract is that every row is an immediate
+// child, but a host that violates it and returns a deeper row must not get
+// to mark that row's directory listed — nothing here actually enumerated
+// it, and trusting the row would turn "I cannot say" into a false "it does
+// not exist" (ruling R45).
+func TestGitLabNonRecursiveListingIgnoresADeeperRowAndDoesNotMarkItListed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rows := []map[string]any{
+			{"id": "t-apps", "name": "apps", "type": "tree", "path": "apps"},
+			// A host violating the non-recursive contract: two levels below
+			// ".", not an immediate child of it.
+			{"id": gitBlobSHA([]byte("rogue")), "name": "rogue.md", "type": "blob", "path": "apps/team-a/rogue.md"},
+		}
+		json.NewEncoder(w).Encode(rows)
+	}))
+	t.Cleanup(srv.Close)
+	g := newTestGitLab(t, srv, "main")
+
+	f := NewFS()
+	if err := g.list(context.Background(), f, "main", ".", false); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	if f.Listed("apps/team-a") {
+		t.Error("the deeper row's directory must not be marked listed — nothing here enumerated it")
+	}
+	if _, err := fs.Stat(f, "apps/team-a/other.md"); !errors.Is(err, ErrNotListed) {
+		t.Errorf("Stat beneath the not-earned directory = %v, want ErrNotListed", err)
+	}
+}
+
 // When two methods are called concurrently on the same *GitLab with an
 // unset ref, they must not race on the ref field. This is the same
 // regression a prior review caught on GitHub — resolveRef must return the

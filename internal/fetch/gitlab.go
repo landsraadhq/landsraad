@@ -102,6 +102,13 @@ type glRow struct {
 // recursive one marks every directory it names, as FromEntries does for a
 // complete listing: the response described their whole contents.
 func (g *GitLab) list(ctx context.Context, f *FS, ref, dir string, recursive bool) error {
+	// Normalised once, here, so the rest of this function only ever asks
+	// "is dir '.'?" — never "is dir '' or \".\"?" — and byDir's seed key and
+	// the query's path parameter cannot disagree about what an empty dir
+	// means.
+	if dir == "" {
+		dir = "."
+	}
 	page := 1
 	for {
 		q := url.Values{
@@ -112,7 +119,7 @@ func (g *GitLab) list(ctx context.Context, f *FS, ref, dir string, recursive boo
 		if recursive {
 			q.Set("recursive", "true")
 		}
-		if dir != "." && dir != "" {
+		if dir != "." {
 			q.Set("path", dir)
 		}
 		body, header, err := g.c.Get(ctx, g.project()+"/repository/tree", q, "")
@@ -125,6 +132,15 @@ func (g *GitLab) list(ctx context.Context, f *FS, ref, dir string, recursive boo
 		}
 		byDir := map[string][]Entry{dir: nil}
 		for _, r := range rows {
+			// A non-recursive listing only proves what it enumerated one
+			// level down from dir. The API's documented contract is that
+			// every row here is an immediate child, but trusting a row that
+			// violates it would mark some deeper, intermediate directory
+			// listed when nothing here actually enumerated it — turning "I
+			// cannot say" into a false "it does not exist" (ruling R45).
+			if !recursive && path.Dir(r.Path) != dir {
+				continue
+			}
 			switch r.Type {
 			case "blob":
 				byDir[path.Dir(r.Path)] = append(byDir[path.Dir(r.Path)], Entry{Path: r.Path, SHA: r.ID})
