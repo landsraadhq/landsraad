@@ -625,3 +625,60 @@ func TestValidateThreadsTheRepoNameIntoSchemaDiagnostics(t *testing.T) {
 		t.Fatalf("expected a schema diagnostic for .landsraad/checks/scan.yaml, got %+v", ds)
 	}
 }
+
+// TestValidateToleratesTheFixturesCrossRepoRef is the validate half of the
+// claim Task 15's commit made about testdata/multirepo: edge-gateway's
+// spec.dependsOn names service:api, which is defined only in platform/. Spec
+// §7.1 says validate (LocalOnly) must not report that as dangling, because
+// the target may simply live in another repo. TestBuildMergesALocalAndARemoteRepository
+// is the other half: build (FullCatalog) resolves the very same reference.
+//
+// TestValidateToleratesCrossRepoRefs already covers this behavior against a
+// synthetic single-field fixture built to isolate it. This test runs the
+// real thing: `landsraad validate` against testdata/multirepo/edge-gateway
+// exactly as fetched, so the fixture's own commit message is not asserting
+// something nothing actually exercises.
+//
+// It does NOT exit 0. edge-gateway, read on its own, carries no teams.yaml —
+// only the platform root does (ruling R34); a real user only ever validates
+// it as part of a checkout that has one. That is an unrelated, expected
+// failure, and asserting it here — rather than picking a repo-less fixture
+// that would hide it — is what proves the *only* diagnostic in play is the
+// one about ownership, and specifically not one about the cross-repo ref.
+func TestValidateToleratesTheFixturesCrossRepoRef(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := Validate(os.DirFS("../../testdata/multirepo/edge-gateway"), &out, &errOut, diag.JSON{})
+	if code != exitValidation {
+		t.Fatalf("exit = %d, want %d (missing-teams, unrelated to the cross-repo ref); out:\n%s", code, exitValidation, out.String())
+	}
+
+	var ds []diag.Diagnostic
+	if err := json.Unmarshal(out.Bytes(), &ds); err != nil {
+		t.Fatalf("out is not valid diagnostics JSON: %v\n%s", err, out.String())
+	}
+	if len(ds) != 2 {
+		t.Fatalf("got %d diagnostics, want exactly 2 (default-patterns, missing-teams): %+v", len(ds), ds)
+	}
+	var sawDefaultPatterns, sawMissingTeams bool
+	for _, d := range ds {
+		switch d.Check {
+		case "default-patterns":
+			sawDefaultPatterns = true
+		case "missing-teams":
+			sawMissingTeams = true
+			if d.Severity != diag.SevError {
+				t.Errorf("missing-teams Severity = %v, want SevError", d.Severity)
+			}
+		case "dangling-ref":
+			t.Errorf("the cross-repo dependsOn must not be reported as dangling under validate: %+v", d)
+		default:
+			t.Errorf("unexpected diagnostic %+v — the cross-repo ref must be the only thing tolerated silently", d)
+		}
+	}
+	if !sawDefaultPatterns {
+		t.Error("expected a default-patterns note: edge-gateway carries no repos.yaml of its own")
+	}
+	if !sawMissingTeams {
+		t.Error("expected missing-teams: edge-gateway carries no teams.yaml of its own")
+	}
+}

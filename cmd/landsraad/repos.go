@@ -10,6 +10,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/config"
@@ -58,6 +59,13 @@ type reposOptions struct {
 	// at an httptest TLS server: repos.yaml requires https, and a test that
 	// had to relax that rule would stop testing the rule.
 	HTTP *http.Client
+	// Sleep is how a fetcher's client waits between retries. Nil in
+	// production, which fetch.NewClient already turns into time.Sleep — this
+	// field exists so a test against an always-failing fake host can run its
+	// retries in milliseconds instead of the real 1s/2s/4s backoff schedule,
+	// without weakening the retry path itself (fetch.ClientOptions.Sleep is
+	// the seam; this just reaches it from cmd/).
+	Sleep func(time.Duration)
 }
 
 // workspace is every repository a build reads, opened and fetched.
@@ -276,12 +284,14 @@ func openOne(ctx context.Context, r config.Repo, patterns []string, o reposOptio
 				"Accept":               "application/vnd.github+json",
 				"X-GitHub-Api-Version": "2026-03-10",
 			},
+			Sleep: o.Sleep,
 		}), o.Cache, blobParallel)
 	case "gitlab":
 		f = fetch.NewGitLab(repo, fetch.NewClient(fetch.ClientOptions{
 			HTTP:    o.HTTP,
 			BaseURL: fetch.GitLabBaseURL(repo), Token: token,
 			AuthHeader: "PRIVATE-TOKEN",
+			Sleep:      o.Sleep,
 		}), o.Cache, blobParallel)
 	}
 	fsys, err := f.Open(ctx, patterns)

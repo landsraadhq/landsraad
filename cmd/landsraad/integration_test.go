@@ -679,12 +679,20 @@ func TestBuildWithAnUnreachableRemote(t *testing.T) {
 	t.Cleanup(dead.Close)
 	root := multirepoRoot(t, dead.Listener.Addr().String())
 
+	// sleeps counts every call the fetch client makes to wait between
+	// retries. A no-op Sleep would make this test fast for the wrong
+	// reason — it could pass with the retry path deleted entirely. Counting
+	// keeps the real 3-attempt, 2-sleep-per-Get retry schedule in the
+	// assertion while paying none of its wall-clock cost (fetch.Client's
+	// Sleep seam, reached through reposOptions.Sleep).
+	var sleeps int
 	open := func() *workspace {
 		var c diag.Collector
 		return openRepos(context.Background(), reposOptions{
 			Root: root, RootFS: os.DirFS(root), Cache: fetch.NopCache{},
 			Lookup: func(string) (string, bool) { return "t", true },
 			ErrOut: io.Discard, HTTP: dead.Client(),
+			Sleep: func(time.Duration) { sleeps++ },
 		}, &c)
 	}
 
@@ -708,5 +716,13 @@ func TestBuildWithAnUnreachableRemote(t *testing.T) {
 	}
 	if banners == 0 {
 		t.Error("no page names the repository that failed")
+	}
+	// Two open() calls, each one failed Get against the always-500 host:
+	// 3 attempts per Get, and the client sleeps between attempts 1→2 and
+	// 2→3 but not after the final one, so 2 sleeps per Get × 2 opens = 4.
+	// This is what proves the retry path actually ran rather than being
+	// short-circuited by MaxAttempts: 1 or a Sleep that was never wired up.
+	if sleeps != 4 {
+		t.Errorf("sleeps = %d, want 4 (2 opens × 2 retries each against the always-failing host)", sleeps)
 	}
 }
