@@ -157,7 +157,7 @@ func watchDirs(root string, w *fsnotify.Watcher) error {
 // graded Monday's catalog against Friday. The clock is still injected rather
 // than read inside internal/ — that rule does not move — it is injected as a
 // function so it can be read again each time.
-func newRebuild(root string, opts BuildOptions, now func() time.Time, srv *siteServer, errOut io.Writer) func(label string) bool {
+func newRebuild(root string, w *workspace, opts BuildOptions, now func() time.Time, srv *siteServer, errOut io.Writer) func(label string) bool {
 	var mu sync.Mutex
 	return func(label string) bool {
 		mu.Lock()
@@ -168,20 +168,13 @@ func newRebuild(root string, opts BuildOptions, now func() time.Time, srv *siteS
 		hadGoodBuild := srv.hasBuilt()
 		opts := opts
 		opts.Now = now()
+		// A fresh os.DirFS for the local repository; every fetched remote is
+		// the same value it was at startup (ruling R33). Fetching here would
+		// mean a host API call for every keystroke in a runbook. repos.yaml
+		// itself is not re-read either -- newServeCmd's RunE parsed it once,
+		// before the first build, and refused already if it was malformed.
 		fsys := os.DirFS(root)
-		var pc diag.Collector
-		w := singleRepoWorkspace(fsys, &pc)
-		reportDiagnostics(errOut, pc.Diagnostics())
-		// A malformed repos.yaml (repos-url, repos-host, ...) is reported by
-		// singleRepoWorkspace's own collector, not Build's -- Build never
-		// sees pc, and never gets a chance to refuse on its behalf. Without
-		// this gate the error above prints and serve starts anyway, exactly
-		// the silent-then-fine sequence build and validate both refuse.
-		var files []emit.File
-		code := exitValidation
-		if !pc.HasErrors() {
-			files, code = Build(fsys, w, errOut, opts)
-		}
+		files, code := Build(fsys, w.WithLocal(fsys), errOut, opts)
 		if code != exitOK {
 			if hadGoodBuild {
 				// Keep serving the last good site. A preview that goes
@@ -211,13 +204,18 @@ var errInitialBuildFailed = errors.New("initial build failed")
 // Serve renders the site and serves it, rebuilding on change when watch is
 // set.
 //
+// w is every repository in the catalog, already fetched by the caller
+// (openRepos, run once before Serve is called). Every rebuild reuses it,
+// swapping only the local filesystem — ruling R33 — so remotes are never
+// fetched again for the life of this process.
+//
 // now is the clock, called once per rebuild. It is a parameter rather than
 // time.Now so a test can freeze or advance it, and so opts.Now — which is
 // stamped once, at construction — cannot quietly become the build time of
 // every rebuild for the life of the process.
-func Serve(root, addr string, opts BuildOptions, now func() time.Time, watch bool, errOut io.Writer) error {
+func Serve(root string, w *workspace, addr string, opts BuildOptions, now func() time.Time, watch bool, errOut io.Writer) error {
 	srv := &siteServer{}
-	rebuild := newRebuild(root, opts, now, srv, errOut)
+	rebuild := newRebuild(root, w, opts, now, srv, errOut)
 	if ok := rebuild(""); !ok && !watch {
 		return errInitialBuildFailed
 	}
@@ -271,6 +269,25 @@ func Serve(root, addr string, opts BuildOptions, now func() time.Time, watch boo
 	return server.ListenAndServe()
 }
 
+// servingLine names how many repositories a running preview covers, so
+// somebody watching the terminal knows what it includes. Silent for the
+// common one-repository case — the count only earns its line once there is
+// something to count.
+func servingLine(w *workspace) string {
+	if n := len(w.Sources().Names()); n > 1 {
+		return fmt.Sprintf("serving %s\n", plural(n, "repository", "repositories"))
+	}
+	return ""
+}
+
+// watchHelp is --watch's help text, exact-string tested: it is the only
+// place a user learns that repos.yaml, like every remote it names, is read
+// once, at startup.
+const watchHelp = "rebuild when a file changes. Only the local repository is watched: " +
+	"remote repositories are fetched once at startup, and picking up a " +
+	"change in one needs a restart. repos.yaml itself is also read only " +
+	"once, so an edit to it (most often its paths:) needs a restart too"
+
 func newServeCmd() *cobra.Command {
 	var (
 		addr       string
@@ -298,14 +315,39 @@ func newServeCmd() *cobra.Command {
 				return err
 			}
 			cmd.SilenceUsage = true
+
+			// repos.yaml is parsed exactly once, here, before the first
+			// build (ruling R33): every rebuild below reuses this same
+			// workspace, swapping only the local filesystem. A malformed
+			// repos.yaml (repos-url, repos-host, repos-local,
+			// repos-duplicate-name) must stop serve before it ever binds a
+			// port, exactly as it stops build and validate -- there is no
+			// later rebuild that gets a second chance to catch it, because
+			// after this point repos.yaml is never read again for the life
+			// of this process. exitValidation, not build's exitUsage: that
+			// is what serve and validate have always exited with for a
+			// broken catalog.
+			var c diag.Collector
+			w := openRepos(cmd.Context(), reposOptions{
+				Root: resolved, RootFS: os.DirFS(resolved),
+				Cache:  cacheFor(resolved, false),
+				Lookup: os.LookupEnv,
+				ErrOut: cmd.ErrOrStderr(),
+			}, &c)
+			reportDiagnostics(cmd.ErrOrStderr(), c.Diagnostics())
+			if c.HasErrors() {
+				os.Exit(exitValidation)
+			}
+			fmt.Fprint(cmd.ErrOrStderr(), servingLine(w))
+
 			// Now is deliberately left at its zero value here: newRebuild
 			// overwrites it from the clock below on every rebuild, which is
 			// what makes the footer's timestamp — and the stale-result and
 			// docs-fresh windows that grade against it — mean anything in a
 			// preview that stays up for days.
-			err = Serve(resolved, addr, BuildOptions{
+			err = Serve(resolved, w, addr, BuildOptions{
 				Mermaid:  mermaid,
-				LastEdit: gitLastEdit(resolved),
+				LastEdit: multiLastEdit(cmd.Context(), resolved, w),
 				Version:  version(),
 			}, func() time.Time { return time.Now().UTC() }, watch, cmd.ErrOrStderr())
 			if errors.Is(err, errInitialBuildFailed) {
@@ -318,7 +360,7 @@ func newServeCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&addr, "addr", "localhost:8080", "address to listen on")
-	cmd.Flags().BoolVar(&watch, "watch", false, "rebuild when a file changes")
+	cmd.Flags().BoolVar(&watch, "watch", false, watchHelp)
 	cmd.Flags().StringVar(&mermaidSrc, "mermaid-src", "",
 		"Mermaid bundle: a URL, a path to a local file, or \"none\"")
 	return cmd

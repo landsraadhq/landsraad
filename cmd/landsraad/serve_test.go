@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -12,10 +14,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 
+	"github.com/landsraadhq/landsraad/internal/catalog"
+	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/emit"
 )
 
@@ -223,7 +228,8 @@ func TestRebuildSerialisesConcurrentTriggers(t *testing.T) {
 
 	opts := BuildOptions{LastEdit: gitLastEdit(root)}
 	srv := &siteServer{}
-	rebuild := newRebuild(root, opts, utcNow, srv, io.Discard)
+	w := buildWorkspace(t, os.DirFS(root))
+	rebuild := newRebuild(root, w, opts, utcNow, srv, io.Discard)
 
 	const bursts = 20
 	start := make(chan struct{})
@@ -324,7 +330,8 @@ func TestEachRebuildReadsTheClockAgain(t *testing.T) {
 
 	srv := &siteServer{}
 	var errOut bytes.Buffer
-	rebuild := newRebuild(root, BuildOptions{LastEdit: noLastEdit()}, clock, srv, &errOut)
+	w := buildWorkspace(t, os.DirFS(root))
+	rebuild := newRebuild(root, w, BuildOptions{LastEdit: noLastEdit()}, clock, srv, &errOut)
 
 	if ok := rebuild(""); !ok {
 		t.Fatalf("the first build must succeed; stderr:\n%s", errOut.String())
@@ -362,7 +369,8 @@ func TestRebuildAfterAGoodBuildKeepsServingLastGoodSite(t *testing.T) {
 	srv := &siteServer{}
 	var errOut bytes.Buffer
 	opts := BuildOptions{LastEdit: noLastEdit()}
-	rebuild := newRebuild(root, opts, utcNow, srv, &errOut)
+	w := buildWorkspace(t, os.DirFS(root))
+	rebuild := newRebuild(root, w, opts, utcNow, srv, &errOut)
 
 	if ok := rebuild(""); !ok {
 		t.Fatalf("the first, valid build must succeed; stderr:\n%s", errOut.String())
@@ -386,50 +394,163 @@ func TestRebuildAfterAGoodBuildKeepsServingLastGoodSite(t *testing.T) {
 	}
 }
 
-// TestRebuildRefusesAMalformedReposYAML is Task 13 fix-round-1 finding #1:
-// singleRepoWorkspace's diagnostics went into a throwaway collector that
-// Build never saw, so a repos.yaml error printed to stderr and then serve
-// started anyway. build and validate both refuse on the same diagnostic;
-// serve must too, and a rebuild that hits it must behave exactly like any
-// other failed rebuild -- keep serving the last good site.
+// TestRebuildRefusesAMalformedReposYAML is Task 13 fix-round-1 finding #1,
+// re-pinned at its Task 14 home.
+//
+// Before Task 14, singleRepoWorkspace's diagnostics went into a throwaway
+// collector that Build never saw, so a repos.yaml error printed to stderr
+// and then serve started anyway; the fix lived inside newRebuild because
+// that is where repos.yaml was parsed -- once per rebuild.
+//
+// Task 14 moves that parse to openRepos, called exactly once, before the
+// first build (ruling R33): a rebuild no longer touches repos.yaml at all,
+// so there is no longer a rebuild for a bad repos.yaml to interrupt -- an
+// edit to it after startup needs a restart, like any other remote. The gate
+// this test pins moved with the parse: it is openRepos's own collector,
+// checked once in newServeCmd's RunE before Serve is ever called, exactly
+// as build and validate both refuse on the same diagnostic. That is what
+// this test now exercises directly, rather than through newRebuild.
 func TestRebuildRefusesAMalformedReposYAML(t *testing.T) {
-	root := t.TempDir()
-	writeCatalogFixture(t, root, 1)
+	dir := t.TempDir()
+	writeFile(t, dir, "teams.yaml",
+		"teams:\n  - name: team-payments\n    members: [alice]\n    slack: \"#pay\"\n    pagerduty: PAY\n")
+	writeFile(t, dir, "repos.yaml",
+		"repos:\n  - url: git@github.com:org/monorepo.git\n    paths: [services/*]\n")
 
-	srv := &siteServer{}
+	var c diag.Collector
+	openRepos(context.Background(), reposOptions{
+		Root: dir, RootFS: os.DirFS(dir),
+		Lookup: func(string) (string, bool) { return "", false },
+		ErrOut: io.Discard,
+	}, &c)
+
+	if !c.HasErrors() {
+		t.Fatal("a malformed repos.yaml must report an error -- newServeCmd's RunE gates on exactly this before ever calling Serve")
+	}
 	var errOut bytes.Buffer
-	opts := BuildOptions{LastEdit: noLastEdit()}
-	rebuild := newRebuild(root, opts, utcNow, srv, &errOut)
-
-	if ok := rebuild(""); !ok {
-		t.Fatalf("the first, valid build must succeed; stderr:\n%s", errOut.String())
-	}
-	goodIndex, ok := srv.lookup("index.html")
-	if !ok {
-		t.Fatal("index.html missing after a successful build")
-	}
-
-	errOut.Reset()
-	badReposYAML := "repos:\n  - url: git@github.com:org/monorepo.git\n    paths: [services/*]\n"
-	if err := os.WriteFile(filepath.Join(root, "repos.yaml"), []byte(badReposYAML), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if ok := rebuild(""); ok {
-		t.Fatal("a malformed repos.yaml must fail the rebuild")
-	}
-
-	wantDiag := "error: repos.yaml:2 [repos-url]\n" +
+	reportDiagnostics(&errOut, c.Diagnostics())
+	want := "error: repos.yaml:2 [repos-url]\n" +
 		"  repository url must begin with https://, got \"git@github.com:org/monorepo.git\"\n" +
 		"  hint: write it as https://github.com/org/monorepo\n"
-	if !strings.Contains(errOut.String(), wantDiag) {
-		t.Errorf("stderr:\n%s\nmust contain:\n%s", errOut.String(), wantDiag)
+	if errOut.String() != want {
+		t.Errorf("stderr = %q, want %q", errOut.String(), want)
 	}
-	wantTail := "  build failed; still serving the previous version\n"
-	if !strings.HasSuffix(errOut.String(), wantTail) {
-		t.Errorf("stderr:\n%s\nmust end with:\n%s", errOut.String(), wantTail)
+}
+
+// edgeServiceYAML and apiServiceYAML are minimal, valid Service entities,
+// named for the repository each is used to stand in for below: edge is the
+// fetched remote, api is what lands in the local repository after a rebuild.
+const edgeServiceYAML = `apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: edge-gateway
+  owner: team-payments
+  tier: 1
+  lifecycle: production
+spec:
+  path: .
+`
+
+const apiServiceYAML = `apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: api
+  owner: team-payments
+  tier: 1
+  lifecycle: production
+spec:
+  path: services/api
+`
+
+// Ruling R33: remotes are fetched once, before the first build. A rebuild
+// swaps only the local filesystem. Without this, editing one character in a
+// runbook costs a round trip to every repository in repos.yaml.
+func TestRebuildReusesFetchedRemotes(t *testing.T) {
+	remote := fstest.MapFS{
+		"service.yaml": {Data: []byte(edgeServiceYAML)},
 	}
-	if got, _ := srv.lookup("index.html"); string(got) != string(goodIndex) {
-		t.Error("the last good site must still be served after a rejected repos.yaml")
+	w := &workspace{
+		sources: catalog.Sources{
+			"platform": goodFixtureFS(t),
+			"edge":     remote,
+		},
+		patterns: map[string][]string{"platform": {"services/*"}, "edge": {"."}},
+		local:    "platform",
+	}
+
+	swapped := w.WithLocal(fstest.MapFS{"services/api/service.yaml": {Data: []byte(apiServiceYAML)}})
+
+	// The remote value is the same object, not a re-fetch.
+	before, _ := w.Sources().Get("edge")
+	after, _ := swapped.Sources().Get("edge")
+	if fmt.Sprintf("%p", before) != fmt.Sprintf("%p", after) {
+		t.Error("WithLocal replaced the fetched remote filesystem")
+	}
+	// And the local one did change.
+	local, ok := swapped.Sources().Get("platform")
+	if !ok {
+		t.Fatal("the swapped workspace has no local repository")
+	}
+	if _, err := fs.Stat(local, "services/api/service.yaml"); err != nil {
+		t.Errorf("the swapped local filesystem does not hold the new file: %v", err)
+	}
+}
+
+// A workspace with no local entry -- a platform repository holding only
+// configuration -- must not crash on rebuild. There is simply nothing to
+// swap.
+func TestWithLocalOnAnAllRemoteWorkspace(t *testing.T) {
+	w := &workspace{
+		sources:  catalog.Sources{"edge": fstest.MapFS{}},
+		patterns: map[string][]string{"edge": {"."}},
+	}
+	if got := w.WithLocal(fstest.MapFS{}); got != w {
+		t.Error("WithLocal on a workspace with no local repository should return the receiver unchanged")
+	}
+}
+
+// The --watch flag's help text is the only place a user learns that
+// repos.yaml, like every remote it names, is read once, at startup -- so an
+// edit to its paths: needs a restart just as much as an edit to a remote
+// repository does. Exact-string tested per the project's rule that every
+// new user-facing string ships with one.
+func TestWatchFlagHelpAdmitsReposYAMLIsReadOnce(t *testing.T) {
+	flag := newServeCmd().Flags().Lookup("watch")
+	if flag == nil {
+		t.Fatal("newServeCmd has no --watch flag")
+	}
+	if flag.Usage != watchHelp {
+		t.Errorf("--watch help = %q, want %q", flag.Usage, watchHelp)
+	}
+}
+
+// servingLine is exact-string tested directly because newServeCmd's RunE,
+// where it is actually printed, calls os.Exit and binds a real port -- not
+// something a unit test can drive without spawning a subprocess and, for
+// the multi-repository case, a fetch this suite has no network access to
+// perform.
+func TestServingLineNamesTheRepositoryCount(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		w    *workspace
+		want string
+	}{
+		{
+			"a single repository is the common case and stays silent",
+			&workspace{sources: catalog.Sources{"platform": fstest.MapFS{}}},
+			"",
+		},
+		{
+			"two or more repositories are named, so the count means something",
+			&workspace{sources: catalog.Sources{"platform": fstest.MapFS{}, "edge": fstest.MapFS{}}},
+			"serving 2 repositories\n",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := servingLine(tt.w); got != tt.want {
+				t.Errorf("servingLine = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -458,10 +579,16 @@ func TestServeWithoutWatchExitsWhenTheFirstBuildFails(t *testing.T) {
 }
 
 // TestServeWithoutWatchExitsWhenReposYAMLIsMalformed is the never-had-a-good-
-// build half of finding #1: singleRepoWorkspace's diagnostics must gate the
-// FIRST build, not only a rebuild that follows a good one -- there is no
+// build half of finding #1: a malformed repos.yaml must gate the FIRST
+// build, not only a rebuild that follows a good one -- there is no
 // repos.yaml at all in the sibling test above, so that one alone would not
 // have caught this.
+//
+// Since Task 14, the gate fires in newServeCmd's RunE, from openRepos's own
+// collector, before Serve is ever called -- so unlike the sibling test
+// above, nothing here ever reaches a rebuild, and stderr carries the
+// diagnostic and nothing else: no "build failed" line, because no build was
+// attempted.
 func TestServeWithoutWatchExitsWhenReposYAMLIsMalformed(t *testing.T) {
 	dir := materialize(t, map[string]string{
 		"teams.yaml": "teams:\n  - name: team-payments\n    members: [alice]\n    slack: \"#pay\"\n    pagerduty: PAY\n",
@@ -474,18 +601,11 @@ func TestServeWithoutWatchExitsWhenReposYAMLIsMalformed(t *testing.T) {
 	if r.exitCode != exitValidation {
 		t.Fatalf("exit = %d, want %d; stderr:\n%s", r.exitCode, exitValidation, r.stderr)
 	}
-	wantDiag := "error: repos.yaml:2 [repos-url]\n" +
+	want := "error: repos.yaml:2 [repos-url]\n" +
 		"  repository url must begin with https://, got \"git@github.com:org/monorepo.git\"\n" +
 		"  hint: write it as https://github.com/org/monorepo\n"
-	if !strings.Contains(r.stderr, wantDiag) {
-		t.Errorf("stderr:\n%s\nmust contain:\n%s", r.stderr, wantDiag)
-	}
-	want := "  build failed; nothing has been rendered yet\n"
-	if !strings.HasSuffix(r.stderr, want) {
-		t.Errorf("stderr:\n%s\nmust end with:\n%s", r.stderr, want)
-	}
-	if strings.Contains(r.stderr, "serving on http://") {
-		t.Error("must never announce that it is serving -- it did not start listening")
+	if r.stderr != want {
+		t.Errorf("stderr = %q, want %q", r.stderr, want)
 	}
 }
 
@@ -563,9 +683,10 @@ func TestServeWithWatchRespondsThenRecoversAfterAFailedFirstBuild(t *testing.T) 
 	writeBrokenCatalog(t, root)
 
 	addr := freeAddr(t)
+	w := buildWorkspace(t, os.DirFS(root))
 	done := make(chan error, 1)
 	go func() {
-		done <- Serve(root, addr, BuildOptions{}, utcNow, true, io.Discard)
+		done <- Serve(root, w, addr, BuildOptions{}, utcNow, true, io.Discard)
 	}()
 
 	select {
@@ -645,9 +766,10 @@ func TestServeWithWatchReflectsAnEditAfterAGoodBuild(t *testing.T) {
 	}
 
 	addr := freeAddr(t)
+	w := buildWorkspace(t, os.DirFS(root))
 	done := make(chan error, 1)
 	go func() {
-		done <- Serve(root, addr, BuildOptions{}, utcNow, true, io.Discard)
+		done <- Serve(root, w, addr, BuildOptions{}, utcNow, true, io.Discard)
 	}()
 
 	select {

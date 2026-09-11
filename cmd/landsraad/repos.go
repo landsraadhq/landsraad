@@ -164,7 +164,19 @@ func openRepos(ctx context.Context, o reposOptions, c *diag.Collector) *workspac
 			patterns = config.DefaultPatterns()
 		}
 
-		kind, _ := r.HostKind()
+		kind, known := r.HostKind()
+		if !known {
+			// HostKind's "cannot tell" answer for an explicit host: typo is
+			// (r.Host, false) -- the typo itself, not empty. Carrying that
+			// into a repoFailure would name a hint variable
+			// (strings.ToUpper(kind)+"_TOKEN" in failureMessage) built from
+			// a token that does not exist. This is inert today --
+			// validateRepos already raises repos-host as a SevError for
+			// every case HostKind cannot resolve, and the caller refuses on
+			// that before Build ever renders a failure message -- but the
+			// safety belongs here, not in another package's diagnostic.
+			kind = ""
+		}
 		fail := func(err error) {
 			failures = append(failures, repoFailure{Name: name, URL: r.URL, Line: r.Line, Kind: kind, Err: err})
 		}

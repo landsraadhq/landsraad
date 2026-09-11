@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -16,6 +17,16 @@ import (
 	"github.com/landsraadhq/landsraad/internal/emit"
 	"github.com/landsraadhq/landsraad/internal/render"
 )
+
+// runTimeout bounds every subprocess run() starts. Two tests -- both
+// exercising serve without --addr, so the flag default localhost:8080
+// applies -- only pass because serve is expected to refuse and exit before
+// ever binding that port. If that gate regresses, the child blocks in
+// ListenAndServe forever: 60s turns that into a fast, precisely-attributed
+// test failure instead of a `go test -timeout` panic that does not reap the
+// child, leaving an orphaned listener on a real port between CI runs. Every
+// call this suite makes today finishes in milliseconds.
+const runTimeout = 60 * time.Second
 
 // binPath is the landsraad binary these tests exercise as a real subprocess.
 // Some behavior under test — cobra flag validation, the process exit code —
@@ -48,14 +59,24 @@ type runResult struct {
 
 // run executes the built binary with dir as its working directory, the way
 // a user invokes it from inside their repository.
+//
+// Bounded by runTimeout via exec.CommandContext: when the deadline passes,
+// the context kills the child and Run still returns (it calls Wait
+// internally), so the process is reaped rather than orphaned.
 func run(t *testing.T, dir string, args ...string) runResult {
 	t.Helper()
-	cmd := exec.Command(binPath, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.Dir = dir
 	var out, errOut bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errOut
 	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("running landsraad %v: killed after %s without exiting; stdout:\n%s\nstderr:\n%s",
+			args, runTimeout, out.String(), errOut.String())
+	}
 	exitCode := 0
 	if err != nil {
 		var exitErr *exec.ExitError

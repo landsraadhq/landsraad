@@ -223,24 +223,6 @@ func englishList(items []string) string {
 	}
 }
 
-// singleRepoWorkspace adapts one filesystem into a workspace with no
-// remotes, for a caller that predates openRepos.
-//
-// serve.go's rebuild loop is the only caller. It fetches nothing today --
-// `serve` has no repos.yaml wiring yet -- so this only has to reproduce what
-// loadCatalogScoped used to do for a single repository. Task 14 replaces it
-// with a *workspace built once by openRepos at startup and reused across
-// rebuilds via WithLocal (ruling R33); this bridge exists only so Build's
-// signature change does not leave serve.go uncompilable in between.
-func singleRepoWorkspace(fsys fs.FS, c *diag.Collector) *workspace {
-	name := localRepoName(fsys)
-	return &workspace{
-		sources:  catalog.Sources{name: fsys},
-		patterns: map[string][]string{name: patternsFor(fsys, c)},
-		local:    name,
-	}
-}
-
 // mermaidFor resolves --mermaid-src (ruling R13).
 func mermaidFor(src string) (render.Mermaid, error) {
 	switch {
