@@ -3901,7 +3901,7 @@ func TestGitLabSendsThePrivateTokenHeader(t *testing.T) {
 func TestGitLabFollowsEveryPage(t *testing.T) {
 	const total = 250
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/projects/group%2Fsub%2Fbilling" {
+		if r.URL.EscapedPath() == "/projects/group%2Fsub%2Fbilling" {
 			json.NewEncoder(w).Encode(map[string]any{"default_branch": "main"})
 			return
 		}
@@ -3946,13 +3946,15 @@ func TestGitLabFetchAndLastEdit(t *testing.T) {
 	sha := gitBlobSHA([]byte(body))
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/projects/group%2Fsub%2Fbilling/repository/tree":
+		// EscapedPath, not Path: net/url decodes %2F to "/" in .Path, so a
+		// comparison against a string containing %2F can never match.
+		case r.URL.EscapedPath() == "/projects/group%2Fsub%2Fbilling/repository/tree":
 			json.NewEncoder(w).Encode([]map[string]any{
 				{"id": sha, "name": "runbook.md", "type": "blob", "path": "runbook.md"},
 			})
 		case r.URL.EscapedPath() == "/projects/group%2Fsub%2Fbilling/repository/blobs/"+sha+"/raw":
 			w.Write([]byte(body))
-		case r.URL.Path == "/projects/group%2Fsub%2Fbilling/repository/commits":
+		case r.URL.EscapedPath() == "/projects/group%2Fsub%2Fbilling/repository/commits":
 			json.NewEncoder(w).Encode([]map[string]any{{"committed_date": "2026-07-15T11:00:00+02:00"}})
 		default:
 			t.Errorf("unexpected request: %s", r.URL)
@@ -4051,25 +4053,43 @@ func (g *GitLab) project() string {
 	return "/projects/" + url.PathEscape(g.repo.Owner+"/"+g.repo.Slug)
 }
 
-func (g *GitLab) resolveRef(ctx context.Context) error {
+// resolveRef returns the ref to list, asking the host for its default branch
+// when repos.yaml named none.
+//
+// It RETURNS the ref rather than leaving callers to read g.ref, and every
+// access sits under g.mu. Grouping the field under the mutex is not enough on
+// its own: an earlier draft did exactly that and still read and wrote it
+// unlocked here, which is the same race review found on GitHub.resolveRef.
+// The shape is copied from there deliberately — two adapters with one
+// discipline.
+func (g *GitLab) resolveRef(ctx context.Context) (string, error) {
+	g.mu.Lock()
 	if g.ref != "" {
-		return nil
+		ref := g.ref
+		g.mu.Unlock()
+		return ref, nil
 	}
+	g.mu.Unlock()
+
 	body, _, err := g.c.Get(ctx, g.project(), nil, "")
 	if err != nil {
-		return err
+		return "", err
 	}
 	var payload struct {
 		DefaultBranch string `json:"default_branch"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return fmt.Errorf("cannot read the project description: %w", err)
+		return "", fmt.Errorf("cannot read the project description: %w", err)
 	}
 	if payload.DefaultBranch == "" {
-		return errors.New("the host reported no default branch; set `ref:` in repos.yaml")
+		return "", errors.New("the host reported no default branch; set `ref:` in repos.yaml")
 	}
+
+	g.mu.Lock()
 	g.ref = payload.DefaultBranch
-	return nil
+	ref := g.ref
+	g.mu.Unlock()
+	return ref, nil
 }
 
 // glRow is one row of a tree listing. `id` is the blob sha — the same value
