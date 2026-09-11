@@ -41,7 +41,12 @@ func bigRepoServer(t *testing.T, listed *[]string) *httptest.Server {
 		"t-worker": {
 			{"path": "service.yaml", "type": "blob", "sha": "b-wk-svc", "size": 10},
 		},
-		"t-vendor": {},
+		"t-vendor": {
+			{"path": "docs", "type": "tree", "sha": "t-vendor-docs"},
+		},
+		"t-vendor-docs": {
+			{"path": "index.md", "type": "blob", "sha": "b-vendor-idx", "size": 5},
+		},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sha := strings.TrimPrefix(r.URL.Path, "/repos/org/repo/git/trees/")
@@ -111,16 +116,19 @@ func TestGitHubExpandListsADocsTree(t *testing.T) {
 
 // vendor/docs sits under vendor, a directory no pattern here reaches — the
 // same "spec.docs outside every walked subtree" layout GitLab's Expand was
-// found to mishandle. GitHub's Expand fails at this layout too, just more
-// quietly: listDir looks vendor/docs up in the shas map that record()
-// populates during a listing, finds nothing (only vendor itself was ever
-// recorded, from root's initial one-level listing in walk() — nobody ever
-// listed vendor's own contents), and returns nil having made no request and
-// added nothing to f. Unlike GitLab, this never reaches AddDir, so fs.go's
-// fix for the same underlying gap does not help GitHub here — fixing this
-// would need an adapter-side change to listDir/expandRecursive, which is
-// out of scope for this task; recorded for a ruling rather than made.
-func TestGitHubExpandCannotReachADirectoryOutsideAnyWalkedSubtree(t *testing.T) {
+// found to mishandle. GitHub's Expand used to fail this layout too, just
+// more quietly: listDir looked vendor/docs up in the shas map that
+// record() populates during a listing, found nothing (only vendor itself
+// had ever been recorded, from root's initial one-level listing in
+// walk() — nobody had listed vendor's own contents), and returned having
+// made no request and added nothing to f.
+//
+// The fix: before expandRecursive(dir), Expand walks dir's ancestor chain
+// from the root downward, calling listDir on each. Every top-level
+// directory's sha is already known from walk()'s initial root listing, so
+// listing vendor (an ordinary listDir, a no-op if already listed) reveals
+// vendor/docs's sha, and listing vendor/docs then succeeds.
+func TestGitHubExpandReachesADirectoryOutsideAnyWalkedSubtree(t *testing.T) {
 	var listed []string
 	g := newTestGitHub(t, bigRepoServer(t, &listed), "trunk")
 	f, err := g.Open(context.Background(), []string{"services/*"})
@@ -128,16 +136,28 @@ func TestGitHubExpandCannotReachADirectoryOutsideAnyWalkedSubtree(t *testing.T) 
 		t.Fatalf("Open: %v", err)
 	}
 
-	if err := g.Expand(context.Background(), f, []string{"vendor/docs"}); err != nil {
+	// vendor/nope does not exist -- vendor's real listing has no such
+	// child -- and must stay silent rather than surface as an Expand error.
+	if err := g.Expand(context.Background(), f, []string{"vendor/docs", "vendor/nope"}); err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
-	if _, err := fs.Stat(f, "vendor/docs"); !errors.Is(err, ErrNotListed) {
-		t.Errorf("Stat vendor/docs = %v, want ErrNotListed -- Expand silently did nothing for a directory outside every walked subtree", err)
+
+	info, err := fs.Stat(f, "vendor/docs")
+	if err != nil {
+		t.Fatalf("Stat vendor/docs: %v", err)
 	}
-	for _, s := range listed {
-		if s == "t-vendor" {
-			t.Errorf("vendor's tree was fetched even though Expand should never have found its sha")
-		}
+	if !info.IsDir() {
+		t.Errorf("vendor/docs.IsDir() = false, want true")
+	}
+	if _, err := fs.Stat(f, "vendor/docs/index.md"); err != nil {
+		t.Errorf("Stat vendor/docs/index.md: %v", err)
+	}
+
+	// vendor was genuinely listed (that is how vendor/docs's sha was
+	// found), so a sibling that is not there reads as ErrNotExist, not
+	// ErrNotListed -- the parent's contents really are known now.
+	if _, err := fs.Stat(f, "vendor/nope"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Stat vendor/nope = %v, want ErrNotExist", err)
 	}
 }
 

@@ -229,3 +229,19 @@ func join(dir, seg string) string {
 	}
 	return dir + "/" + seg
 }
+
+// ancestorsOf returns dir's proper ancestors, in root-to-parent order,
+// excluding "." (walk() always lists it, so listDir on it is never useful)
+// and dir itself (the caller lists dir on its own account). For a
+// top-level dir this is empty: walk()'s initial root listing already gave
+// it a sha, so nothing needs listing first.
+func ancestorsOf(dir string) []string {
+	var chain []string
+	for d := path.Dir(dir); d != "."; d = path.Dir(d) {
+		chain = append(chain, d)
+	}
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	return chain
+}

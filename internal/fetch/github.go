@@ -136,8 +136,24 @@ func (g *GitHub) Open(ctx context.Context, patterns []string) (*FS, error) {
 // serialize those calls itself. A path whose parent was never listed reads
 // as ErrNotListed rather than as a missing file, and this is what turns the
 // former into the latter honestly: after Expand, absent means absent.
+//
+// dir can be a directory no pattern's walk ever reached — spec.docs naming
+// a path outside every configured glob, which is exactly the layout this
+// method exists to serve. walk() always lists the repository root, so
+// every top-level directory already has a sha in g.shas; dir is therefore
+// reachable by listing its ancestors in root-to-parent order first, each an
+// ordinary listDir and each a no-op if already listed. If an ancestor
+// listing does not contain the next segment, that segment's sha is never
+// recorded, listDir silently declines to list anything further, and dir
+// reads back as ErrNotExist (its parent was listed) or ErrNotListed (it was
+// not) — never as an error out of Expand.
 func (g *GitHub) Expand(ctx context.Context, f *FS, dirs []string) error {
 	for _, d := range dirs {
+		for _, ancestor := range ancestorsOf(d) {
+			if err := g.listDir(ctx, f, ancestor); err != nil {
+				return err
+			}
+		}
 		if err := g.expandRecursive(ctx, f, d); err != nil {
 			return err
 		}
