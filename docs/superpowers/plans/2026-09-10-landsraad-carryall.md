@@ -4427,16 +4427,26 @@ func TestBlobCacheRejectsAnythingThatIsNotASha(t *testing.T) {
 			}
 		})
 	}
-	// Nothing may have escaped the cache root.
-	var escaped []string
-	filepath.WalkDir(root, func(p string, _ os.DirEntry, _ error) error {
-		escaped = append(escaped, p)
-		return nil
-	})
-	for _, p := range escaped {
-		if strings.Contains(p, "passwd") {
-			t.Fatalf("a write escaped the cache root: %s", p)
-		}
+	// A canary OUTSIDE the root. Walking root itself proves nothing: an
+	// escape via "../../../etc/passwd" resolves to somewhere root does not
+	// contain, so WalkDir(root, ...) would never enumerate it. An earlier
+	// draft of this test did exactly that and read as if it proved
+	// containment while being a no-op. Found by review.
+	canary := filepath.Join(filepath.Dir(root), "canary.txt")
+	if err := os.WriteFile(canary, []byte("untouched"), 0o644); err != nil {
+		t.Fatalf("planting the canary: %v", err)
+	}
+	before, err := os.ReadFile(canary)
+	if err != nil {
+		t.Fatalf("reading the canary: %v", err)
+	}
+	// ... malicious inputs run above ...
+	after, err := os.ReadFile(canary)
+	if err != nil {
+		t.Fatalf("the canary is gone: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("a write escaped the cache root and changed %s", canary)
 	}
 }
 
