@@ -1407,10 +1407,11 @@ func NewFS() *FS {
 - [ ] **Step 4: Run the suite and watch `FromEntries`' dependence show**
 
 Run: `go test ./internal/fetch/ ./cmd/landsraad/`
-Expected: FAIL, in exactly these three tests. This is the evidence that `FromEntries` leaned on `NewFS` for its root.
+Expected: FAIL, in exactly these four tests. This is the evidence that `FromEntries` leaned on `NewFS` for its root.
 - `TestFromEntriesListsTheRoot`: `FromEntries did not mark "." listed`
 - `TestACompleteListingProvesAbsenceAtAnyDepth`: `Stat apps/edge/runbook.md = ErrNotListed; the whole repository was listed, …`
 - `TestBuildReportsADanglingRemoteRunbookInsteadOfDroppingTheRepository`: `stderr =` mismatch
+- `TestBuildMergesALocalAndARemoteRepository`: `stderr =` mismatch, carrying a `checks-unreadable` diagnostic. This one reaches the same cause through Task 1: a local repository now has nothing listed, so reading `.landsraad/checks` answers `ErrNotListed`, and the branch Task 1 added — the one nothing could reach until now — fires. Step 5 restores the flag and it goes green with the other three.
 
 - [ ] **Step 5: `FromEntries` marks the root it enumerated**
 
