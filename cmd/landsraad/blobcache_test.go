@@ -29,8 +29,51 @@ func TestBlobCacheRoundTrip(t *testing.T) {
 // The sha comes from a remote host and becomes a filesystem path. This is
 // the seam CONTRIBUTING.md names: every path cmd/ turns into a filesystem
 // path is checked where it is joined.
+//
+// The proof of containment is a canary planted at the exact location an
+// UNGUARDED join would write to — not a walk over root. filepath.WalkDir(root,
+// …) can only ever enumerate paths inside root, so it can never observe an
+// escape: a real escape, by definition, lands somewhere WalkDir never visits.
+// Computing the canary's path with the same filepath.Join an unvalidated
+// implementation would use means the test doesn't depend on guessing
+// t.TempDir()'s nesting depth on any given machine.
 func TestBlobCacheRejectsAnythingThatIsNotASha(t *testing.T) {
-	root := t.TempDir()
+	base := t.TempDir()
+	// root is nested several levels under base, deliberately, so every
+	// traversal below resolves to somewhere still inside base rather than
+	// wherever an unbounded "../../.." happens to land on the real
+	// filesystem. The canary must live somewhere this test controls.
+	root := filepath.Join(base, "n1", "n2", "n3", "n4", "cache")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// "../../../etc/passwd" is the one input below whose traversal depth
+	// (three "..") actually reaches outside root at this nesting. Its
+	// unguarded destination — filepath.Join(root, sha), the same join
+	// safeBlobPath performs after validation — is exactly where the canary
+	// goes.
+	const escapeSha = "../../../etc/passwd"
+	canaryPath := filepath.Join(root, escapeSha)
+	if !strings.HasPrefix(canaryPath, base+string(filepath.Separator)) {
+		t.Fatalf("test bug: canary path %q would fall outside this test's own sandbox %q", canaryPath, base)
+	}
+	if strings.HasPrefix(canaryPath, root+string(filepath.Separator)) {
+		t.Fatalf("test bug: canary path %q is not actually outside root %q", canaryPath, root)
+	}
+	canaryDir := filepath.Dir(canaryPath)
+	if err := os.MkdirAll(canaryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const canaryContent = "canary: unmodified\n"
+	if err := os.WriteFile(canaryPath, []byte(canaryContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadDir(canaryDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	for _, sha := range []string{
 		"../../../etc/passwd",
 		"..",
@@ -53,16 +96,24 @@ func TestBlobCacheRejectsAnythingThatIsNotASha(t *testing.T) {
 			}
 		})
 	}
-	// Nothing may have escaped the cache root.
-	var escaped []string
-	filepath.WalkDir(root, func(p string, _ os.DirEntry, _ error) error {
-		escaped = append(escaped, p)
-		return nil
-	})
-	for _, p := range escaped {
-		if strings.Contains(p, "passwd") {
-			t.Fatalf("a write escaped the cache root: %s", p)
-		}
+
+	// The canary is the actual proof: Put writes a temp file into the
+	// target's directory and renames it onto the target, so an escape would
+	// either overwrite the canary's content or leave a stray temp file
+	// beside it.
+	got, err := os.ReadFile(canaryPath)
+	if err != nil {
+		t.Fatalf("canary file at %s disappeared: %v", canaryPath, err)
+	}
+	if string(got) != canaryContent {
+		t.Fatalf("a write escaped the cache root: canary at %s changed from %q to %q", canaryPath, canaryContent, got)
+	}
+	after, err := os.ReadDir(canaryDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("a write escaped the cache root: %s now has %d entries beside the canary, had %d", canaryDir, len(after), len(before))
 	}
 }
 

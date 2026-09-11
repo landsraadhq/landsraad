@@ -4,7 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/landsraadhq/landsraad/internal/fetch"
 )
+
+// A signature drift here would otherwise go unnoticed until Task 13 wires
+// this into build.go — nothing else in the tree references *blobCache as a
+// fetch.Cache yet.
+var _ fetch.Cache = (*blobCache)(nil)
 
 // blobCache is the on-disk half of ruling R27: a content-addressed store
 // under .landsraad/cache/blobs, keyed on the git blob sha the tree listing
