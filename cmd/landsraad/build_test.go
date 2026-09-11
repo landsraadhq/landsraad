@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"io/fs"
 	"sort"
@@ -10,7 +11,10 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/landsraadhq/landsraad/internal/catalog"
+	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/emit"
+	"github.com/landsraadhq/landsraad/internal/fetch"
 	"github.com/landsraadhq/landsraad/internal/render"
 	"github.com/landsraadhq/landsraad/internal/scorecard"
 )
@@ -40,10 +44,33 @@ func buildFS() fstest.MapFS {
 	}
 }
 
+// goodFixtureFS is a valid single-repository catalog: the fixture every
+// other test in this file already builds via buildFS. Named goodFixtureFS
+// because that is what the Task 13 brief's workspace-shaped tests call it.
+func goodFixtureFS(t *testing.T) fs.FS {
+	t.Helper()
+	return buildFS()
+}
+
+// buildWorkspace wraps a single filesystem as a one-repository workspace,
+// the way openRepos would if fsys's repos.yaml named only the entry it is
+// standing in. It exists so the tests that predate Task 12's workspace type
+// do not each have to construct one by hand.
+func buildWorkspace(t *testing.T, fsys fs.FS) *workspace {
+	t.Helper()
+	var c diag.Collector
+	name := localRepoName(fsys)
+	return &workspace{
+		sources:  catalog.Sources{name: fsys},
+		patterns: map[string][]string{name: patternsFor(fsys, &c)},
+		local:    name,
+	}
+}
+
 func buildSiteMap(t *testing.T, fsys fs.FS, opts BuildOptions) (map[string][]byte, int, string) {
 	t.Helper()
 	var errOut bytes.Buffer
-	files, code := Build(fsys, &errOut, opts)
+	files, code := Build(fsys, buildWorkspace(t, fsys), &errOut, opts)
 	out := map[string][]byte{}
 	for _, f := range files {
 		out[f.Path] = f.Data
@@ -98,69 +125,6 @@ func TestBuildFailsOnADanglingReference(t *testing.T) {
 	_, code, _ := buildSiteMap(t, fsys, buildOpts())
 	if code != exitValidation {
 		t.Errorf("exit = %d, want %d for a dangling ref under FullCatalog", code, exitValidation)
-	}
-}
-
-// Ruling R22. Rendering a portal that quietly omits two of three repos is
-// exactly what spec §12 forbids. Plan 4 replaces this with real fetching.
-func TestBuildWarnsWhenReposYAMLListsRepositoriesItCannotRead(t *testing.T) {
-	fsys := buildFS()
-	fsys["repos.yaml"] = &fstest.MapFile{Data: []byte(
-		"repos:\n" +
-			"  - url: https://github.com/org/monorepo\n    paths: [services/*]\n" +
-			"  - url: https://github.com/org/edge-gateway\n    paths: [.]\n")}
-
-	files, code, errOut := buildSiteMap(t, fsys, buildOpts())
-	if code != exitOK {
-		t.Fatalf("a partial build still succeeds, got exit %d:\n%s", code, errOut)
-	}
-	wantLine := "warn: repos.yaml lists 2 repositories and this build read only the local one; " +
-		"1 repository was not read\n"
-	if !strings.Contains(errOut, wantLine) {
-		t.Errorf("stderr:\n%s\nmust contain:\n%s", errOut, wantLine)
-	}
-	// Degraded mode must be visible in the ARTIFACT, not only in a log.
-	index := string(files["index.html"])
-	wantBanner := "This portal covers only the repository this build ran in. " +
-		"1 repository of the 2 in repos.yaml was not read; fetching remote repositories is not implemented yet."
-	if !strings.Contains(index, wantBanner) {
-		t.Errorf("the generated page carries no banner:\n%s", index)
-	}
-}
-
-// R22's point is that the omission is visible AND ACCURATE. repos.yaml's first
-// entry is the local repository only by convention — config.LoadRepos does not
-// check it — so the notice must not name repositories as missing on the
-// strength of a position it cannot verify. With the local repository written
-// last, the old wording named the two that were actually read and omitted the
-// two that were not, on every page of the portal.
-func TestBuildsPartialNoticeNamesNoRepositoryItCannotIdentify(t *testing.T) {
-	fsys := buildFS()
-	// The local repository is written LAST. Every entry carries the same paths
-	// so the catalog still loads whichever one LocalPatterns happens to take —
-	// this test is about what the notice claims, not about which globs ran.
-	fsys["repos.yaml"] = &fstest.MapFile{Data: []byte(
-		"repos:\n" +
-			"  - url: https://github.com/org/edge-gateway\n    paths: [services/*]\n" +
-			"  - url: https://github.com/org/data-platform\n    paths: [services/*]\n" +
-			"  - url: https://github.com/org/monorepo\n    paths: [services/*]\n")}
-
-	files, _, errOut := buildSiteMap(t, fsys, buildOpts())
-	wantLine := "warn: repos.yaml lists 3 repositories and this build read only the local one; " +
-		"2 repositories were not read\n"
-	if !strings.Contains(errOut, wantLine) {
-		t.Errorf("stderr:\n%s\nmust contain:\n%s", errOut, wantLine)
-	}
-	index := string(files["index.html"])
-	wantBanner := "This portal covers only the repository this build ran in. " +
-		"2 repositories of the 3 in repos.yaml were not read; fetching remote repositories is not implemented yet."
-	if !strings.Contains(index, wantBanner) {
-		t.Errorf("banner missing or reworded:\n%s", index)
-	}
-	for _, name := range []string{"edge-gateway", "data-platform", "monorepo"} {
-		if strings.Contains(index, name) {
-			t.Errorf("the notice names %q, which it has no way to know is missing:\n%s", name, index)
-		}
 	}
 }
 
@@ -345,4 +309,142 @@ func TestBuildIsPureAndWritesNothing(t *testing.T) {
 	if len(fsys) != before {
 		t.Error("Build must not write into the filesystem it reads")
 	}
+}
+
+// Spec §12: a fetch failure is a hard failure. A portal quietly missing
+// three services is worse than no portal.
+func TestBuildRefusesAFailedFetch(t *testing.T) {
+	w := &workspace{
+		sources:  catalog.Sources{"platform": goodFixtureFS(t)},
+		patterns: map[string][]string{"platform": {"services/*"}},
+		local:    "platform",
+		failures: []repoFailure{{
+			Name: "edge-gateway", URL: "https://github.com/org/edge-gateway", Line: 4,
+			Err: &fetch.StatusError{Status: 404, Method: "GET", Endpoint: "/repos/org/edge-gateway", Body: "Not Found", RateRemaining: -1},
+		}},
+	}
+	var errOut bytes.Buffer
+	files, code := Build(goodFixtureFS(t), w, &errOut, BuildOptions{Now: testNow, Version: "test"})
+
+	if code != exitUsage {
+		t.Errorf("exit code = %d, want %d", code, exitUsage)
+	}
+	if files != nil {
+		t.Error("Build produced files despite a failed fetch")
+	}
+	want := "error: cannot read edge-gateway: not found. A private repository with no token " +
+		"looks exactly like this; check the url and that LANDSRAAD_TOKEN_EDGE_GATEWAY or GITHUB_TOKEN is set\n"
+	if got := errOut.String(); !strings.Contains(got, want) {
+		t.Errorf("stderr =\n%s\nwant it to contain\n%s", got, want)
+	}
+}
+
+// --allow-partial downgrades it, and the banner names the repositories that
+// actually failed -- which is the whole difference from the scaffold this
+// replaces.
+func TestBuildAllowPartialNamesTheFailures(t *testing.T) {
+	w := &workspace{
+		sources:  catalog.Sources{"platform": goodFixtureFS(t)},
+		patterns: map[string][]string{"platform": {"services/*"}},
+		local:    "platform",
+		failures: []repoFailure{
+			{Name: "edge-gateway", URL: "https://github.com/org/edge-gateway", Line: 4, Err: errors.New("boom")},
+			{Name: "billing", URL: "https://gitlab.com/org/billing", Line: 7, Err: errors.New("boom")},
+		},
+	}
+	var errOut bytes.Buffer
+	files, code := Build(goodFixtureFS(t), w, &errOut, BuildOptions{
+		Now: testNow, Version: "test", AllowPartial: true,
+	})
+	if code != exitOK {
+		t.Fatalf("exit code = %d, want %d; stderr:\n%s", code, exitOK, errOut.String())
+	}
+	want := "This portal is incomplete: billing and edge-gateway could not be read, " +
+		"so their services are missing from this catalog."
+	var found bool
+	for _, f := range files {
+		if strings.Contains(string(f.Data), want) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("no generated page carries the banner %q", want)
+	}
+}
+
+func TestPartialBanner(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		fails []repoFailure
+		want  string
+	}{
+		{"none", nil, ""},
+		{
+			"one",
+			[]repoFailure{{Name: "billing"}},
+			"This portal is incomplete: billing could not be read, so its services are missing from this catalog.",
+		},
+		{
+			"two, named in sorted order",
+			[]repoFailure{{Name: "edge-gateway"}, {Name: "billing"}},
+			"This portal is incomplete: billing and edge-gateway could not be read, so their services are missing from this catalog.",
+		},
+		{
+			"three",
+			[]repoFailure{{Name: "c"}, {Name: "a"}, {Name: "b"}},
+			"This portal is incomplete: a, b and c could not be read, so their services are missing from this catalog.",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := partialBanner(tt.fails); got != tt.want {
+				t.Errorf("partialBanner = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFailureMessage(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		f    repoFailure
+		want string
+	}{
+		{
+			"not found says why it might not be",
+			repoFailure{Name: "edge", Err: &fetch.StatusError{Status: 404, RateRemaining: -1}},
+			"cannot read edge: not found. A private repository with no token looks exactly like this; " +
+				"check the url and that LANDSRAAD_TOKEN_EDGE or GITHUB_TOKEN is set",
+		},
+		{
+			"rejected token",
+			repoFailure{Name: "edge", Err: &fetch.StatusError{Status: 401, RateRemaining: -1}},
+			"cannot read edge: the host rejected the token; check that LANDSRAAD_TOKEN_EDGE or GITHUB_TOKEN is current and has read access",
+		},
+		{
+			"rate limited names the reset",
+			repoFailure{Name: "edge", Err: &fetch.StatusError{
+				Status: 403, RateRemaining: 0,
+				RateReset: time.Date(2026, 9, 10, 15, 4, 5, 0, time.UTC),
+			}},
+			"cannot read edge: the host's rate limit is spent until 2026-09-10T15:04:05Z; " +
+				"an unauthenticated build gets 60 requests an hour, an authenticated one 5000",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := failureMessage(tt.f, "github"); got != tt.want {
+				t.Errorf("failureMessage = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The scaffold is gone. This test exists so that deleting it is a decision
+// rather than an oversight.
+func TestPartialNoticeIsGone(t *testing.T) {
+	// partialNotice counted repositories because it could not know which
+	// ones were missing; an earlier version that tried named the wrong two.
+	// If this file ever compiles with a call to it again, ruling R22's
+	// scaffold has come back.
+	t.Log("partialNotice was deleted in Plan 4 Task 13; see ruling R32")
 }

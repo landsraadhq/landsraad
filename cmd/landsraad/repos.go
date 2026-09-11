@@ -123,8 +123,9 @@ func (w *workspace) WithLocal(fsys fs.FS) *workspace {
 // Phase 1 lists each repository and fetches only the service.yaml files the
 // configured patterns match. The entities are parsed — and then thrown away,
 // because their only job here is to say which files phase 2 must fetch.
-// Phase 2 fetches those. Every request in the program happens inside this
-// function, before assemble runs a single stage.
+// Phase 2 fetches those. Every content request happens inside this function,
+// before assemble runs a single stage — docs-fresh is the exception, asking
+// a remote repository's host API again during Score (ruling R35).
 func openRepos(ctx context.Context, o reposOptions, c *diag.Collector) *workspace {
 	v := defaultValidator(c)
 	if v == nil {

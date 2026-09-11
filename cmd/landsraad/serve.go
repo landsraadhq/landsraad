@@ -17,6 +17,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/cobra"
 
+	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/emit"
 )
 
@@ -167,7 +168,11 @@ func newRebuild(root string, opts BuildOptions, now func() time.Time, srv *siteS
 		hadGoodBuild := srv.hasBuilt()
 		opts := opts
 		opts.Now = now()
-		files, code := Build(os.DirFS(root), errOut, opts)
+		fsys := os.DirFS(root)
+		var pc diag.Collector
+		w := singleRepoWorkspace(fsys, &pc)
+		reportDiagnostics(errOut, pc.Diagnostics())
+		files, code := Build(fsys, w, errOut, opts)
 		if code != exitOK {
 			if hadGoodBuild {
 				// Keep serving the last good site. A preview that goes

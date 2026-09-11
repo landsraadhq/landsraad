@@ -1,60 +1,76 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
-	"github.com/landsraadhq/landsraad/internal/config"
 	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/emit"
+	"github.com/landsraadhq/landsraad/internal/fetch"
 	"github.com/landsraadhq/landsraad/internal/render"
 	"github.com/landsraadhq/landsraad/internal/scorecard"
 )
 
-// BuildOptions is everything build needs that is not the filesystem. Now,
-// LastEdit and Version are values so the whole command is reproducible from
-// its inputs and testable without a clock or a git repository.
-// The output directory is deliberately absent: Build produces values and
-// has no opinion about where they land. writeSite takes it instead.
+// BuildOptions is everything build needs that is not a filesystem.
 type BuildOptions struct {
 	Mermaid  render.Mermaid
 	Now      time.Time
 	LastEdit scorecard.LastEditFunc
 	Version  string
 	Force    bool
+	// AllowPartial renders a portal from the repositories that could be
+	// read, stamping a banner naming the ones that could not (ruling R32).
+	AllowPartial bool
 }
 
 // Build renders the portal, returning the files and an exit code.
 //
-// It writes nothing. writeSite is the disk half and lives beside it in cmd/,
-// which is what lets the entire build be tested against an fstest.MapFS —
-// and what lets `serve --watch` rebuild in memory without ever touching the
-// output directory.
-func Build(fsys fs.FS, errOut io.Writer, opts BuildOptions) ([]emit.File, int) {
+// Two filesystems, and they are different things (ruling R34). root is the
+// repository the command is standing in: teams.yaml, standards.yaml and
+// scorecard-history.csv live there and nowhere else. w is every repository
+// in the catalog, already fetched.
+//
+// It writes nothing and it fetches nothing. writeSite is the disk half;
+// openRepos is the network half, and it ran before this was called — which
+// is what lets serve --watch rebuild on every keystroke without touching a
+// host API (ruling R33).
+func Build(root fs.FS, w *workspace, errOut io.Writer, opts BuildOptions) ([]emit.File, int) {
 	var c diag.Collector
+
+	if code := reportFetchFailures(w.Failures(), opts.AllowPartial, errOut); code != exitOK {
+		return nil, code
+	}
+
+	v := defaultValidator(&c)
+	if v == nil {
+		reportDiagnostics(errOut, c.Diagnostics())
+		return nil, exitValidation
+	}
 
 	// FullCatalog, not LocalOnly: build claims to render the whole catalog,
 	// so a dangling reference is a hard failure (spec §7.1).
-	cat, g, teams := loadCatalogScoped(fsys, catalog.FullCatalog, &c)
+	cat, g, teams := assemble(w.ParseAll(v, &c), w.Sources(), catalog.FullCatalog, root, &c)
 	if cat == nil || c.HasErrors() {
 		reportDiagnostics(errOut, c.Diagnostics())
 		fmt.Fprintf(errOut, "refusing to build a portal from a catalog with errors; it would publish the broken state as if it were the truth\n")
 		return nil, exitValidation
 	}
 
-	src := catalog.SingleSource(localRepoName(fsys), fsys)
-	std := standardsFor(fsys, errOut)
-	reported := scorecard.Ingest(src, cat, std.StaleAfterDays(), opts.Now, &c)
+	std := standardsFor(root, errOut)
+	reported := scorecard.Ingest(w.Sources(), cat, std.StaleAfterDays(), opts.Now, &c)
 	sc := scorecard.Score(cat, std, reported, scorecard.Env{
-		Sources:        src,
+		Sources:        w.Sources(),
 		Now:            opts.Now,
 		MaxDocsAgeDays: std.Param("docs-fresh", "maxAgeDays", 180),
 		LastEdit:       opts.LastEdit,
@@ -66,7 +82,7 @@ func Build(fsys fs.FS, errOut io.Writer, opts BuildOptions) ([]emit.File, int) {
 	// which renders as "No history yet. Run `landsraad score --history` in CI
 	// to start recording one" — telling somebody to set up a job they already
 	// set up, about a file that is sitting right there.
-	history, historyErr := fs.ReadFile(fsys, scorecard.HistoryPath)
+	history, historyErr := fs.ReadFile(root, scorecard.HistoryPath)
 	if historyErr != nil && !errors.Is(historyErr, fs.ErrNotExist) {
 		history = nil
 		c.Add(diag.Diagnostic{
@@ -82,9 +98,9 @@ func Build(fsys fs.FS, errOut io.Writer, opts BuildOptions) ([]emit.File, int) {
 		Catalog: cat, Graph: g, Teams: teams,
 		Scorecard: sc, Standards: std, History: history,
 		HistoryUnreadable: historyErr != nil && !errors.Is(historyErr, fs.ErrNotExist),
-		Sources:           src, Mermaid: opts.Mermaid,
+		Sources:           w.Sources(), Mermaid: opts.Mermaid,
 		GeneratedAt: opts.Now, Version: opts.Version,
-		Notice: partialNotice(fsys, errOut),
+		Notice: partialBanner(w.Failures()),
 	}
 	files := render.Site(in, &c)
 
@@ -97,44 +113,130 @@ func Build(fsys fs.FS, errOut io.Writer, opts BuildOptions) ([]emit.File, int) {
 	return files, exitOK
 }
 
-// partialNotice reports that this build covers fewer repositories than
-// repos.yaml names, because fetching the others is Plan 4 (ruling R22).
+// reportFetchFailures decides what a failed repository costs.
 //
-// It returns the banner text and writes the warning. Silently rendering a
-// portal that covers one repository of three is precisely spec §12's "worse
-// than rendering nothing".
+// Spec §12: a fetch failure is a hard failure, because rendering a portal
+// quietly missing three services is worse than rendering nothing.
+// --allow-partial is the stated exception, and it pays for itself with a
+// banner in the artifact rather than a line in a log nobody reads.
 //
-// It counts rather than names. The previous version listed r.Repos[1:] as the
-// missing ones, which is right only if the entry you are standing in happens
-// to be written first. config.LoadRepos does not verify that — LocalPatterns
-// takes r.Repos[0].Paths "by convention" — so with the local repository listed
-// third the banner stamped into EVERY page named the wrong two repositories as
-// missing and quietly omitted the two that actually were. R22's point is that
-// the omission is visible AND accurate; a count is both, whichever entry is
-// local. Naming them correctly would mean teaching the loader which entry it
-// is standing in, which changes what repos.yaml means to everyone who already
-// has one — a one-way door, and Plan 4's to open.
-func partialNotice(fsys fs.FS, errOut io.Writer) string {
-	data, err := fs.ReadFile(fsys, "repos.yaml")
-	if err != nil {
+// exitUsage, not exitValidation: nobody's YAML is wrong. Exit 2 would send
+// a service owner to look at a file that is fine.
+func reportFetchFailures(fails []repoFailure, allowPartial bool, errOut io.Writer) int {
+	if len(fails) == 0 {
+		return exitOK
+	}
+	sorted := make([]repoFailure, len(fails))
+	copy(sorted, fails)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+
+	level := "error"
+	if allowPartial {
+		level = "warn"
+	}
+	for _, f := range sorted {
+		fmt.Fprintf(errOut, "%s: %s\n", level, failureMessage(f, hostKindOf(f)))
+	}
+	if allowPartial {
+		return exitOK
+	}
+	fmt.Fprintf(errOut,
+		"refusing to build a portal that is missing %s; pass --allow-partial to build one anyway, with a banner saying so\n",
+		plural(len(fails), "repository", "repositories"))
+	return exitUsage
+}
+
+// failureMessage says what went wrong and what to do about it.
+//
+// The 404 case is the one that earns its length. Both hosts return 404 for a
+// private repository with no token — identical to a repository that is not
+// there — so a bare "not found" tells somebody their repository does not
+// exist while they are looking at it in a browser tab.
+func failureMessage(f repoFailure, kind string) string {
+	vars := tokenVarName(f.Name) + " or " + strings.ToUpper(kind) + "_TOKEN"
+	switch {
+	case fetch.IsNotFound(f.Err):
+		return fmt.Sprintf("cannot read %s: not found. A private repository with no token looks "+
+			"exactly like this; check the url and that %s is set", f.Name, vars)
+	case fetch.IsUnauthorized(f.Err):
+		return fmt.Sprintf("cannot read %s: the host rejected the token; check that %s is current "+
+			"and has read access", f.Name, vars)
+	case fetch.IsRateLimited(f.Err):
+		var se *fetch.StatusError
+		errors.As(f.Err, &se)
+		return fmt.Sprintf("cannot read %s: the host's rate limit is spent until %s; an "+
+			"unauthenticated build gets 60 requests an hour, an authenticated one 5000",
+			f.Name, se.RateReset.Format(time.RFC3339))
+	default:
+		return fmt.Sprintf("cannot read %s: %v", f.Name, f.Err)
+	}
+}
+
+// hostKindOf names the host in a token hint. It reads the url rather than
+// carrying the kind on repoFailure, because a failure that happened before
+// the adapter was chosen has no kind to carry.
+func hostKindOf(f repoFailure) string {
+	if strings.Contains(f.URL, "gitlab") {
+		return "gitlab"
+	}
+	return "github"
+}
+
+// partialBanner is the degraded-mode notice stamped into every page.
+//
+// It NAMES the repositories. partialNotice, the scaffold this replaces,
+// could only count them: with no fetcher it did not know which entry was
+// local, and the version that guessed named the wrong two in every page of
+// a generated site. Ruling R22 said a real fetcher would name the ones that
+// actually failed. This is that.
+func partialBanner(fails []repoFailure) string {
+	if len(fails) == 0 {
 		return ""
 	}
-	var discard diag.Collector
-	r := config.LoadRepos("repos.yaml", data, &discard)
-	if len(r.Repos) < 2 {
+	names := make([]string, 0, len(fails))
+	for _, f := range fails {
+		names = append(names, f.Name)
+	}
+	sort.Strings(names)
+	possessive := "their"
+	if len(names) == 1 {
+		possessive = "its"
+	}
+	return fmt.Sprintf("This portal is incomplete: %s could not be read, so %s services are "+
+		"missing from this catalog.", englishList(names), possessive)
+}
+
+// englishList renders "a", "a and b", "a, b and c". A banner is read by a
+// person, and "a, b" for two items reads as a truncated list.
+func englishList(items []string) string {
+	switch len(items) {
+	case 0:
 		return ""
+	case 1:
+		return items[0]
+	case 2:
+		return items[0] + " and " + items[1]
+	default:
+		return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
 	}
-	missing := len(r.Repos) - 1
-	verb := "were"
-	if missing == 1 {
-		verb = "was"
+}
+
+// singleRepoWorkspace adapts one filesystem into a workspace with no
+// remotes, for a caller that predates openRepos.
+//
+// serve.go's rebuild loop is the only caller. It fetches nothing today --
+// `serve` has no repos.yaml wiring yet -- so this only has to reproduce what
+// loadCatalogScoped used to do for a single repository. Task 14 replaces it
+// with a *workspace built once by openRepos at startup and reused across
+// rebuilds via WithLocal (ruling R33); this bridge exists only so Build's
+// signature change does not leave serve.go uncompilable in between.
+func singleRepoWorkspace(fsys fs.FS, c *diag.Collector) *workspace {
+	name := localRepoName(fsys)
+	return &workspace{
+		sources:  catalog.Sources{name: fsys},
+		patterns: map[string][]string{name: patternsFor(fsys, c)},
+		local:    name,
 	}
-	fmt.Fprintf(errOut, "warn: repos.yaml lists %s and this build read only the local one; %s %s not read\n",
-		plural(len(r.Repos), "repository", "repositories"),
-		plural(missing, "repository", "repositories"), verb)
-	return fmt.Sprintf("This portal covers only the repository this build ran in. "+
-		"%s of the %d in repos.yaml %s not read; fetching remote repositories is not implemented yet.",
-		plural(missing, "repository", "repositories"), len(r.Repos), verb)
 }
 
 // mermaidFor resolves --mermaid-src (ruling R13).
@@ -163,11 +265,49 @@ func mermaidFor(src string) (render.Mermaid, error) {
 	}
 }
 
+// cacheFor is the blob cache, or nothing when --no-cache is set.
+func cacheFor(root string, noCache bool) fetch.Cache {
+	if noCache {
+		return fetch.NopCache{}
+	}
+	return newBlobCache(filepath.Join(root, ".landsraad", "cache", "blobs"))
+}
+
+// multiLastEdit answers docs-fresh for every repository: git history for the
+// local one, the host's commit API for the rest (ruling R35).
+//
+// A repository whose adapter has no answer returns false rather than a date,
+// and docs-fresh then reports not-reported. Inventing one would give every
+// fetched service full marks for freshness.
+//
+// ctx is threaded through rather than captured from context.Background(): a
+// request to a host API belongs to the build that asked for it, and Ctrl-C
+// during Score must be able to cancel it rather than waiting out a slow host.
+func multiLastEdit(ctx context.Context, root string, w *workspace) scorecard.LastEditFunc {
+	local := gitLastEdit(root)
+	return func(repo, p string) (time.Time, bool) {
+		if repo == w.local {
+			return local(repo, p)
+		}
+		f, ok := w.FetcherFor(repo)
+		if !ok {
+			return time.Time{}, false
+		}
+		t, known, err := f.LastEdit(ctx, p)
+		if err != nil {
+			return time.Time{}, false
+		}
+		return t, known
+	}
+}
+
 func newBuildCmd() *cobra.Command {
 	var (
-		out        string
-		mermaidSrc string
-		force      bool
+		out          string
+		mermaidSrc   string
+		force        bool
+		allowPartial bool
+		noCache      bool
 	)
 	cmd := &cobra.Command{
 		Use:   "build [root]",
@@ -193,12 +333,23 @@ func newBuildCmd() *cobra.Command {
 				return err
 			}
 			cmd.SilenceUsage = true
+			var c diag.Collector
+			w := openRepos(cmd.Context(), reposOptions{
+				Root: resolved, RootFS: os.DirFS(resolved),
+				Cache:  cacheFor(resolved, noCache),
+				Lookup: os.LookupEnv,
+				ErrOut: cmd.ErrOrStderr(),
+			}, &c)
+			reportDiagnostics(cmd.ErrOrStderr(), c.Diagnostics())
+			if c.HasErrors() {
+				os.Exit(exitUsage)
+			}
 			opts := BuildOptions{
 				Mermaid: mermaid,
-				Now:     time.Now().UTC(), LastEdit: gitLastEdit(resolved),
-				Version: version(), Force: force,
+				Now:     time.Now().UTC(), LastEdit: multiLastEdit(cmd.Context(), resolved, w),
+				Version: version(), Force: force, AllowPartial: allowPartial,
 			}
-			files, code := Build(os.DirFS(resolved), cmd.ErrOrStderr(), opts)
+			files, code := Build(os.DirFS(resolved), w, cmd.ErrOrStderr(), opts)
 			if code != exitOK {
 				os.Exit(code)
 			}
@@ -214,5 +365,9 @@ func newBuildCmd() *cobra.Command {
 		"Mermaid bundle: a URL, a path to a local file, or \"none\"")
 	cmd.Flags().BoolVar(&force, "force", false,
 		"write into a non-empty directory landsraad did not create")
+	cmd.Flags().BoolVar(&allowPartial, "allow-partial", false,
+		"render a portal from the repositories that could be read, with a banner naming the ones that could not")
+	cmd.Flags().BoolVar(&noCache, "no-cache", false,
+		"ignore the fetched-blob cache under .landsraad/cache")
 	return cmd
 }

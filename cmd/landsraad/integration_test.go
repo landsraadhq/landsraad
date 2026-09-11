@@ -453,7 +453,8 @@ func TestBuildProducesACompletePortal(t *testing.T) {
 	dir := t.TempDir()
 	out := filepath.Join(dir, "dist")
 
-	files, code := Build(os.DirFS("../../testdata/monorepo-ok"), io.Discard, BuildOptions{
+	fsys := os.DirFS("../../testdata/monorepo-ok")
+	files, code := Build(fsys, buildWorkspace(t, fsys), io.Discard, BuildOptions{
 		Now:      time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC),
 		LastEdit: noLastEdit(),
 		Version:  "v0.0.0-test",
@@ -559,7 +560,8 @@ func TestRebuildPrunesADeletedEntity(t *testing.T) {
 		LastEdit: noLastEdit(), Version: "v0.0.0-test",
 	}
 
-	full, code := Build(os.DirFS("../../testdata/monorepo-ok"), io.Discard, opts)
+	fsys := os.DirFS("../../testdata/monorepo-ok")
+	full, code := Build(fsys, buildWorkspace(t, fsys), io.Discard, opts)
 	if code != exitOK {
 		t.Fatalf("first build exited %d", code)
 	}
