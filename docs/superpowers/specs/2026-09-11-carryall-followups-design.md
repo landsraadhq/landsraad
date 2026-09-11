@@ -81,6 +81,9 @@ on the call site, not on any rule.
 - A bad pattern on a remote repository is no longer a fetch failure, so
   `--allow-partial` can no longer downgrade a configuration mistake.
 - `README.md:129` states the rule for every command, not only `validate`.
+  So does the design spec's §12 exit-code table, whose row 1 read "usage
+  or config error". The `score.go` comment that quotes that row changes
+  with it.
 
 **Door.** Every change moves a YAML mistake from 1 to 2. A script that
 tests `== 1` for one of those cases breaks. `README.md:129–130` tells
@@ -211,10 +214,14 @@ does not have.
 
 **Ruling.**
 
-- `Repo` always names the repository that holds `File`. The four sites set
-  it to the repository holding `repos.yaml`. Their messages name the
-  repository they are about through `repoLabel`, as
-  `repoDefaultPatternsNote` already does.
+- `Repo` always names the repository that holds `File`, and empty means
+  the repository the command is standing in. The four sites leave it
+  empty, as every diagnostic about the root's own configuration already
+  does (`repos-url`, `missing-teams`, `default-patterns`). Their messages
+  name the repository they are about through `repoLabel`, as
+  `repoDefaultPatternsNote` already does. Naming the root explicitly
+  instead would thread its name through `parseRepo` and `openRepos` only
+  to print `platform:repos.yaml:4`.
 - `diag.Text` prints `repo:file:line` when told to. `build` and `serve`
   tell it to when there is more than one source, so single-repository
   output does not change.
