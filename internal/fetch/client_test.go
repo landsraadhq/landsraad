@@ -355,6 +355,20 @@ func TestClientDoesNotRetryARateLimitBeforeItResets(t *testing.T) {
 			},
 			wantCalls: 3, wantSleep: []time.Duration{7 * time.Second, 7 * time.Second},
 		},
+		{
+			// maxAttempts is 3, so the backoffs are 1s then 2s: the next
+			// wait alone (1s) is short of this reset, but the sum still
+			// owed before the last attempt (1s+2s=3s at the first
+			// decision, then 2s at the second) reaches it, so every
+			// attempt is made. A single-step lookahead would stop after
+			// one call here -- that was the bug.
+			name: "a reset the last attempt would outlast is still retried",
+			headers: map[string]string{
+				"X-RateLimit-Remaining": "0",
+				"X-RateLimit-Reset":     strconv.FormatInt(now.Add(2*time.Second).Unix(), 10),
+			},
+			wantCalls: 3, wantSleep: []time.Duration{time.Second, 2 * time.Second},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var calls int

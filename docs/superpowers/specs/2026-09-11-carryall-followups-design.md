@@ -278,9 +278,9 @@ while the quota is still spent.
 
 **Ruling.**
 
-- A rate-limited response is not retried when `RateReset` is known and
-  the retry would fire before it. `failureMessage` already names the reset
-  time. When `RateReset` is unknown, retries work as they do today.
+- A rate-limited response is not retried when `RateReset` is known and no
+  remaining retry could fire after it. `failureMessage` already names the
+  reset time. When `RateReset` is unknown, retries work as they do today.
 - `Retry-After` handling is unchanged.
 - `ClientOptions` gains `Now func() time.Time`, defaulting to `time.Now`
   the same way `Sleep` defaults to `time.Sleep`

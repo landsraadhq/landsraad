@@ -140,7 +140,7 @@ func (c *Client) Get(ctx context.Context, endpoint string, query url.Values, acc
 			return nil, nil, err
 		}
 		wait := backoff(attempt, err)
-		if c.tooEarlyToRetry(err, wait) {
+		if c.tooEarlyToRetry(err, remainingBackoff(attempt, c.maxAttempts, err)) {
 			return nil, nil, err
 		}
 		c.sleep(wait)
@@ -273,20 +273,43 @@ func retryable(err error) bool {
 	return se.Status/100 == 5 || IsRateLimited(err)
 }
 
-// tooEarlyToRetry reports a spent rate limit that waiting wait cannot
-// outlast: the host named when its quota returns, and a retry after wait
-// would still come before that. Retrying then spends a request, and the
-// build's time, to be told the same thing, and failureMessage already names
-// the reset time, which is the advice that helps (ruling R44).
+// tooEarlyToRetry reports a spent rate limit that no remaining attempt can
+// outlast: the host named when its quota returns, and even the client's
+// last attempt — made after remaining, the sum of every backoff still to
+// come — would still land before that. A single too-soon retry does not end
+// the schedule by itself; only a reset the very last attempt cannot reach
+// does, because giving up then means every attempt still available would
+// fail the same way, and failureMessage already names the reset time, which
+// is the advice that helps (ruling R44).
 //
 // A host that sent Retry-After is obeyed instead: it said how long to wait,
 // and backoff already waits exactly that.
-func (c *Client) tooEarlyToRetry(err error, wait time.Duration) bool {
-	var se *StatusError
-	if !IsRateLimited(err) || !errors.As(err, &se) || se.RetryAfter > 0 || se.RateReset.IsZero() {
+func (c *Client) tooEarlyToRetry(err error, remaining time.Duration) bool {
+	if !IsRateLimited(err) {
 		return false
 	}
-	return c.now().Add(wait).Before(se.RateReset)
+	// IsRateLimited only returns true when err unwraps to a *StatusError, so
+	// this always succeeds; the call is here only to bind se.
+	var se *StatusError
+	errors.As(err, &se)
+	if se.RetryAfter > 0 || se.RateReset.IsZero() {
+		return false
+	}
+	return c.now().Add(remaining).Before(se.RateReset)
+}
+
+// remainingBackoff sums the wait before every attempt still to come, from
+// attempt up to the client's last, maxAttempts-1 — the earliest moment the
+// final attempt could fire. That is the total a spent rate limit's reset
+// has to outlast for giving up to be correct: a reset inside any single
+// step's wait still leaves a later attempt worth making, so tooEarlyToRetry
+// decides on this sum rather than on the next wait alone (ruling R44).
+func remainingBackoff(attempt, maxAttempts int, err error) time.Duration {
+	var total time.Duration
+	for a := attempt; a < maxAttempts; a++ {
+		total += backoff(a, err)
+	}
+	return total
 }
 
 // backoff is 1s, 2s, 4s, unless the host said how long to wait.
