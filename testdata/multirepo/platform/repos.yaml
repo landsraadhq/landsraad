@@ -1,0 +1,8 @@
+repos:
+  - url: https://example.invalid/org/platform
+    local: true
+    paths: [services/*]
+  - url: https://REMOTE_HOST/org/edge-gateway
+    host: github
+    ref: main
+    paths: [.]

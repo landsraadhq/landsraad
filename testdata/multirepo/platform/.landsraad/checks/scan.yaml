@@ -1,0 +1,8 @@
+apiVersion: landsraad/v1
+kind: CheckResults
+producer: ci/scan
+generatedAt: 2026-09-08T00:00:00Z
+results:
+  - entity: service:api
+    check: dashboard-resolves
+    status: pass

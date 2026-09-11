@@ -1,0 +1,15 @@
+apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: edge
+  description: Edge gateway. Fetched from a remote repository over the host API.
+  owner: team-platform
+  tier: 1
+  lifecycle: production
+spec:
+  language: go
+  path: .
+  docs: docs
+  runbook: runbook.md
+  dependsOn:
+    - service:api

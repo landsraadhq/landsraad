@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path"
@@ -14,7 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/emit"
+	"github.com/landsraadhq/landsraad/internal/fetch"
 	"github.com/landsraadhq/landsraad/internal/render"
 )
 
@@ -606,5 +610,103 @@ func TestRebuildPrunesADeletedEntity(t *testing.T) {
 	}
 	if _, err := os.Stat(page); !os.IsNotExist(err) {
 		t.Error("the removed entity's page survived the rebuild")
+	}
+}
+
+// The whole feature, end to end: two repositories, one on disk and one over
+// a host API, merged into one catalog with a reference crossing between
+// them.
+func TestBuildMergesALocalAndARemoteRepository(t *testing.T) {
+	srv := fakeGitHub(t, filepath.Join("..", "..", "testdata", "multirepo", "edge-gateway"))
+	root := multirepoRoot(t, srv.Listener.Addr().String())
+
+	var c diag.Collector
+	w := openRepos(context.Background(), reposOptions{
+		Root: root, RootFS: os.DirFS(root),
+		Cache:  fetch.NopCache{},
+		Lookup: func(string) (string, bool) { return "test-token", true },
+		ErrOut: io.Discard,
+		HTTP:   srv.Client(),
+	}, &c)
+	if ds := c.Diagnostics(); len(ds) != 0 {
+		t.Fatalf("openRepos reported %d diagnostics: %+v", len(ds), ds)
+	}
+	if got := w.Failures(); len(got) != 0 {
+		t.Fatalf("openRepos failed for %+v", got)
+	}
+
+	var errOut bytes.Buffer
+	files, code := Build(os.DirFS(root), w, &errOut, BuildOptions{
+		Now: testNow, Version: "test",
+		LastEdit: func(string, string) (time.Time, bool) { return testNow, true },
+	})
+	if code != exitOK {
+		t.Fatalf("Build exit = %d, stderr:\n%s", code, errOut.String())
+	}
+
+	byPath := map[string][]byte{}
+	for _, f := range files {
+		byPath[f.Path] = f.Data
+	}
+	// A page for the remote repository's entity.
+	if _, ok := byPath["entity/service/edge/index.html"]; !ok {
+		t.Error("no page for the entity defined in the fetched repository")
+	}
+	// Its runbook, fetched as a blob and rendered.
+	if _, ok := byPath["entity/service/edge/runbook.html"]; !ok {
+		t.Error("the fetched repository's runbook was not rendered")
+	}
+	// And the cross-repository dependency resolved: build runs at
+	// FullCatalog, so a dangling ref would have been a hard failure.
+	if got := string(byPath["entity/service/edge/index.html"]); !strings.Contains(got, "service:api") {
+		t.Error("the cross-repository dependsOn did not resolve")
+	}
+	// No banner: nothing failed.
+	for p, data := range byPath {
+		if strings.Contains(string(data), "This portal is incomplete") {
+			t.Errorf("%s carries a degraded-mode banner on a clean build", p)
+		}
+	}
+}
+
+// The same fixture with the host refusing everything: build must refuse, and
+// --allow-partial must render the local half with a banner naming the
+// remote (ruling R32).
+func TestBuildWithAnUnreachableRemote(t *testing.T) {
+	dead := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(dead.Close)
+	root := multirepoRoot(t, dead.Listener.Addr().String())
+
+	open := func() *workspace {
+		var c diag.Collector
+		return openRepos(context.Background(), reposOptions{
+			Root: root, RootFS: os.DirFS(root), Cache: fetch.NopCache{},
+			Lookup: func(string) (string, bool) { return "t", true },
+			ErrOut: io.Discard, HTTP: dead.Client(),
+		}, &c)
+	}
+
+	var errOut bytes.Buffer
+	if _, code := Build(os.DirFS(root), open(), &errOut, BuildOptions{Now: testNow, Version: "t"}); code != exitUsage {
+		t.Errorf("exit = %d, want %d", code, exitUsage)
+	}
+
+	errOut.Reset()
+	files, code := Build(os.DirFS(root), open(), &errOut, BuildOptions{
+		Now: testNow, Version: "t", AllowPartial: true,
+	})
+	if code != exitOK {
+		t.Fatalf("--allow-partial exit = %d, stderr:\n%s", code, errOut.String())
+	}
+	var banners int
+	for _, f := range files {
+		if strings.Contains(string(f.Data), "edge-gateway could not be read") {
+			banners++
+		}
+	}
+	if banners == 0 {
+		t.Error("no page names the repository that failed")
 	}
 }

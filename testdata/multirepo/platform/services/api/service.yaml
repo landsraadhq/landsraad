@@ -1,0 +1,13 @@
+apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: api
+  description: The platform API that the edge gateway routes to.
+  owner: team-platform
+  tier: 1
+  lifecycle: production
+spec:
+  language: go
+  path: services/api
+  docs: services/api/docs
+  runbook: services/api/runbook.md

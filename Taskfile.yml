@@ -46,6 +46,11 @@ tasks:
       - go run ./cmd/landsraad build testdata/monorepo-ok -o dist
       - echo "built dist/ — run 'go run ./cmd/landsraad serve testdata/monorepo-ok --watch' to preview"
 
+  site-multirepo:
+    desc: Build the portal from the multi-repo fixture, with the remote faked
+    cmds:
+      - go test ./cmd/landsraad/ -run TestBuildMergesALocalAndARemoteRepository -v
+
   ci:
     desc: Everything CI runs
     deps: [lint, test]
