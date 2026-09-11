@@ -272,13 +272,36 @@ func TestCheckOwnersReportsMissingTeamsFileExactMessage(t *testing.T) {
 	if d.Line != 1 {
 		t.Errorf("Line = %d, want 1", d.Line)
 	}
-	want := "teams.yaml not found at the repository root"
+	want := "teams.yaml not found at the repository root, so no owner can be resolved"
 	if d.Message != want {
 		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
 	}
-	wantHint := "every entity's owner must resolve to a team defined there"
+	wantHint := "run `landsraad init` to create one, or pass --satellite if this repository's owners are defined in the platform repository's teams.yaml"
 	if d.Hint != wantHint {
 		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, wantHint)
+	}
+}
+
+// Ruling R43: one condition, one check id. gen, score and build said
+// teams-missing while validate said missing-teams, with a different message
+// and hint, about the same absent file. The id and message are now shared;
+// the hint is each command's own, because the remedy differs: validate has
+// --satellite, and gen, score and build have no such mode.
+func TestLoadCatalogReportsMissingTeamsLikeValidate(t *testing.T) {
+	fsys := genFS()
+	delete(fsys, "teams.yaml")
+	var c diag.Collector
+
+	loadCatalog(fsys, &c)
+
+	want := []diag.Diagnostic{{
+		Severity: diag.SevError, File: "teams.yaml", Line: 1,
+		Check:   "missing-teams",
+		Message: "teams.yaml not found at the repository root, so no owner can be resolved",
+		Hint:    "run `landsraad init` to create one",
+	}}
+	if diff := cmp.Diff(want, c.Diagnostics()); diff != "" {
+		t.Errorf("diagnostics mismatch (-want +got):\n%s", diff)
 	}
 }
 

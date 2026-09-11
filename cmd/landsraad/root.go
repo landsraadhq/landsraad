@@ -41,8 +41,9 @@ var rootMarkers = []string{"repos.yaml", "teams.yaml", ".git"}
 
 // findRoot walks up from start looking for a repository root, the way every
 // linter does. Without it, running `landsraad validate` from inside
-// services/foo/ reports "teams.yaml not found at the repository root" while
-// standing in a subdirectory of a perfectly valid repo.
+// services/foo/ reports "teams.yaml not found at the repository root, so no
+// owner can be resolved" while standing in a subdirectory of a perfectly
+// valid repo.
 //
 // start itself must exist: without this check, a typo'd argument inside a
 // real repo (`validate serivces/api`) walked upward, found the repo's real

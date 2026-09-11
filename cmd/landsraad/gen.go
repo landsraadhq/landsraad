@@ -162,8 +162,11 @@ func assemble(entities []*catalog.Entity, src catalog.Sources, scope catalog.Sco
 	if err != nil {
 		c.Add(diag.Diagnostic{
 			Severity: diag.SevError, File: "teams.yaml", Line: 1,
-			Check:   "teams-missing",
-			Message: "teams.yaml not found, so no owner can be resolved",
+			// validate's id and message for the same absent file (ruling R43).
+			// The hint is this command's own: gen, score and build run only in
+			// the platform repository, where --satellite is not an answer.
+			Check:   "missing-teams",
+			Message: "teams.yaml not found at the repository root, so no owner can be resolved",
 			Hint:    "run `landsraad init` to create one",
 		})
 		return nil, nil, nil

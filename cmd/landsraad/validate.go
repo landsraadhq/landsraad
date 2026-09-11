@@ -258,8 +258,10 @@ func checkOwners(fsys fs.FS, cat *catalog.Catalog, c *diag.Collector) {
 		c.Add(diag.Diagnostic{
 			Severity: diag.SevError, File: "teams.yaml", Line: 1,
 			Check:   "missing-teams",
-			Message: "teams.yaml not found at the repository root",
-			Hint:    "every entity's owner must resolve to a team defined there",
+			Message: "teams.yaml not found at the repository root, so no owner can be resolved",
+			// Not gen's hint: validate is the one command a satellite runs,
+			// and --satellite is its remedy (ruling R43).
+			Hint: "run `landsraad init` to create one, or pass --satellite if this repository's owners are defined in the platform repository's teams.yaml",
 		})
 		return
 	}
