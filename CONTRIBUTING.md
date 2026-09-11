@@ -29,15 +29,21 @@ mechanically, not just documented:
   initialisation failure can't be tested. `task lint` fails on this too.
 - **Diagnostic wording is asserted exactly** — see Tests below. `task lint`
   fails on a substring assertion against `.Message` or `.Hint`.
+- **Only `internal/fetch` imports `net/http`** (Plan 4 ruling R25). Every
+  other package under `internal/` is a pipeline stage, and a stage that
+  blocks on a socket cannot be tested offline, cannot run in a service
+  repo's PR CI, and makes "`score` runs offline in under a second" a claim
+  about which filesystem you happened to pass it. `task lint` fails on this
+  too.
 - **New checks are Go functions with stable ids, not a plugin system** (D4).
   When the scorecard lands, a new check is a typed function registered by id
   and a line in `standards.yaml`'s severity matrix — never a YAML rule
   language or a dynamically loaded plugin. That's a deliberate non-goal, not
   a gap.
 
-The first three are grep rules in `scripts/check-rules.sh`, which `task lint`
+The first four are grep rules in `scripts/check-rules.sh`, which `task lint`
 runs, so they fail in your shell rather than in review. `.claude/hooks/`
-carries the same three patterns as editor-time hooks for Claude Code
+carries the same four patterns as editor-time hooks for Claude Code
 sessions; those run in that workflow only, and are a convenience, not the
 enforcement point.
 
@@ -66,6 +72,24 @@ if got.Message != want {
 Fixture repos live in `testdata/`. The test suite reaches zero network — if
 a test needs an HTTP call, it goes through `httptest` with a recorded
 response, not a live request.
+
+To check that claim rather than trust it, point every proxy variable at a
+dead port and run the suite:
+
+```sh
+HTTP_PROXY=http://127.0.0.1:1 HTTPS_PROXY=http://127.0.0.1:1 ALL_PROXY=http://127.0.0.1:1 \
+  go test ./... -count=1
+```
+
+This works because Go's `http.ProxyFromEnvironment` never proxies loopback:
+every `httptest` server listens on `127.0.0.1`, so requests to it still go
+straight through, while any request to a real host gets routed at the dead
+port and fails instantly instead of hanging or, worse, succeeding. A `-v`
+grep for a hostname like `api.github.com` proves nothing by itself — it can
+only find a hostname that happens to appear in test *output*, which includes
+subtest names built from table-driven inputs (`TestParseRepo`'s cases name
+URLs; `ParseRepo` is pure string parsing that touches no socket) and says
+nothing about whether a request was actually made.
 
 ## Commits
 

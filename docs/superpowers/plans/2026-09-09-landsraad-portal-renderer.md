@@ -7373,4 +7373,15 @@ Plan 4 is **Carryall**, the multi-repo fetcher — spec stage 2, decision D5.
 - A remote `LastEditFunc` over `GET /commits?path=…&per_page=1`, the documented cost of D5 (spec §9).
 - `build` loops over `repos.yaml`, merging one catalog from many filesystems, and `partialNotice` in `cmd/landsraad/build.go` is **deleted** — replaced by real fetching plus `--allow-partial`, which stamps a banner naming every repo that actually failed (spec §12).
 
-Nothing below `cmd/` changes: every stage in this plan already takes an `io/fs.FS`, which is the whole point of spec §3.1's seam. `render.Site` does not learn that repositories exist.
+> **Corrected on 2026-09-10, by Plan 4.** This section originally ended:
+> *"Nothing below `cmd/` changes: every stage in this plan already takes an
+> `io/fs.FS`, which is the whole point of spec §3.1's seam."* That is wrong.
+> One `fs.FS` per **stage** is not one `fs.FS` per **entity**: once a merged
+> catalog holds entities from three repositories, `CheckFiles`,
+> `scorecard.Env`, `scorecard.Ingest`, `LastEditFunc` and `render.Input` are
+> each answering with the wrong filesystem for two thirds of the catalog.
+> Plan 4 changes all five, threading a `catalog.Sources` through them
+> (ruling R23). The seam was real and it did its job — every one of those
+> takes an interface rather than a path, which is why Plan 4 adds a
+> filesystem *implementation* and no stage learns what a repository is. It
+> was simply one-dimensional, and the catalog is two-dimensional.

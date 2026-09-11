@@ -11,11 +11,10 @@ database, no platform team, and it works against a repo you already have.
 **`landsraad validate`**, **`gen`**, **`score`**, **`build`** and **`serve`** all
 work. Validation is hermetic and offline; `gen` derives CODEOWNERS, alert
 routing and a Slack map; `score` measures the catalog against `standards.yaml`;
-`build` renders a static portal and `serve --watch` previews it.
-
-What is **not** built: fetching remote repositories over the GitHub and GitLab
-APIs. `build` renders the repository it is run in, and warns when `repos.yaml`
-names repositories it could not read.
+`build` renders a static portal and `serve --watch` previews it. `build` also
+fetches every remote repository named in `repos.yaml` over the GitHub and
+GitLab APIs and merges their entities into one catalog — see "Multi-repository
+catalogs" below.
 
 ## Try it in under a minute
 
@@ -153,6 +152,73 @@ landsraad build --mermaid-src none                      # diagrams degrade to a 
 Search needs `fetch()`, which browsers block on `file://` pages. Use
 `landsraad serve`, or host the output, to try it.
 
+## Multi-repository catalogs
+
+`build` reads every repository listed in `repos.yaml`, not only the one it
+runs in. `url` and `paths` are the two keys shown above; four more are
+optional:
+
+```yaml
+repos:
+  - url: https://github.com/org/platform
+    local: true                # the repository this command is running in
+    paths: [services/*, workers/*, libs/*]
+  - url: https://github.com/org/edge-gateway
+    paths: [.]
+  - url: https://gitlab.example.com/org/legacy-billing
+    host: gitlab                # self-hosted instance; the hostname doesn't say
+    name: billing                # this repo's identity in diagnostics and URLs
+    ref: release                 # a branch or tag; omit to ask the host for its default
+    paths: [.]
+```
+
+`local: true` marks the repository the command is standing in; at most one
+entry may set it. `host` is needed only when the hostname does not already
+say `github.com` or `gitlab.com` — a self-hosted instance. `name` is what
+appears in every diagnostic and URL for that repository, in place of the
+name `build` would otherwise derive from the URL. `ref` is a branch or tag;
+left empty, landsraad asks the host for its default branch, which costs one
+extra request but does not silently fetch nothing from a repository that
+still uses `master`.
+
+**Tokens.** Never put a token in `repos.yaml` — it is checked in like the
+rest of the file, and a token there is a token in everyone's clone forever.
+landsraad reads one from the environment instead, per repository:
+`LANDSRAAD_TOKEN_<NAME>` first (the repository's `name`, or its derived
+identity, uppercased with every non-alphanumeric byte replaced by `_`), then
+`GITHUB_TOKEN` or `GITLAB_TOKEN` by host. No token is not an error — public
+repositories work without one — but a **private** repository with no token
+returns a 404 from both hosts, identical to a repository that does not
+exist, so `build`'s failure message for that case names the variable to set.
+
+**`build --allow-partial`** renders the portal from whichever repositories
+could be read, instead of refusing outright, and stamps a banner naming the
+ones that could not into every page — so a reader of the portal, not just
+whoever ran the build, sees that it is incomplete and which services are
+missing.
+
+**`build --no-cache`** skips the fetched-blob cache. Fetched file contents are
+otherwise cached under `.landsraad/cache/blobs/` in the repository `build`
+runs in, keyed on the git blob SHA the host's tree listing returns —
+content-addressed, so a hit can never be stale. The cache is safe to delete
+at any time; nothing in v1 prunes it automatically, so it grows for as long
+as the catalog changes.
+
+If you scaffolded a repository with `landsraad init` before this cache
+existed, its `.gitignore` will not have the `.landsraad/cache/` line —
+`init` never overwrites a file that is already there. Add it yourself before
+your first multi-repository build, or fetched file contents from other
+repositories will stage into your git index.
+
+**`serve --watch`** only watches the local repository. Remote repositories,
+like `repos.yaml` itself, are fetched once at startup; picking up a change in
+one needs a restart.
+
+**Unsupported hosts.** Only GitHub and GitLab have adapters. Gitea, Forgejo,
+Bitbucket and plain git remotes are not supported in v1 — an accepted
+consequence of that decision, not an oversight, and `Fetcher` is a Go
+interface so a third adapter is additive rather than a rewrite.
+
 ## Editor autocompletion
 
 `landsraad init` writes `schema/service.schema.json` — the schema the binary
@@ -197,10 +263,12 @@ kind that survives.
 Implemented: schema validation, ownership checks against `teams.yaml`,
 dependency-cycle detection, four CI-friendly output formats
 (`text`, `json`, `github`, `gitlab`), generated ownership artifacts with a
-`--check` gate, a tier-aware scorecard with history, and the static portal.
+`--check` gate, a tier-aware scorecard with history, the static portal, and
+multi-repository fetching over the GitHub and GitLab APIs.
 
-Designed but not built: multi-repo fetching over the GitHub and GitLab APIs.
-See `docs/superpowers/specs/2026-09-08-landsraad-design.md`.
+Not supported: Gitea, Forgejo, Bitbucket and plain git remotes — see
+"Multi-repository catalogs" above. Design rationale for all of the above is
+in `docs/superpowers/specs/2026-09-08-landsraad-design.md`.
 
 ## License
 

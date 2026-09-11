@@ -57,6 +57,18 @@ if [ -n "$found" ]; then
 	report 'assert diagnostic wording exactly, not with strings.Contains against .Message or .Hint:' "$found"
 fi
 
+# 4. Only internal/fetch speaks HTTP. Every other package under internal/ is
+#    a pipeline stage, and a stage that blocks on a socket cannot be tested
+#    offline, cannot be run in a service repo's PR CI, and makes "score runs
+#    offline in under a second" a claim about which filesystem you happened
+#    to pass it. Plan 4 ruling R25.
+found=$(grep -rnE '^[[:space:]]*(import[[:space:]]+)?([A-Za-z0-9_.]+[[:space:]]+)?"(net/http|net)"[[:space:]]*(//.*)?$' \
+	internal --include='*.go' --exclude='*_test.go' 2>/dev/null \
+	| grep -v '^internal/fetch/' || true)
+if [ -n "$found" ]; then
+	report 'only internal/fetch may import net/http — a pipeline stage that blocks on a socket cannot run offline:' "$found"
+fi
+
 if [ "$status" -ne 0 ]; then
 	printf '\nThese rules are in CONTRIBUTING.md. They are not style preferences.\n' >&2
 fi

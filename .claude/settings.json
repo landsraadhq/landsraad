@@ -6,7 +6,8 @@
         "hooks": [
           { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/no-os-in-internal.py\"" },
           { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/no-package-state.py\"" },
-          { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/exact-message-tests.py\"" }
+          { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/exact-message-tests.py\"" },
+          { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/no-network-in-stages.py\"" }
         ]
       }
     ],

@@ -386,6 +386,8 @@ documentation*. They answer different questions and are tuned independently.
 ```
 1 DISCOVER  glob service.yaml from repos.yaml paths           → []FileRef
 2 FETCH     pull remote repo trees (GitHub/GitLab adapter)    → local cache
+            The cache is content-addressed on the git blob SHA, at
+            .landsraad/cache/blobs/, with no automatic pruning in v1 (R27).
 3 PARSE     YAML → Entity, strict schema, line numbers kept   → []Entity + diags
 4 MERGE     one Catalog; detect name collisions               → Catalog
 5 RESOLVE   resolve kind:name refs, build graph, find cycles  → Graph
@@ -577,7 +579,12 @@ internal/diag/         Diagnostic, Collector, Formatter interface + formats
 internal/discover/     Find(fs.FS, patterns) — stage 1
 internal/catalog/      Entity types, ParseAll, merge, refs, graph, CheckFiles
 internal/schema/       embedded JSON Schema; *Validator value, no globals
-internal/fetch/        Fetcher interface returning an fs.FS; github/, gitlab/
+internal/fetch/        Fetcher interface returning an fs.FS; fs.go is the
+                       sparse filesystem, client.go the shared
+                       HTTP half, github.go/githubwalk.go/gitlab.go the
+                       adapters. The only package under internal/ that
+                       speaks HTTP, and it makes every request before a
+                       stage runs.
 internal/scorecard/    checks, ingest, scoring, history
 internal/render/       site generation, goldmark pipeline, search index
 internal/render/md/    admonition extension
@@ -650,8 +657,14 @@ CI rather than tracking `@latest`. `dependabot.yml` covers Go modules and
 GitHub Actions.
 
 **Secrets.** landsraad reads YAML and writes static files. It holds no
-credentials in v1; the fetch adapters' tokens arrive with Plan 3 and belong in
-CI secrets, never in `repos.yaml`.
+credentials in v1; the fetch adapters' tokens arrive with Plan 4 and belong in
+CI secrets, never in `repos.yaml`. Resolution order, per repository (R29):
+`LANDSRAAD_TOKEN_<NAME>` (the entry's identity, uppercased, every
+non-alphanumeric byte replaced with `_`) first, then `GITHUB_TOKEN` or
+`GITLAB_TOKEN` by host kind. No token is not an error — public repositories
+still work — but it is a false economy for a private one: both hosts answer
+a private repository with no token the same 404 they give a repository that
+does not exist.
 
 ---
 

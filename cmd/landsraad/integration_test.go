@@ -685,6 +685,12 @@ func TestBuildWithAnUnreachableRemote(t *testing.T) {
 	// keeps the real 3-attempt, 2-sleep-per-Get retry schedule in the
 	// assertion while paying none of its wall-clock cost (fetch.Client's
 	// Sleep seam, reached through reposOptions.Sleep).
+	//
+	// The bare sleeps++ below is safe ONLY because the dead host 500s the
+	// tree listing, so Open fails before fetchBlobs' worker pool ever
+	// starts — Sleep is never called from more than one goroutine here. Do
+	// not copy this pattern into a test that reaches blobParallel's
+	// concurrent workers without a mutex or an atomic.
 	var sleeps int
 	open := func() *workspace {
 		var c diag.Collector

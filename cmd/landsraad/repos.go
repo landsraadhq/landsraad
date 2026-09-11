@@ -65,6 +65,12 @@ type reposOptions struct {
 	// retries in milliseconds instead of the real 1s/2s/4s backoff schedule,
 	// without weakening the retry path itself (fetch.ClientOptions.Sleep is
 	// the seam; this just reaches it from cmd/).
+	//
+	// Reachable from blobParallel's concurrent workers: a caller that counts
+	// calls with a bare counter, as TestBuildWithAnUnreachableRemote does, is
+	// safe only when it can prove Sleep is never called from more than one
+	// goroutine at a time. A Sleep counted from a genuinely parallel context
+	// needs a mutex or an atomic.
 	Sleep func(time.Duration)
 }
 

@@ -3,3 +3,5 @@ dist/
 __pycache__/
 *.pyc
 .superpowers/
+# landsraad's fetched-blob cache. Content-addressed, safe to delete.
+.landsraad/cache/
