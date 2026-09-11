@@ -16,7 +16,7 @@ func TestInitWritesAWorkingCatalog(t *testing.T) {
 	if err := runInit(dir, &out); err != nil {
 		t.Fatalf("runInit: %v", err)
 	}
-	for _, f := range []string{"teams.yaml", "repos.yaml", "services/example/service.yaml", "schema/service.schema.json"} {
+	for _, f := range []string{".gitignore", "teams.yaml", "repos.yaml", "services/example/service.yaml", "schema/service.schema.json"} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			t.Errorf("init did not create %s", f)
 		}
@@ -63,6 +63,27 @@ func TestInitResolvesTheEditorModeline(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "landsraad validate") {
 		t.Errorf("init must say what to run next:\n%s", out.String())
+	}
+}
+
+// A cache committed to a repository would be an ever-growing directory of
+// other repositories' file contents showing up in diffs (ruling R27), so a
+// fresh repository must ignore it from the first commit.
+func TestInitGitignoresTheBlobCache(t *testing.T) {
+	dir := t.TempDir()
+	var out bytes.Buffer
+	if err := runInit(dir, &out); err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	if err != nil {
+		t.Fatalf("init did not create .gitignore: %v", err)
+	}
+	want := "# landsraad's fetched-blob cache. Content-addressed, safe to delete.\n" +
+		".landsraad/cache/\n"
+	if string(got) != want {
+		t.Errorf("\n got: %q\nwant: %q", got, want)
 	}
 }
 

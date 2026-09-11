@@ -2,7 +2,7 @@
 // repository, as values rather than as filesystem calls.
 //
 // Spec §3.1 puts writes at the command layer, and says they take an
-// io.Writer. That works for one stream and not for a tree: init produces four
+// io.Writer. That works for one stream and not for a tree: init produces five
 // files in three directories, and Plan 2's `gen` produces a page per entity
 // plus CODEOWNERS and a history file. The shape that does work is this one —
 // a pure function returns the files, and cmd/ owns the single loop that puts
@@ -26,6 +26,12 @@ import (
 // is checked in memory rather than against a temporary directory.
 func Files() []emit.File {
 	return []emit.File{
+		// Plan 4's blob cache (ruling R27) lives at .landsraad/cache/. A
+		// committed cache would be an ever-growing directory of other
+		// repositories' file contents showing up in diffs, so a fresh
+		// repository ignores it from the first commit rather than relying
+		// on a user to notice and add the line themselves.
+		{Path: ".gitignore", Data: []byte(gitignore)},
 		{Path: "teams.yaml", Data: []byte(teamsYAML)},
 		{Path: "repos.yaml", Data: []byte(reposYAML)},
 		// The modeline in service.yaml below points here. Writing it is what
@@ -36,6 +42,10 @@ func Files() []emit.File {
 		{Path: "services/example/service.yaml", Data: []byte(exampleService)},
 	}
 }
+
+const gitignore = `# landsraad's fetched-blob cache. Content-addressed, safe to delete.
+.landsraad/cache/
+`
 
 const teamsYAML = `teams:
   - name: team-example
