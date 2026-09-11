@@ -107,7 +107,7 @@ func parseRepo(name string, fsys fs.FS, patterns []string, solo bool, v *schema.
 			// original wording exactly — this is a refactor, not a
 			// behaviour change, for validate/gen/score.
 			c.Add(diag.Diagnostic{
-				Severity: diag.SevError, Repo: name, File: "repos.yaml", Line: 1,
+				Severity: diag.SevError, File: "repos.yaml", Line: 1,
 				Check: "no-entities",
 				Message: fmt.Sprintf("no %s found under any configured path (%s)",
 					discover.Filename, strings.Join(patterns, ", ")),
