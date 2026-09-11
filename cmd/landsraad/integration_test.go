@@ -920,6 +920,46 @@ func TestBuildWithAnUnreachableRemote(t *testing.T) {
 	}
 }
 
+// serve used to collapse Build's exit code to a hardcoded exitValidation, so
+// a repository it could not fetch -- Build's own exitUsage case -- exited 2
+// from serve and 1 from build for the identical failure. Ruling R36: exit 1
+// means landsraad could not run, exit 2 means a file the user wrote has a
+// problem a diagnostic points at. Nobody's YAML is wrong when a remote 500s,
+// so serve must exit exactly what Build does for the same failure.
+func TestServeExitsTheSameCodeAsBuildForAFetchFailure(t *testing.T) {
+	dead := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(dead.Close)
+	root := multirepoRoot(t, dead.Listener.Addr().String())
+
+	open := func() *workspace {
+		var c diag.Collector
+		return openRepos(context.Background(), reposOptions{
+			Root: root, RootFS: os.DirFS(root), Cache: fetch.NopCache{},
+			Lookup: func(string) (string, bool) { return "t", true },
+			ErrOut: io.Discard, HTTP: dead.Client(),
+			Sleep: func(time.Duration) {},
+		}, &c)
+	}
+
+	var buildErrOut bytes.Buffer
+	_, wantCode := Build(os.DirFS(root), open(), &buildErrOut, BuildOptions{Now: testNow, Version: "t"})
+	if wantCode != exitUsage {
+		t.Fatalf("test setup: Build exit = %d, want %d (a fetch failure, not --allow-partial)", wantCode, exitUsage)
+	}
+
+	var serveErrOut bytes.Buffer
+	err := Serve(root, open(), freeAddr(t), BuildOptions{Now: testNow, Version: "t"}, utcNow, false, &serveErrOut)
+	var buildErr *initialBuildFailedError
+	if !errors.As(err, &buildErr) {
+		t.Fatalf("Serve error = %v, want *initialBuildFailedError", err)
+	}
+	if buildErr.Code != wantCode {
+		t.Errorf("Serve's exit code = %d, want %d -- Build's own code for the same fetch failure", buildErr.Code, wantCode)
+	}
+}
+
 // cmd's fake host used to speak only GitHub, so no test drove openRepos and
 // Build through the GitLab adapter end to end. This is the baseline R45 is
 // measured against: a satellite whose whole tree sits inside `paths: [.]`,

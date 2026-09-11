@@ -335,7 +335,7 @@ func TestEachRebuildReadsTheClockAgain(t *testing.T) {
 	w := buildWorkspace(t, os.DirFS(root))
 	rebuild := newRebuild(root, w, BuildOptions{LastEdit: noLastEdit()}, clock, srv, &errOut)
 
-	if ok := rebuild(""); !ok {
+	if code := rebuild(""); code != exitOK {
 		t.Fatalf("the first build must succeed; stderr:\n%s", errOut.String())
 	}
 	page, ok := srv.lookup("index.html")
@@ -346,7 +346,7 @@ func TestEachRebuildReadsTheClockAgain(t *testing.T) {
 		t.Fatalf("the first build did not use the injected clock:\n%s", page)
 	}
 
-	if ok := rebuild(""); !ok {
+	if code := rebuild(""); code != exitOK {
 		t.Fatalf("the second build must succeed; stderr:\n%s", errOut.String())
 	}
 	page, ok = srv.lookup("index.html")
@@ -374,7 +374,7 @@ func TestRebuildAfterAGoodBuildKeepsServingLastGoodSite(t *testing.T) {
 	w := buildWorkspace(t, os.DirFS(root))
 	rebuild := newRebuild(root, w, opts, utcNow, srv, &errOut)
 
-	if ok := rebuild(""); !ok {
+	if code := rebuild(""); code != exitOK {
 		t.Fatalf("the first, valid build must succeed; stderr:\n%s", errOut.String())
 	}
 	goodIndex, ok := srv.lookup("index.html")
@@ -384,7 +384,7 @@ func TestRebuildAfterAGoodBuildKeepsServingLastGoodSite(t *testing.T) {
 
 	errOut.Reset()
 	writeBrokenCatalog(t, root) // adds a second entity with an undefined owner
-	if ok := rebuild(""); ok {
+	if code := rebuild(""); code == exitOK {
 		t.Fatal("a build with a dangling owner reference must fail")
 	}
 	want := "  build failed; still serving the previous version\n"
@@ -634,8 +634,8 @@ func TestServeWithoutWatchExitsWhenReposYAMLIsMalformed(t *testing.T) {
 // could fix it (TestServeWithWatchRespondsThenRecoversAfterAFailedFirstBuild
 // pins exactly that, for a broken catalog). repos.yaml is different since
 // Task 14 -- it is read exactly once, before the first build, so no later
-// save can ever reach it, and errInitialBuildFailed's own doc comment says
-// as much: "There is no later save that could fix it and nothing to
+// save can ever reach it, and initialBuildFailedError's own doc comment
+// says as much: "There is no later save that could fix it and nothing to
 // serve." --watch must not be read as a reason to tolerate this one.
 //
 // Nothing here currently makes --watch special-case this gate, and nothing

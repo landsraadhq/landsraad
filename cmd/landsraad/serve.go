@@ -130,8 +130,8 @@ func watchDirs(root string, w *fsnotify.Watcher) error {
 }
 
 // newRebuild returns a function that renders root into srv, serialised so a
-// burst of triggers can never run Build concurrently, and reports whether
-// the build succeeded.
+// burst of triggers can never run Build concurrently, and returns the exit
+// code Build itself returned — exitOK on success.
 //
 // Build's LastEdit closure (gitLastEdit, lastedit.go) caches into a plain,
 // unsynchronised map. The debounce timer's Stop-then-AfterFunc pattern can
@@ -157,9 +157,9 @@ func watchDirs(root string, w *fsnotify.Watcher) error {
 // graded Monday's catalog against Friday. The clock is still injected rather
 // than read inside internal/ — that rule does not move — it is injected as a
 // function so it can be read again each time.
-func newRebuild(root string, w *workspace, opts BuildOptions, now func() time.Time, srv *siteServer, errOut io.Writer) func(label string) bool {
+func newRebuild(root string, w *workspace, opts BuildOptions, now func() time.Time, srv *siteServer, errOut io.Writer) func(label string) int {
 	var mu sync.Mutex
-	return func(label string) bool {
+	return func(label string) int {
 		mu.Lock()
 		defer mu.Unlock()
 		if label != "" {
@@ -187,19 +187,23 @@ func newRebuild(root string, w *workspace, opts BuildOptions, now func() time.Ti
 				// request with an honest 503 until this is fixed.
 				fmt.Fprintf(errOut, "  build failed; nothing has been rendered yet\n")
 			}
-			return false
+			return code
 		}
 		srv.set(files)
-		return true
+		return exitOK
 	}
 }
 
-// errInitialBuildFailed signals that the first build failed and --watch was
-// not set. There is no later save that could fix it and nothing to serve,
-// so newServeCmd exits 2 (spec §12) instead of starting a server that could
-// only ever answer 503 — matching how newBuildCmd exits on a Build that
-// returns a non-exitOK code (build.go).
-var errInitialBuildFailed = errors.New("initial build failed")
+// initialBuildFailedError signals that the first build failed and --watch
+// was not set. There is no later save that could fix it and nothing to
+// serve, so newServeCmd exits on Code — whatever Build itself returned —
+// instead of starting a server that could only ever answer 503, rather than
+// collapsing it to a hardcoded exitValidation. That is what makes a fetch
+// failure (exitUsage) and a broken catalog (exitValidation) exit
+// differently here exactly as they do for `landsraad build` (build.go).
+type initialBuildFailedError struct{ Code int }
+
+func (e *initialBuildFailedError) Error() string { return "initial build failed" }
 
 // Serve renders the site and serves it, rebuilding on change when watch is
 // set.
@@ -216,8 +220,8 @@ var errInitialBuildFailed = errors.New("initial build failed")
 func Serve(root string, w *workspace, addr string, opts BuildOptions, now func() time.Time, watch bool, errOut io.Writer) error {
 	srv := &siteServer{}
 	rebuild := newRebuild(root, w, opts, now, srv, errOut)
-	if ok := rebuild(""); !ok && !watch {
-		return errInitialBuildFailed
+	if code := rebuild(""); code != exitOK && !watch {
+		return &initialBuildFailedError{Code: code}
 	}
 
 	if watch {
@@ -331,9 +335,9 @@ func newServeCmd() *cobra.Command {
 			// port, exactly as it stops build and validate -- there is no
 			// later rebuild that gets a second chance to catch it, because
 			// after this point repos.yaml is never read again for the life
-			// of this process. exitValidation, not build's exitUsage: that
-			// is what serve and validate have always exited with for a
-			// broken catalog.
+			// of this process. exitValidation: a malformed repos.yaml is a
+			// file the user wrote, and build and validate exit on it the
+			// same way (ruling R36).
 			var c diag.Collector
 			w := openRepos(cmd.Context(), reposOptions{
 				Root: resolved, RootFS: os.DirFS(resolved),
@@ -357,11 +361,15 @@ func newServeCmd() *cobra.Command {
 				LastEdit: multiLastEdit(cmd.Context(), resolved, w),
 				Version:  version(), AllowPartial: allowPartial,
 			}, func() time.Time { return time.Now().UTC() }, watch, cmd.ErrOrStderr())
-			if errors.Is(err, errInitialBuildFailed) {
+			var buildErr *initialBuildFailedError
+			if errors.As(err, &buildErr) {
 				// A server that could only ever answer 503 is worse than a
 				// clear failure — there is no later save, without --watch,
-				// that could fix it.
-				os.Exit(exitValidation)
+				// that could fix it. Exit on whatever Build itself
+				// returned, exactly as newBuildCmd does (ruling R36):
+				// exitUsage for a repository it could not fetch, and
+				// exitValidation for a broken catalog.
+				os.Exit(buildErr.Code)
 			}
 			return err
 		},
