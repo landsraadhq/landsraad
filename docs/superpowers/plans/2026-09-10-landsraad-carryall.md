@@ -398,6 +398,15 @@ func (r *Repo) Identity() string {
 	if r.Name != "" {
 		return r.Name
 	}
+	if r.URL == "" {
+		// A repository with neither a name: nor a url: has no name, and ""
+		// is the answer localRepoName already gives for a checkout with no
+		// repos.yaml. path.Base("") returns "." — not a name, just path.Base
+		// being asked about an empty string — and Entity.Location() would
+		// then render ".:services/api/service.yaml" for every diagnostic in
+		// the commonest first run, where it currently renders the bare path.
+		return ""
+	}
 	u := strings.TrimSuffix(r.URL, "/")
 	u = strings.TrimSuffix(u, ".git")
 	return path.Base(u)
