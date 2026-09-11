@@ -21,13 +21,13 @@ import (
 // stops the two being conflated in the implementation.
 func validate(fsys fstest.MapFS) (code int, out, errOut string) {
 	var o, e bytes.Buffer
-	c := Validate(fsys, &o, &e, diag.Text{})
+	c := Validate(fsys, &o, &e, diag.Text{}, false)
 	return c, o.String(), e.String()
 }
 
 func TestValidateOnGoodRepoExitsZero(t *testing.T) {
 	var out, errOut bytes.Buffer
-	code := Validate(os.DirFS("../../testdata/monorepo-ok"), &out, &errOut, diag.Text{})
+	code := Validate(os.DirFS("../../testdata/monorepo-ok"), &out, &errOut, diag.Text{}, false)
 	if code != exitOK {
 		t.Errorf("exit code = %d, want %d\nout:\n%s\nerr:\n%s", code, exitOK, out.String(), errOut.String())
 	}
@@ -38,7 +38,7 @@ func TestValidateOnGoodRepoExitsZero(t *testing.T) {
 
 func TestValidateOnBrokenRepoExitsTwo(t *testing.T) {
 	var out, errOut bytes.Buffer
-	if code := Validate(os.DirFS("../../testdata/monorepo-broken"), &out, &errOut, diag.Text{}); code != exitValidation {
+	if code := Validate(os.DirFS("../../testdata/monorepo-broken"), &out, &errOut, diag.Text{}, false); code != exitValidation {
 		t.Errorf("exit code = %d, want %d", code, exitValidation)
 	}
 }
@@ -46,7 +46,7 @@ func TestValidateOnBrokenRepoExitsTwo(t *testing.T) {
 // The point of the collector: one run reports every problem, not the first.
 func TestValidateReportsAllProblemsAtOnce(t *testing.T) {
 	var out, errOut bytes.Buffer
-	Validate(os.DirFS("../../testdata/monorepo-broken"), &out, &errOut, diag.Text{})
+	Validate(os.DirFS("../../testdata/monorepo-broken"), &out, &errOut, diag.Text{}, false)
 	got := out.String()
 	for _, want := range []string{
 		"unknown-owner",    // owner: team-payment
@@ -63,7 +63,7 @@ func TestValidateReportsAllProblemsAtOnce(t *testing.T) {
 // reportCycles has no other coverage: assert its rendered message exactly.
 func TestValidateRendersTheCycleMessage(t *testing.T) {
 	var out, errOut bytes.Buffer
-	Validate(os.DirFS("../../testdata/monorepo-broken"), &out, &errOut, diag.Text{})
+	Validate(os.DirFS("../../testdata/monorepo-broken"), &out, &errOut, diag.Text{}, false)
 	if !strings.Contains(out.String(), "dependency cycle: service:loop-a -> service:loop-b -> service:loop-a") {
 		t.Errorf("cycle message missing or malformed:\n%s", out.String())
 	}
@@ -166,7 +166,7 @@ func TestValidateAnnouncesDefaultPatterns(t *testing.T) {
 // The ok-line belongs on stderr; if it lands on stdout the payload is corrupt.
 func TestJSONOutputIsParseableOnSuccess(t *testing.T) {
 	var out, errOut bytes.Buffer
-	code := Validate(os.DirFS("../../testdata/monorepo-ok"), &out, &errOut, diag.JSON{})
+	code := Validate(os.DirFS("../../testdata/monorepo-ok"), &out, &errOut, diag.JSON{}, false)
 	if code != exitOK {
 		t.Fatalf("fixture must be clean, got exit %d:\n%s", code, out.String())
 	}
@@ -181,7 +181,7 @@ func TestJSONOutputIsParseableOnSuccess(t *testing.T) {
 
 func TestJSONOutputIsParseableOnFailure(t *testing.T) {
 	var out, errOut bytes.Buffer
-	Validate(os.DirFS("../../testdata/monorepo-broken"), &out, &errOut, diag.JSON{})
+	Validate(os.DirFS("../../testdata/monorepo-broken"), &out, &errOut, diag.JSON{}, false)
 	var ds []diag.Diagnostic
 	if err := json.Unmarshal(out.Bytes(), &ds); err != nil {
 		t.Errorf("stdout must be valid JSON on failure too: %v", err)
@@ -339,7 +339,7 @@ func TestValidateReportsNoEntitiesExactMessage(t *testing.T) {
 				"  owner: team-a\n  tier: 1\n  lifecycle: production\n")},
 	}
 	var out, errOut bytes.Buffer
-	code := Validate(repo, &out, &errOut, diag.JSON{})
+	code := Validate(repo, &out, &errOut, diag.JSON{}, false)
 	if code != exitValidation {
 		t.Fatalf("exit code = %d, want %d", code, exitValidation)
 	}
@@ -551,7 +551,7 @@ func TestValidateRejectsAMalformedCheckResultsFile(t *testing.T) {
 		"apiVersion: landsraad/v1\nkind: CheckResults\ngeneratedAt: not-a-date\nresults:\n  - { entity: service:api, check: x, status: pass }\n")}
 
 	var out, errOut bytes.Buffer
-	if code := Validate(fsys, &out, &errOut, diagText()); code != exitValidation {
+	if code := Validate(fsys, &out, &errOut, diagText(), false); code != exitValidation {
 		t.Fatalf("exit = %d, want %d — a malformed results file must fail the PR", code, exitValidation)
 	}
 }
@@ -565,7 +565,7 @@ func TestValidateDoesNotResolveCheckResultEntities(t *testing.T) {
 		"apiVersion: landsraad/v1\nkind: CheckResults\nproducer: ci/x\ngeneratedAt: 2026-09-08T14:00:00Z\nresults:\n  - { entity: service:ghost, check: x, status: pass }\n")}
 
 	var out, errOut bytes.Buffer
-	if code := Validate(fsys, &out, &errOut, diagText()); code != exitOK {
+	if code := Validate(fsys, &out, &errOut, diagText(), false); code != exitOK {
 		t.Fatalf("exit = %d, want %d — a well-formed file naming an unknown entity is score's problem, not validate's; stderr:\n%s",
 			code, exitOK, errOut.String())
 	}
@@ -577,7 +577,7 @@ func TestValidateAcceptsAWellFormedCheckResultsFile(t *testing.T) {
 		"apiVersion: landsraad/v1\nkind: CheckResults\nproducer: ci/x\ngeneratedAt: 2026-09-08T14:00:00Z\nresults:\n  - { entity: service:api, check: image-scanned, status: pass }\n")}
 
 	var out, errOut bytes.Buffer
-	if code := Validate(fsys, &out, &errOut, diagText()); code != exitOK {
+	if code := Validate(fsys, &out, &errOut, diagText(), false); code != exitOK {
 		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitOK, errOut.String())
 	}
 }
@@ -636,7 +636,7 @@ func TestValidateReportsUnreadableCheckResults(t *testing.T) {
 				"apiVersion: landsraad/v1\nkind: CheckResults\nproducer: ci/x\ngeneratedAt: 2026-09-08T14:00:00Z\nresults:\n  - { entity: service:api, check: image-scanned, status: pass }\n")}
 
 			var out, errOut bytes.Buffer
-			code := Validate(failPathFS{MapFS: files, path: tt.path}, &out, &errOut, diag.JSON{})
+			code := Validate(failPathFS{MapFS: files, path: tt.path}, &out, &errOut, diag.JSON{}, false)
 			if code != exitValidation {
 				t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitValidation, errOut.String())
 			}
@@ -665,7 +665,7 @@ func TestValidateThreadsTheRepoNameIntoSchemaDiagnostics(t *testing.T) {
 		"apiVersion: landsraad/v1\nkind: CheckResults\ngeneratedAt: not-a-date\nresults:\n  - { entity: service:api, check: x, status: pass }\n")}
 
 	var out, errOut bytes.Buffer
-	Validate(fsys, &out, &errOut, diag.JSON{})
+	Validate(fsys, &out, &errOut, diag.JSON{}, false)
 
 	var ds []diag.Diagnostic
 	if err := json.Unmarshal(out.Bytes(), &ds); err != nil {
@@ -712,14 +712,16 @@ func TestValidateThreadsTheRepoNameIntoSchemaDiagnostics(t *testing.T) {
 // something nothing actually exercises.
 //
 // It does NOT exit 0. edge-gateway, read on its own, carries no teams.yaml —
-// only the platform root does (ruling R34); a real user only ever validates
-// it as part of a checkout that has one. That is an unrelated, expected
-// failure, and asserting it here — rather than picking a repo-less fixture
-// that would hide it — is what proves the *only* diagnostic in play is the
-// one about ownership, and specifically not one about the cross-repo ref.
+// only the platform root does (ruling R34) — so without --satellite this is
+// missing-teams. Its own CI passes --satellite (ruling R37), which
+// TestValidateSatelliteDefersOwnersToThePlatformBuild covers. The failure is
+// unrelated and expected, and asserting it here — rather than picking a
+// repo-less fixture that would hide it — is what proves the *only*
+// diagnostic in play is the one about ownership, and specifically not one
+// about the cross-repo ref.
 func TestValidateToleratesTheFixturesCrossRepoRef(t *testing.T) {
 	var out, errOut bytes.Buffer
-	code := Validate(os.DirFS("../../testdata/multirepo/edge-gateway"), &out, &errOut, diag.JSON{})
+	code := Validate(os.DirFS("../../testdata/multirepo/edge-gateway"), &out, &errOut, diag.JSON{}, false)
 	if code != exitValidation {
 		t.Fatalf("exit = %d, want %d (missing-teams, unrelated to the cross-repo ref); out:\n%s", code, exitValidation, out.String())
 	}
@@ -765,7 +767,7 @@ func TestValidateReportsARejectedPathPatternAtItsLine(t *testing.T) {
 	fsys["repos.yaml"] = &fstest.MapFile{Data: []byte("repos:\n  - url: https://github.com/org/monorepo\n    paths: [/services/*]\n")}
 
 	var out, errOut bytes.Buffer
-	code := Validate(fsys, &out, &errOut, diag.JSON{})
+	code := Validate(fsys, &out, &errOut, diag.JSON{}, false)
 	if code != exitValidation {
 		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitValidation, errOut.String())
 	}
@@ -781,5 +783,58 @@ func TestValidateReportsARejectedPathPatternAtItsLine(t *testing.T) {
 	}}
 	if diff := cmp.Diff(want, ds); diff != "" {
 		t.Errorf("diagnostics mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// Ruling R37. A satellite's own CI has no teams.yaml to resolve owners
+// against — ruling R34 keeps it in the platform repository — so validate
+// failed every satellite's PR on missing-teams. --satellite leaves owners to
+// the platform build, and says so, so the skipped check is visible rather
+// than silent.
+func TestValidateSatelliteDefersOwnersToThePlatformBuild(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := Validate(os.DirFS("../../testdata/multirepo/edge-gateway"), &out, &errOut, diag.JSON{}, true)
+	if code != exitOK {
+		t.Fatalf("exit = %d, want %d; out:\n%s\nstderr:\n%s", code, exitOK, out.String(), errOut.String())
+	}
+	var ds []diag.Diagnostic
+	if err := json.Unmarshal(out.Bytes(), &ds); err != nil {
+		t.Fatalf("out is not diagnostics JSON: %v\n%s", err, out.String())
+	}
+	want := []diag.Diagnostic{
+		{
+			Severity: diag.SevInfo, File: "repos.yaml", Line: 1,
+			Check:   "default-patterns",
+			Message: "no repos.yaml found; using default paths (., services/*, workers/*, libs/*, topics/*)",
+			Hint:    "add repos.yaml if your services live elsewhere",
+		},
+		{
+			Severity: diag.SevInfo, File: "teams.yaml", Line: 1,
+			Check:   "owners-deferred",
+			Message: "owners are not checked in a satellite repository; the platform build resolves them against its teams.yaml",
+		},
+	}
+	if diff := cmp.Diff(want, ds); diff != "" {
+		t.Errorf("diagnostics mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// Refusing --satellite beside a teams.yaml is the reversible choice (R37): it
+// can be relaxed later, where accepting it could never be tightened, and it
+// stops a platform repository switching off its own owner checks by copying
+// a satellite's CI configuration.
+func TestValidateSatelliteRefusesARepositoryWithATeamsFile(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := Validate(genFS(), &out, &errOut, diag.Text{}, true)
+	if code != exitUsage {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitUsage, errOut.String())
+	}
+	want := "error: --satellite skips owner checks, but this repository has a teams.yaml; " +
+		"drop the flag, or delete the file if the platform repository's teams.yaml is the real one\n"
+	if got := errOut.String(); got != want {
+		t.Errorf("stderr = %q, want %q", got, want)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout = %q, want nothing: a refusal has no diagnostics to format", out.String())
 	}
 }

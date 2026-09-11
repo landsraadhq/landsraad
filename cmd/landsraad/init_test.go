@@ -24,7 +24,7 @@ func TestInitWritesAWorkingCatalog(t *testing.T) {
 
 	// The whole point: what init writes must pass validate immediately.
 	var vout, verr bytes.Buffer
-	if code := Validate(os.DirFS(dir), &vout, &verr, diagText()); code != exitOK {
+	if code := Validate(os.DirFS(dir), &vout, &verr, diagText(), false); code != exitOK {
 		t.Errorf("a freshly initialised repo must validate, got exit %d\n%s", code, vout.String())
 	}
 }

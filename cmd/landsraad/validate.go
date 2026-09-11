@@ -25,8 +25,25 @@ import (
 //
 // It takes an fs.FS rather than a path, so the same pipeline runs against a
 // local checkout, a fetched remote repo, or a test fixture in memory.
-func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter) int {
+//
+// satellite says this repository's owners are defined in the platform
+// repository's teams.yaml, not here (ruling R37). Owner resolution is then
+// left to the platform build, and a note says so, rather than failing every
+// satellite's PR on a file ruling R34 says it must not have.
+func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter, satellite bool) int {
 	var c diag.Collector
+
+	// Refused rather than tolerated, because refusing is the reversible
+	// choice (R37): it can be relaxed later, and it stops a platform
+	// repository switching off its own owner checks by copying a satellite's
+	// CI configuration.
+	if satellite {
+		if _, err := fs.Stat(fsys, "teams.yaml"); err == nil {
+			fmt.Fprintf(errOut, "error: --satellite skips owner checks, but this repository has a teams.yaml; "+
+				"drop the flag, or delete the file if the platform repository's teams.yaml is the real one\n")
+			return exitUsage
+		}
+	}
 
 	// 1. discover — which files are we looking at
 	patterns := patternsFor(fsys, &c)
@@ -84,7 +101,15 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter) int {
 	reportCycles(cat, g, &c)
 
 	// 5. semantic checks
-	checkOwners(fsys, cat, &c)
+	if satellite {
+		c.Add(diag.Diagnostic{
+			Severity: diag.SevInfo, File: "teams.yaml", Line: 1,
+			Check:   "owners-deferred",
+			Message: "owners are not checked in a satellite repository; the platform build resolves them against its teams.yaml",
+		})
+	} else {
+		checkOwners(fsys, cat, &c)
+	}
 	catalog.CheckFiles(catalog.SingleSource(repo, fsys), cat, &c)
 
 	// 6. report
@@ -268,7 +293,10 @@ func joinRefs(rs []catalog.Ref) string {
 }
 
 func newValidateCmd() *cobra.Command {
-	var format string
+	var (
+		format    string
+		satellite bool
+	)
 	cmd := &cobra.Command{
 		Use:   "validate [root]",
 		Short: "Truthsayer — validate this repository's catalog files",
@@ -301,7 +329,7 @@ func newValidateCmd() *cobra.Command {
 			}
 			cmd.SilenceUsage = true
 			// os.DirFS is the single place this program touches os for reading.
-			if code := Validate(os.DirFS(resolved), cmd.OutOrStdout(), cmd.ErrOrStderr(), f); code != exitOK {
+			if code := Validate(os.DirFS(resolved), cmd.OutOrStdout(), cmd.ErrOrStderr(), f, satellite); code != exitOK {
 				os.Exit(code)
 			}
 			return nil
@@ -309,6 +337,8 @@ func newValidateCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&format, "format", "auto",
 		"output format: auto, "+strings.Join(diag.FormatNames(), ", "))
+	cmd.Flags().BoolVar(&satellite, "satellite", false,
+		"this repository's owners are defined in the platform repository's teams.yaml; leave them to the platform build")
 	return cmd
 }
 

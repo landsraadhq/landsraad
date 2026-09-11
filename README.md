@@ -195,6 +195,13 @@ repositories work without one — but a **private** repository with no token
 returns a 404 from both hosts, identical to a repository that does not
 exist, so `build`'s failure message for that case names the variable to set.
 
+**`validate --satellite`** is for a repository the platform's `repos.yaml`
+fetches. It has no `teams.yaml` of its own — owners are defined once, in the
+platform repository — so plain `validate` in its CI would fail on
+`missing-teams`. `--satellite` checks everything else and leaves owners to
+the platform build, with a note saying so. It refuses to run in a repository
+that does have a `teams.yaml`.
+
 **`build --allow-partial`** renders the portal from whichever repositories
 could be read, instead of refusing outright, and stamps a banner naming the
 ones that could not into every page — so a reader of the portal, not just
