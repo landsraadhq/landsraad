@@ -55,12 +55,17 @@ func (s Severity) String() string {
 // a diagnostic the reader cannot navigate to is a bug.
 type Diagnostic struct {
 	Severity Severity `json:"severity"`
-	Repo     string   `json:"repo,omitempty"`
-	File     string   `json:"file"`
-	Line     int      `json:"line"`
-	Entity   string   `json:"entity,omitempty"`
-	Check    string   `json:"check,omitempty"`
-	Message  string   `json:"message"`
+	// Repo is the repository that holds File. Empty means the repository the
+	// command is standing in, which is where repos.yaml, teams.yaml and
+	// standards.yaml always are (ruling R34): a diagnostic about one of those
+	// leaves it empty and names the repository it is about in its Message
+	// (ruling R41).
+	Repo    string `json:"repo,omitempty"`
+	File    string `json:"file"`
+	Line    int    `json:"line"`
+	Entity  string `json:"entity,omitempty"`
+	Check   string `json:"check,omitempty"`
+	Message string `json:"message"`
 	// Hint is an optional suggested fix, e.g. "did you mean 'team-payments'?".
 	Hint string `json:"hint,omitempty"`
 }

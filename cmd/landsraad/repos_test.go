@@ -233,8 +233,11 @@ spec:
 	if d.Severity != diag.SevInfo {
 		t.Errorf("Severity = %v, want SevInfo", d.Severity)
 	}
-	if d.Repo != "monorepo" {
-		t.Errorf("Repo = %q, want %q", d.Repo, "monorepo")
+	// Empty, not "monorepo": the note is about repos.yaml, which lives in the
+	// repository the command is standing in, and Repo names the repository
+	// that holds File (ruling R41). The message names the entry it is about.
+	if d.Repo != "" {
+		t.Errorf("Repo = %q, want empty", d.Repo)
 	}
 	if d.Line != 2 {
 		t.Errorf("Line = %d, want 2 (the url: key's line)", d.Line)
@@ -470,6 +473,7 @@ func TestWorkspaceParseAllThenAssembleMultiRepoZeroMatchKeepsBothDiagnostics(t *
 		t.Fatalf("got %d diagnostics, want exactly 3 (two per-repository warnings, one aggregate error): %+v", len(ds), ds)
 	}
 	var warns, errs int
+	var warnMessages []string
 	for _, d := range ds {
 		if d.Check != "no-entities" {
 			t.Errorf("unexpected Check %q in %+v", d.Check, d)
@@ -478,10 +482,13 @@ func TestWorkspaceParseAllThenAssembleMultiRepoZeroMatchKeepsBothDiagnostics(t *
 		switch d.Severity {
 		case diag.SevWarn:
 			warns++
-			want := "no service.yaml found in " + d.Repo + " under any configured path (services/*)"
-			if d.Message != want {
-				t.Errorf("warning Message\n got: %s\nwant: %s", d.Message, want)
+			// Repo is empty: the warning is about repos.yaml, in the repository
+			// the command is standing in (ruling R41). The message names the
+			// repository it is about.
+			if d.Repo != "" {
+				t.Errorf("warning Repo = %q, want empty", d.Repo)
 			}
+			warnMessages = append(warnMessages, d.Message)
 		case diag.SevError:
 			errs++
 			want := "no service.yaml found in any configured repository"
@@ -497,6 +504,14 @@ func TestWorkspaceParseAllThenAssembleMultiRepoZeroMatchKeepsBothDiagnostics(t *
 	}
 	if errs != 1 {
 		t.Errorf("got %d aggregate errors, want 1", errs)
+	}
+	// Collector.Diagnostics sorts by message after file, line and check.
+	wantWarnings := []string{
+		"no service.yaml found in repo-a under any configured path (services/*)",
+		"no service.yaml found in repo-b under any configured path (services/*)",
+	}
+	if diff := cmp.Diff(wantWarnings, warnMessages); diff != "" {
+		t.Errorf("warning messages mismatch (-want +got):\n%s", diff)
 	}
 }
 

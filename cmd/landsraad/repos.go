@@ -570,12 +570,13 @@ func tokenVarName(name string) string {
 // mean. openRepos runs across every entry in repos.yaml, and each can
 // independently name no paths: — a diagnostic that cannot say which one is
 // silent about exactly the thing a multi-repository repos.yaml most needs
-// pointed out, so this carries Repo and the entry's own line rather than
-// reusing defaultPatternsNote's file-level Line 1.
+// pointed out, so this names the repository in its message and carries the
+// entry's own line rather than reusing defaultPatternsNote's file-level Line
+// 1. Repo stays empty: the file is repos.yaml, in the repository the command
+// is standing in (ruling R41).
 func repoDefaultPatternsNote(name string, line int) diag.Diagnostic {
 	return diag.Diagnostic{
 		Severity: diag.SevInfo,
-		Repo:     name,
 		File:     "repos.yaml",
 		Line:     line,
 		Check:    "default-patterns",

@@ -30,8 +30,8 @@ import (
 // diag.Text writes to a terminal, so a write error means stderr itself is
 // gone; there is nowhere left to report it except the same broken stream, so
 // this says so once and returns rather than looping.
-func reportDiagnostics(errOut io.Writer, ds []diag.Diagnostic) {
-	if err := (diag.Text{}).Write(errOut, ds); err != nil {
+func reportDiagnostics(errOut io.Writer, ds []diag.Diagnostic, showRepo bool) {
+	if err := (diag.Text{ShowRepo: showRepo}).Write(errOut, ds); err != nil {
 		fmt.Fprintf(errOut, "error: cannot write diagnostics: %v\n", err)
 	}
 }

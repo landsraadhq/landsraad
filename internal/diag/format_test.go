@@ -166,6 +166,45 @@ func TestGitLabFingerprintIgnoresHint(t *testing.T) {
 	}
 }
 
+// Ruling R41: in a multi-repository build, "service.yaml:4" does not say which
+// of ten repositories to open. ShowRepo prefixes the location with the
+// repository that holds the file, when a diagnostic names one. A diagnostic
+// about the root's own configuration names none, and stays unprefixed.
+func TestTextShowRepoPrefixesTheRepositoryHoldingTheFile(t *testing.T) {
+	ds := []Diagnostic{
+		{Severity: SevError, Repo: "edge-gateway", File: "service.yaml", Line: 4, Check: "missing-file",
+			Message: `spec.runbook points at "runbook.md", which does not exist`},
+		{Severity: SevWarn, File: "repos.yaml", Line: 5, Check: "default-patterns",
+			Message: "edge-gateway names no paths; using default paths (., services/*)"},
+	}
+	for _, tt := range []struct {
+		name string
+		text Text
+		want string
+	}{
+		{"on", Text{ShowRepo: true},
+			"error: edge-gateway:service.yaml:4 [missing-file]\n" +
+				"  spec.runbook points at \"runbook.md\", which does not exist\n" +
+				"warn: repos.yaml:5 [default-patterns]\n" +
+				"  edge-gateway names no paths; using default paths (., services/*)\n"},
+		{"off", Text{},
+			"error: service.yaml:4 [missing-file]\n" +
+				"  spec.runbook points at \"runbook.md\", which does not exist\n" +
+				"warn: repos.yaml:5 [default-patterns]\n" +
+				"  edge-gateway names no paths; using default paths (., services/*)\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := tt.text.Write(&buf, ds); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			if got := buf.String(); got != tt.want {
+				t.Errorf("Write =\n%s\nwant\n%s", got, tt.want)
+			}
+		})
+	}
+}
+
 // Every built-in format resolves, and each one's Name matches its key.
 func TestFormattersAreConsistent(t *testing.T) {
 	for _, name := range []string{"text", "json", "github", "gitlab"} {

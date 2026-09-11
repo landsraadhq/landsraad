@@ -341,7 +341,7 @@ func newServeCmd() *cobra.Command {
 				Lookup: os.LookupEnv,
 				ErrOut: cmd.ErrOrStderr(),
 			}, &c)
-			reportDiagnostics(cmd.ErrOrStderr(), c.Diagnostics())
+			reportDiagnostics(cmd.ErrOrStderr(), c.Diagnostics(), len(w.Sources()) > 1)
 			if c.HasErrors() {
 				os.Exit(exitValidation)
 			}

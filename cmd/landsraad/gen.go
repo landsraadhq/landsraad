@@ -93,9 +93,9 @@ func parseRepo(name string, fsys fs.FS, patterns []string, solo bool, v *schema.
 	found, err := discover.Find(fsys, patterns)
 	if err != nil {
 		c.Add(diag.Diagnostic{
-			Severity: diag.SevError, Repo: name, File: "repos.yaml", Line: 1,
+			Severity: diag.SevError, File: "repos.yaml", Line: 1,
 			Check:   "discover",
-			Message: fmt.Sprintf("cannot search for %s files: %v", discover.Filename, err),
+			Message: fmt.Sprintf("cannot search for %s files in %s: %v", discover.Filename, repoLabel(name), err),
 		})
 		return parseResult{}
 	}
@@ -122,7 +122,7 @@ func parseRepo(name string, fsys fs.FS, patterns []string, solo bool, v *schema.
 		// bug the strict repos.yaml decoding already exists to catch.
 		// assemble still errors when the WHOLE catalog is empty.
 		c.Add(diag.Diagnostic{
-			Severity: diag.SevWarn, Repo: name, File: "repos.yaml", Line: 1,
+			Severity: diag.SevWarn, File: "repos.yaml", Line: 1,
 			Check: "no-entities",
 			Message: fmt.Sprintf("no %s found in %s under any configured path (%s)",
 				discover.Filename, repoLabel(name), strings.Join(patterns, ", ")),

@@ -436,7 +436,7 @@ func TestOpenReposReportsAMalformedReposYAML(t *testing.T) {
 		t.Fatal("a malformed repos.yaml must report an error -- newServeCmd's RunE gates on exactly this before ever calling Serve")
 	}
 	var errOut bytes.Buffer
-	reportDiagnostics(&errOut, c.Diagnostics())
+	reportDiagnostics(&errOut, c.Diagnostics(), false) // one repository: serve would pass false
 	want := "error: repos.yaml:2 [repos-url]\n" +
 		"  repository url must begin with https://, got \"git@github.com:org/monorepo.git\"\n" +
 		"  hint: write it as https://github.com/org/monorepo\n"

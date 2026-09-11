@@ -778,7 +778,7 @@ spec:
 	}
 	// The whole of stderr: one diagnostic, against the line in the satellite's
 	// service.yaml that is actually wrong, and the refusal.
-	want := "error: service.yaml:4 [missing-file]\n" +
+	want := "error: edge-gateway:service.yaml:4 [missing-file]\n" +
 		"  spec.runbook points at \"runbook.md\", which does not exist\n" +
 		"  hint: paths are relative to the repository root, slash-separated\n" +
 		"refusing to build a portal from a catalog with errors; it would publish the broken state as if it were the truth\n"

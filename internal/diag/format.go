@@ -52,13 +52,25 @@ func FormatNames() []string {
 }
 
 // Text renders diagnostics for a human terminal.
-type Text struct{}
+//
+// ShowRepo prefixes each location with the repository that holds the file —
+// "edge-gateway:service.yaml:4" — when the diagnostic names one. A
+// multi-repository build sets it, because there "service.yaml:4" does not say
+// which of ten repositories to open (ruling R41). A single-repository run
+// leaves it off, and its output is what it always was.
+type Text struct {
+	ShowRepo bool
+}
 
 func (Text) Name() string { return "text" }
 
-func (Text) Write(w io.Writer, ds []Diagnostic) error {
+func (t Text) Write(w io.Writer, ds []Diagnostic) error {
 	for _, d := range ds {
-		if _, err := fmt.Fprintf(w, "%s: %s:%d", d.Severity, d.File, d.Line); err != nil {
+		loc := fmt.Sprintf("%s:%d", d.File, d.Line)
+		if t.ShowRepo && d.Repo != "" {
+			loc = d.Repo + ":" + loc
+		}
+		if _, err := fmt.Fprintf(w, "%s: %s", d.Severity, loc); err != nil {
 			return err
 		}
 		if d.Check != "" {

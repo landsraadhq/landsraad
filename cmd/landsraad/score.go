@@ -42,7 +42,7 @@ func standardsFor(fsys fs.FS, errOut io.Writer) *config.Standards {
 	}
 	var c diag.Collector
 	std := config.LoadStandards("standards.yaml", data, &c)
-	reportDiagnostics(errOut, c.Diagnostics())
+	reportDiagnostics(errOut, c.Diagnostics(), false)
 	if !std.Loaded() {
 		fmt.Fprintf(errOut, "standards.yaml did not parse; scoring against the published defaults\n")
 		return config.DefaultStandards()
@@ -128,7 +128,7 @@ func Score(fsys fs.FS, out, errOut io.Writer, opts ScoreOptions) ([]emit.File, i
 	// Diagnostics from ingest and exemptions go to stderr in text mode and are
 	// part of the payload's siblings in JSON mode; either way they are never
 	// interleaved with a JSON document on stdout.
-	reportDiagnostics(errOut, c.Diagnostics())
+	reportDiagnostics(errOut, c.Diagnostics(), false)
 
 	gated := 0
 	for _, e := range sc.Entities {

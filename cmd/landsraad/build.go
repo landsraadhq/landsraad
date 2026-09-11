@@ -70,7 +70,7 @@ func Build(root fs.FS, w *workspace, errOut io.Writer, opts BuildOptions) ([]emi
 
 	v := defaultValidator(&c)
 	if v == nil {
-		reportDiagnostics(errOut, c.Diagnostics())
+		reportDiagnostics(errOut, c.Diagnostics(), len(w.Sources()) > 1)
 		return nil, exitValidation
 	}
 
@@ -78,7 +78,7 @@ func Build(root fs.FS, w *workspace, errOut io.Writer, opts BuildOptions) ([]emi
 	// so a dangling reference is a hard failure (spec §7.1).
 	cat, g, teams := assemble(w.ParseAll(v, &c), w.Sources(), catalog.FullCatalog, root, &c)
 	if cat == nil || c.HasErrors() {
-		reportDiagnostics(errOut, c.Diagnostics())
+		reportDiagnostics(errOut, c.Diagnostics(), len(w.Sources()) > 1)
 		fmt.Fprintf(errOut, "refusing to build a portal from a catalog with errors; it would publish the broken state as if it were the truth\n")
 		return nil, exitValidation
 	}
@@ -131,7 +131,7 @@ func Build(root fs.FS, w *workspace, errOut io.Writer, opts BuildOptions) ([]emi
 	}
 	files := render.Site(in, &c)
 
-	reportDiagnostics(errOut, c.Diagnostics())
+	reportDiagnostics(errOut, c.Diagnostics(), len(w.Sources()) > 1)
 	if c.HasErrors() {
 		fmt.Fprintf(errOut, "refusing to build a portal from a catalog with errors; it would publish the broken state as if it were the truth\n")
 		return nil, exitValidation
@@ -230,7 +230,6 @@ func failureMessage(f repoFailure) string {
 func lastEditDiagnostic(f repoEditFailure) diag.Diagnostic {
 	return diag.Diagnostic{
 		Severity: diag.SevWarn,
-		Repo:     f.Repo,
 		File:     "repos.yaml",
 		Line:     1,
 		Check:    "docs-fresh-unavailable",
@@ -410,7 +409,7 @@ func newBuildCmd() *cobra.Command {
 				Lookup: os.LookupEnv,
 				ErrOut: cmd.ErrOrStderr(),
 			}, &c)
-			reportDiagnostics(cmd.ErrOrStderr(), c.Diagnostics())
+			reportDiagnostics(cmd.ErrOrStderr(), c.Diagnostics(), len(w.Sources()) > 1)
 			if c.HasErrors() {
 				// A repos.yaml mistake: a file the user wrote, so 2, as
 				// validate and serve exit for the same file (ruling R36).
