@@ -135,7 +135,7 @@ func reportFetchFailures(fails []repoFailure, allowPartial bool, errOut io.Write
 		level = "warn"
 	}
 	for _, f := range sorted {
-		fmt.Fprintf(errOut, "%s: %s\n", level, failureMessage(f, hostKindOf(f)))
+		fmt.Fprintf(errOut, "%s: %s\n", level, failureMessage(f))
 	}
 	if allowPartial {
 		return exitOK
@@ -152,8 +152,18 @@ func reportFetchFailures(fails []repoFailure, allowPartial bool, errOut io.Write
 // private repository with no token — identical to a repository that is not
 // there — so a bare "not found" tells somebody their repository does not
 // exist while they are looking at it in a browser tab.
-func failureMessage(f repoFailure, kind string) string {
-	vars := tokenVarName(f.Name) + " or " + strings.ToUpper(kind) + "_TOKEN"
+//
+// f.Kind is config.Repo.HostKind's own answer (set in openRepos), not a
+// substring match on the URL: a self-hosted GitLab's URL rarely contains
+// "gitlab", and a wrong hint sends the person fixing the failure to set the
+// wrong variable. When HostKind could not tell (f.Kind == ""), the message
+// names only the per-repository variable -- inventing a host-wide one would
+// be a guess with the same failure mode this exists to avoid.
+func failureMessage(f repoFailure) string {
+	vars := tokenVarName(f.Name)
+	if f.Kind != "" {
+		vars += " or " + strings.ToUpper(f.Kind) + "_TOKEN"
+	}
 	switch {
 	case fetch.IsNotFound(f.Err):
 		return fmt.Sprintf("cannot read %s: not found. A private repository with no token looks "+
@@ -172,23 +182,15 @@ func failureMessage(f repoFailure, kind string) string {
 	}
 }
 
-// hostKindOf names the host in a token hint. It reads the url rather than
-// carrying the kind on repoFailure, because a failure that happened before
-// the adapter was chosen has no kind to carry.
-func hostKindOf(f repoFailure) string {
-	if strings.Contains(f.URL, "gitlab") {
-		return "gitlab"
-	}
-	return "github"
-}
-
 // partialBanner is the degraded-mode notice stamped into every page.
 //
 // It NAMES the repositories. partialNotice, the scaffold this replaces,
 // could only count them: with no fetcher it did not know which entry was
 // local, and the version that guessed named the wrong two in every page of
 // a generated site. Ruling R22 said a real fetcher would name the ones that
-// actually failed. This is that.
+// actually failed. This is that -- partialNotice was deleted in Plan 4
+// Task 13 (ruling R32). A build with no fetch failures renders an empty
+// Notice: see TestPartialBanner's "none" case.
 func partialBanner(fails []repoFailure) string {
 	if len(fails) == 0 {
 		return ""

@@ -31,6 +31,15 @@ type repoFailure struct {
 	Name string
 	URL  string
 	Line int
+	// Kind is the host adapter this repository would have used --
+	// "github", "gitlab", or "" when config.Repo.HostKind could not tell.
+	// It is config.Repo.HostKind's own answer, captured at failure time: a
+	// pure function of the repos.yaml entry, honouring an explicit host:
+	// key, available whether or not an adapter was ever constructed. It is
+	// carried here rather than re-derived from URL later, because a
+	// substring match on the URL ("contains gitlab") is wrong for a
+	// self-hosted GitLab at a URL that does not say so.
+	Kind string
 	Err  error
 }
 
@@ -155,8 +164,9 @@ func openRepos(ctx context.Context, o reposOptions, c *diag.Collector) *workspac
 			patterns = config.DefaultPatterns()
 		}
 
+		kind, _ := r.HostKind()
 		fail := func(err error) {
-			failures = append(failures, repoFailure{Name: name, URL: r.URL, Line: r.Line, Err: err})
+			failures = append(failures, repoFailure{Name: name, URL: r.URL, Line: r.Line, Kind: kind, Err: err})
 		}
 
 		fsys, fetcher, err := openOne(ctx, r, patterns, o)

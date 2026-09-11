@@ -172,7 +172,16 @@ func newRebuild(root string, opts BuildOptions, now func() time.Time, srv *siteS
 		var pc diag.Collector
 		w := singleRepoWorkspace(fsys, &pc)
 		reportDiagnostics(errOut, pc.Diagnostics())
-		files, code := Build(fsys, w, errOut, opts)
+		// A malformed repos.yaml (repos-url, repos-host, ...) is reported by
+		// singleRepoWorkspace's own collector, not Build's -- Build never
+		// sees pc, and never gets a chance to refuse on its behalf. Without
+		// this gate the error above prints and serve starts anyway, exactly
+		// the silent-then-fine sequence build and validate both refuse.
+		var files []emit.File
+		code := exitValidation
+		if !pc.HasErrors() {
+			files, code = Build(fsys, w, errOut, opts)
+		}
 		if code != exitOK {
 			if hadGoodBuild {
 				// Keep serving the last good site. A preview that goes

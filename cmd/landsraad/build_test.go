@@ -319,7 +319,7 @@ func TestBuildRefusesAFailedFetch(t *testing.T) {
 		patterns: map[string][]string{"platform": {"services/*"}},
 		local:    "platform",
 		failures: []repoFailure{{
-			Name: "edge-gateway", URL: "https://github.com/org/edge-gateway", Line: 4,
+			Name: "edge-gateway", URL: "https://github.com/org/edge-gateway", Line: 4, Kind: "github",
 			Err: &fetch.StatusError{Status: 404, Method: "GET", Endpoint: "/repos/org/edge-gateway", Body: "Not Found", RateRemaining: -1},
 		}},
 	}
@@ -336,6 +336,13 @@ func TestBuildRefusesAFailedFetch(t *testing.T) {
 		"looks exactly like this; check the url and that LANDSRAAD_TOKEN_EDGE_GATEWAY or GITHUB_TOKEN is set\n"
 	if got := errOut.String(); !strings.Contains(got, want) {
 		t.Errorf("stderr =\n%s\nwant it to contain\n%s", got, want)
+	}
+	// The refusal trailer, exact and singular: one repository, "repository"
+	// not "repositories".
+	wantTrailer := "refusing to build a portal that is missing 1 repository; " +
+		"pass --allow-partial to build one anyway, with a banner saying so\n"
+	if got := errOut.String(); !strings.HasSuffix(got, wantTrailer) {
+		t.Errorf("stderr =\n%s\nmust end with\n%s", got, wantTrailer)
 	}
 }
 
@@ -370,6 +377,38 @@ func TestBuildAllowPartialNamesTheFailures(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no generated page carries the banner %q", want)
+	}
+	// warn:, not error: -- and no refusal trailer, since --allow-partial
+	// downgrades it. Exact and sorted by name, same as the errors above.
+	wantWarnings := "warn: cannot read billing: boom\n" +
+		"warn: cannot read edge-gateway: boom\n"
+	if got := errOut.String(); !strings.Contains(got, wantWarnings) {
+		t.Errorf("stderr =\n%s\nmust contain\n%s", got, wantWarnings)
+	}
+}
+
+// The refusal trailer goes through plural: TestBuildRefusesAFailedFetch
+// pins the singular ("1 repository"); this pins the plural two failures
+// produce ("2 repositories"). Exercised directly against
+// reportFetchFailures, whose whole output is deterministic, rather than
+// through Build, so the assertion can be the entire buffer rather than a
+// substring.
+func TestReportFetchFailuresRefusalTrailerIsPlural(t *testing.T) {
+	fails := []repoFailure{
+		{Name: "edge-gateway", Err: errors.New("boom")},
+		{Name: "billing", Err: errors.New("boom")},
+	}
+	var errOut bytes.Buffer
+	code := reportFetchFailures(fails, false, &errOut)
+	if code != exitUsage {
+		t.Errorf("code = %d, want %d", code, exitUsage)
+	}
+	want := "error: cannot read billing: boom\n" +
+		"error: cannot read edge-gateway: boom\n" +
+		"refusing to build a portal that is missing 2 repositories; " +
+		"pass --allow-partial to build one anyway, with a banner saying so\n"
+	if got := errOut.String(); got != want {
+		t.Errorf("errOut = %q, want %q", got, want)
 	}
 }
 
@@ -412,39 +451,52 @@ func TestFailureMessage(t *testing.T) {
 	}{
 		{
 			"not found says why it might not be",
-			repoFailure{Name: "edge", Err: &fetch.StatusError{Status: 404, RateRemaining: -1}},
+			repoFailure{Name: "edge", Kind: "github", Err: &fetch.StatusError{Status: 404, RateRemaining: -1}},
 			"cannot read edge: not found. A private repository with no token looks exactly like this; " +
 				"check the url and that LANDSRAAD_TOKEN_EDGE or GITHUB_TOKEN is set",
 		},
 		{
 			"rejected token",
-			repoFailure{Name: "edge", Err: &fetch.StatusError{Status: 401, RateRemaining: -1}},
+			repoFailure{Name: "edge", Kind: "github", Err: &fetch.StatusError{Status: 401, RateRemaining: -1}},
 			"cannot read edge: the host rejected the token; check that LANDSRAAD_TOKEN_EDGE or GITHUB_TOKEN is current and has read access",
 		},
 		{
 			"rate limited names the reset",
-			repoFailure{Name: "edge", Err: &fetch.StatusError{
+			repoFailure{Name: "edge", Kind: "github", Err: &fetch.StatusError{
 				Status: 403, RateRemaining: 0,
 				RateReset: time.Date(2026, 9, 10, 15, 4, 5, 0, time.UTC),
 			}},
 			"cannot read edge: the host's rate limit is spent until 2026-09-10T15:04:05Z; " +
 				"an unauthenticated build gets 60 requests an hour, an authenticated one 5000",
 		},
+		// A self-hosted GitLab's URL need not contain "gitlab" anywhere --
+		// e.g. https://git.example.com/org/repo with host: gitlab in
+		// repos.yaml. Kind comes from config.Repo.HostKind, which honours
+		// that host: key; a substring match on the URL would miss it and
+		// send the reader to set GITHUB_TOKEN for a GitLab failure.
+		{
+			"self-hosted gitlab names GITLAB_TOKEN even though the url doesn't say gitlab",
+			repoFailure{Name: "edge", Kind: "gitlab", URL: "https://git.example.com/org/edge",
+				Err: &fetch.StatusError{Status: 404, RateRemaining: -1}},
+			"cannot read edge: not found. A private repository with no token looks exactly like this; " +
+				"check the url and that LANDSRAAD_TOKEN_EDGE or GITLAB_TOKEN is set",
+		},
+		// HostKind could not tell (no host: key, and the hostname is
+		// neither github.com nor gitlab.com). Naming a host-wide variable
+		// here would be a guess with the same failure mode this exists to
+		// avoid, so the hint names only the per-repository variable.
+		{
+			"unknown kind names only the per-repository variable",
+			repoFailure{Name: "edge", Kind: "", URL: "https://git.example.com/org/edge",
+				Err: &fetch.StatusError{Status: 404, RateRemaining: -1}},
+			"cannot read edge: not found. A private repository with no token looks exactly like this; " +
+				"check the url and that LANDSRAAD_TOKEN_EDGE is set",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := failureMessage(tt.f, "github"); got != tt.want {
+			if got := failureMessage(tt.f); got != tt.want {
 				t.Errorf("failureMessage = %q, want %q", got, tt.want)
 			}
 		})
 	}
-}
-
-// The scaffold is gone. This test exists so that deleting it is a decision
-// rather than an oversight.
-func TestPartialNoticeIsGone(t *testing.T) {
-	// partialNotice counted repositories because it could not know which
-	// ones were missing; an earlier version that tried named the wrong two.
-	// If this file ever compiles with a call to it again, ruling R22's
-	// scaffold has come back.
-	t.Log("partialNotice was deleted in Plan 4 Task 13; see ruling R32")
 }

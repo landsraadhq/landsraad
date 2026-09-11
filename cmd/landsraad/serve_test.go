@@ -386,6 +386,53 @@ func TestRebuildAfterAGoodBuildKeepsServingLastGoodSite(t *testing.T) {
 	}
 }
 
+// TestRebuildRefusesAMalformedReposYAML is Task 13 fix-round-1 finding #1:
+// singleRepoWorkspace's diagnostics went into a throwaway collector that
+// Build never saw, so a repos.yaml error printed to stderr and then serve
+// started anyway. build and validate both refuse on the same diagnostic;
+// serve must too, and a rebuild that hits it must behave exactly like any
+// other failed rebuild -- keep serving the last good site.
+func TestRebuildRefusesAMalformedReposYAML(t *testing.T) {
+	root := t.TempDir()
+	writeCatalogFixture(t, root, 1)
+
+	srv := &siteServer{}
+	var errOut bytes.Buffer
+	opts := BuildOptions{LastEdit: noLastEdit()}
+	rebuild := newRebuild(root, opts, utcNow, srv, &errOut)
+
+	if ok := rebuild(""); !ok {
+		t.Fatalf("the first, valid build must succeed; stderr:\n%s", errOut.String())
+	}
+	goodIndex, ok := srv.lookup("index.html")
+	if !ok {
+		t.Fatal("index.html missing after a successful build")
+	}
+
+	errOut.Reset()
+	badReposYAML := "repos:\n  - url: git@github.com:org/monorepo.git\n    paths: [services/*]\n"
+	if err := os.WriteFile(filepath.Join(root, "repos.yaml"), []byte(badReposYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ok := rebuild(""); ok {
+		t.Fatal("a malformed repos.yaml must fail the rebuild")
+	}
+
+	wantDiag := "error: repos.yaml:2 [repos-url]\n" +
+		"  repository url must begin with https://, got \"git@github.com:org/monorepo.git\"\n" +
+		"  hint: write it as https://github.com/org/monorepo\n"
+	if !strings.Contains(errOut.String(), wantDiag) {
+		t.Errorf("stderr:\n%s\nmust contain:\n%s", errOut.String(), wantDiag)
+	}
+	wantTail := "  build failed; still serving the previous version\n"
+	if !strings.HasSuffix(errOut.String(), wantTail) {
+		t.Errorf("stderr:\n%s\nmust end with:\n%s", errOut.String(), wantTail)
+	}
+	if got, _ := srv.lookup("index.html"); string(got) != string(goodIndex) {
+		t.Error("the last good site must still be served after a rejected repos.yaml")
+	}
+}
+
 // TestServeWithoutWatchExitsWhenTheFirstBuildFails drives the real binary,
 // not Serve in-process, because the exit code lives only in newServeCmd's
 // RunE, which calls os.Exit directly (see binPath's doc in
@@ -400,6 +447,38 @@ func TestServeWithoutWatchExitsWhenTheFirstBuildFails(t *testing.T) {
 	r := run(t, dir, "serve")
 	if r.exitCode != exitValidation {
 		t.Fatalf("exit = %d, want %d; stderr:\n%s", r.exitCode, exitValidation, r.stderr)
+	}
+	want := "  build failed; nothing has been rendered yet\n"
+	if !strings.HasSuffix(r.stderr, want) {
+		t.Errorf("stderr:\n%s\nmust end with:\n%s", r.stderr, want)
+	}
+	if strings.Contains(r.stderr, "serving on http://") {
+		t.Error("must never announce that it is serving -- it did not start listening")
+	}
+}
+
+// TestServeWithoutWatchExitsWhenReposYAMLIsMalformed is the never-had-a-good-
+// build half of finding #1: singleRepoWorkspace's diagnostics must gate the
+// FIRST build, not only a rebuild that follows a good one -- there is no
+// repos.yaml at all in the sibling test above, so that one alone would not
+// have caught this.
+func TestServeWithoutWatchExitsWhenReposYAMLIsMalformed(t *testing.T) {
+	dir := materialize(t, map[string]string{
+		"teams.yaml": "teams:\n  - name: team-payments\n    members: [alice]\n    slack: \"#pay\"\n    pagerduty: PAY\n",
+		"repos.yaml": "repos:\n  - url: git@github.com:org/monorepo.git\n    paths: [services/*]\n",
+		"services/ledger-api/service.yaml": "apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: ledger-api\n" +
+			"  owner: team-payments\n  tier: 1\n  lifecycle: production\nspec:\n" +
+			"  path: services/ledger-api\n",
+	})
+	r := run(t, dir, "serve")
+	if r.exitCode != exitValidation {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", r.exitCode, exitValidation, r.stderr)
+	}
+	wantDiag := "error: repos.yaml:2 [repos-url]\n" +
+		"  repository url must begin with https://, got \"git@github.com:org/monorepo.git\"\n" +
+		"  hint: write it as https://github.com/org/monorepo\n"
+	if !strings.Contains(r.stderr, wantDiag) {
+		t.Errorf("stderr:\n%s\nmust contain:\n%s", r.stderr, wantDiag)
 	}
 	want := "  build failed; nothing has been rendered yet\n"
 	if !strings.HasSuffix(r.stderr, want) {
