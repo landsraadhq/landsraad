@@ -373,6 +373,33 @@ func TestReadDirOnAFileSaysItIsNotADirectory(t *testing.T) {
 	}
 }
 
+// Ruling R45: a directory is listed only when a listing covered it. NewFS
+// used to mark "." at construction, which is how a GitLab repository opened
+// at a non-root prefix came to answer fs.ErrNotExist for every root-level
+// file.
+func TestNewFSListsNothing(t *testing.T) {
+	f := NewFS()
+	if f.Listed(".") {
+		t.Error(`NewFS marked "." listed without a listing`)
+	}
+	if _, err := fs.Stat(f, "README.md"); !errors.Is(err, ErrNotListed) {
+		t.Errorf("Stat(README.md) on an unlisted root = %v, want ErrNotListed", err)
+	}
+}
+
+// A complete listing did enumerate the root, so FromEntries marks it — even
+// for a repository whose every file sits at the top level, where no entry's
+// parent chain would otherwise reach ".".
+func TestFromEntriesListsTheRoot(t *testing.T) {
+	f := FromEntries([]Entry{{Path: "README.md", SHA: "a"}})
+	if !f.Listed(".") {
+		t.Error(`FromEntries did not mark "." listed`)
+	}
+	if _, err := fs.Stat(f, "missing.md"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Stat(missing.md) = %v, want fs.ErrNotExist", err)
+	}
+}
+
 // names is the entry names of a directory listing, in order.
 func names(ds []fs.DirEntry) []string {
 	out := make([]string, 0, len(ds))

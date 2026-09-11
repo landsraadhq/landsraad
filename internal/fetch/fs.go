@@ -90,11 +90,19 @@ type FS struct {
 	blobs  map[string][]byte
 }
 
-// NewFS returns an empty filesystem with only its root listed.
+// NewFS returns an empty filesystem with nothing listed.
+//
+// A directory is listed only when a listing covered it (ruling R45).
+// FromEntries marks the root because a complete listing did; an adapter
+// building a sparse filesystem with NewFS lists the root itself before
+// anything else — walk() and GitLab.Open both do. NewFS used to mark "."
+// here, unconditionally, and that one unearned flag is how a GitLab
+// repository opened at non-root prefixes reported every root-level file as
+// missing.
 func NewFS() *FS {
 	return &FS{
 		entries: map[string]Entry{},
-		listed:  map[string]bool{".": true},
+		listed:  map[string]bool{},
 		blobs:   map[string][]byte{},
 	}
 }
@@ -114,6 +122,10 @@ func NewFS() *FS {
 // the wrong value would silently turn the second answer into the first.
 func FromEntries(entries []Entry) *FS {
 	f := NewFS()
+	// The loop below marks every entry's parents but stops short of ".",
+	// so the root is marked here: the response described the whole
+	// repository, root included.
+	f.listed["."] = true
 	for _, e := range entries {
 		f.entries[e.Path] = e
 		if e.Dir {
@@ -251,14 +263,13 @@ func (f *FS) ReadDir(name string) ([]fs.DirEntry, error) {
 // TestAddDirDoesNotMarkAncestorsListed and TestUnlistedDirectoryIsNotNotExist
 // true.
 //
-// The climb is exactly as trustworthy as listed, and "." is the one key
-// NewFS sets without proof: a GitLab repository opened on non-root prefixes
-// has a root marked listed whose contents nobody enumerated. The climb
-// INHERITS that, it does not introduce it — the immediate-parent rule
-// already gave the same confident answer for any path one level down, and
-// this only makes deeper paths agree with it. Making the root's flag honest
-// at construction is the separate, known root-listing fix; it is not
-// something a reader of lookup can do.
+// The climb is exactly as trustworthy as listed, and every key in listed is
+// earned by a listing: NewFS marks nothing, FromEntries marks the root
+// because a complete listing enumerated it, and both adapters list the root
+// before anything else (ruling R45). Until R45, NewFS marked "." at
+// construction, and a GitLab repository opened at non-root prefixes answered
+// fs.ErrNotExist for every root-level path — a runbook sitting in the
+// repository, reported missing.
 func (f *FS) lookup(op, name string) (Entry, error) {
 	if !fs.ValidPath(name) {
 		return Entry{}, &fs.PathError{Op: op, Path: name, Err: fs.ErrInvalid}
