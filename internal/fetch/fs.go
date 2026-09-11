@@ -51,6 +51,19 @@ var ErrNotListed = errors.New("directory was never listed")
 // Stat, ReadDir, Glob and WalkDir are answered from the listing alone and
 // cost nothing. Open — and therefore fs.ReadFile — needs the blob, which
 // cmd/ must have fetched first.
+//
+// *FS is not safe for concurrent mutation: entries, listed and blobs are
+// plain maps with no lock. AddDir and Put must be driven from a single
+// goroutine, with no other goroutine reading or writing the same *FS at the
+// same time. This is relied on rather than merely assumed: fetchBlobs fans
+// blob requests out across worker goroutines but funnels every f.Put
+// through the single goroutine that collects their results, and cmd/ drives
+// one repository's phases — Open, Expand, Fetch — one at a time. A caller
+// wanting to run several mutating calls against the same *FS concurrently
+// (Expand for two entities' docs directories, say) has to serialize them
+// itself; *FS does not add a lock to do it for them, the same way
+// Catalog.Entities() hands back its own slice rather than guarding against
+// a caller that does not exist.
 type FS struct {
 	entries map[string]Entry
 	// listed holds the directories whose contents are known. A complete

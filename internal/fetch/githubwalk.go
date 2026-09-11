@@ -85,6 +85,12 @@ func (g *GitHub) recordSHAs(m map[string]string) {
 // childrenSHAs returns the known subtree shas whose parent is dir, keyed by
 // full path. A snapshot copy, taken under lock, so callers can range over it
 // without holding g.mu for the rest of their work.
+//
+// This is safe against a leading wildcard segment (a pattern like
+// "*/service.yaml") only because "." is never a key in g.shas — see walk.
+// path.Dir(".") == "." in Go's path package, so a "." key would appear as
+// its own child here whenever dir == ".", which fs.Glob would never do for
+// "*" and which would silently diverge the two code paths.
 func (g *GitHub) childrenSHAs(dir string) map[string]string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -114,6 +120,11 @@ func (g *GitHub) walk(ctx context.Context, patterns []string) (*FS, error) {
 	if err != nil {
 		return nil, err
 	}
+	// record(f, ".", rows) returns subtree shas keyed by the *rows'* paths —
+	// "services", "vendor" and so on — never by "." itself. shas must never
+	// gain a "." key (see childrenSHAs), so this is deliberately not
+	// `shas := map[string]string{".": ref}` the way a naive seed would read;
+	// nothing here inserts one.
 	g.recordSHAs(g.record(f, ".", rows))
 
 	for _, pattern := range patterns {

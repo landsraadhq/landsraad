@@ -126,10 +126,15 @@ func (g *GitHub) Open(ctx context.Context, patterns []string) (*FS, error) {
 // Expand lists directories Open did not cover, which under a complete
 // listing is none of them.
 //
-// Free on the fast path, which is what lets cmd/ call it unconditionally
-// instead of branching on host, ref and whether this particular listing
-// happened to truncate. A path whose parent was never listed reads as
-// ErrNotListed rather than as a missing file, and this is what turns the
+// Free on the fast path, which is what lets cmd/ call it unconditionally —
+// regardless of host, ref, or whether this particular listing happened to
+// truncate — rather than branching on any of those. "Unconditionally" is
+// about which of those it does not need to know; it is not a claim about
+// how many goroutines may call it. Expand mutates f (via AddDir), and *FS's
+// own contract requires a single goroutine at a time — see *FS's doc
+// comment — so a caller expanding several directories at once must still
+// serialize those calls itself. A path whose parent was never listed reads
+// as ErrNotListed rather than as a missing file, and this is what turns the
 // former into the latter honestly: after Expand, absent means absent.
 func (g *GitHub) Expand(ctx context.Context, f *FS, dirs []string) error {
 	for _, d := range dirs {

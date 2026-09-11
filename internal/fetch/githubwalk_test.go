@@ -136,3 +136,32 @@ func TestGitHubExpandIsFreeOnACompleteListing(t *testing.T) {
 		t.Errorf("Expand made %d requests against a complete listing, want 0", requests-before)
 	}
 }
+
+// A tree request failing partway through the descent must fail Open
+// outright, not return a filesystem that looks complete but silently
+// stopped walking.
+func TestGitHubWalkStopsOnAMidDescentError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sha := strings.TrimPrefix(r.URL.Path, "/repos/org/repo/git/trees/")
+		if r.URL.Query().Get("recursive") == "1" {
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": true})
+			return
+		}
+		switch sha {
+		case "trunk":
+			json.NewEncoder(w).Encode(map[string]any{"tree": []map[string]any{
+				{"path": "services", "type": "tree", "sha": "t-services"},
+			}, "truncated": false})
+		case "t-services":
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	g := newTestGitHub(t, srv, "trunk")
+	if _, err := g.Open(context.Background(), []string{"services/*"}); err == nil {
+		t.Fatal("Open with a failing mid-descent tree request returned a nil error")
+	}
+}
