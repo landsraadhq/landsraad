@@ -3791,7 +3791,43 @@ func join(dir, seg string) string {
 // former into the latter honestly: after Expand, absent means absent.
 func (g *GitHub) Expand(ctx context.Context, f *FS, dirs []string) error {
 	for _, d := range dirs {
+		// Descend from the root first. listDir can only list a directory
+		// whose tree sha it already holds, and a spec.docs outside every
+		// configured path glob was never walked — so without this, Expand
+		// missed in shas and returned silently, and the directory never came
+		// to exist. walk always lists the root, so every ancestor is
+		// reachable one listing at a time; each step no-ops if already
+		// listed, which is what keeps Expand free on a complete listing.
+		if err := g.listAncestors(ctx, f, d); err != nil {
+			return err
+		}
 		if err := g.expandRecursive(ctx, f, g.shas, d); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// listAncestors lists each directory on the path to dir, outermost first.
+//
+// A segment the parent listing does not contain is not an error: shas has no
+// entry for it, listDir returns without listing, and Stat on the requested
+// path reports ErrNotExist because its parent WAS listed. A spec.docs
+// pointing somewhere that does not exist is a catalog problem for CheckFiles
+// to report, not a fetch failure — the same treatment GitLab's Expand gives
+// a 404.
+func (g *GitHub) listAncestors(ctx context.Context, f *FS, dir string) error {
+	if dir == "." || dir == "" {
+		return nil
+	}
+	segs := strings.Split(dir, "/")
+	cur := ""
+	for _, seg := range segs {
+		cur = join(cur, seg)
+		if cur == dir {
+			break
+		}
+		if err := g.listDir(ctx, f, g.shas, cur); err != nil {
 			return err
 		}
 	}
