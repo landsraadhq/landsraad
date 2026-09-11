@@ -157,6 +157,18 @@ spec:
 	if len(entities) != 1 || entities[0].Metadata.Name != "api" {
 		t.Fatalf("ParseAll = %+v, want exactly the api entity", entities)
 	}
+
+	// The property that actually matters, not just the Identity() unit: a
+	// checkout with no repos.yaml is most first runs, and Entity.Location()
+	// renders SourceRepo == "" as a bare path. SourceRepo == "." (what
+	// path.Base("") used to hand back through Repo.Identity()) would print
+	// ".:services/api/service.yaml" in every diagnostic instead.
+	if got := entities[0].SourceRepo; got != "" {
+		t.Errorf("SourceRepo = %q, want \"\" (no repos.yaml means no repository name)", got)
+	}
+	if got, want := entities[0].Location(), "services/api/service.yaml"; got != want {
+		t.Errorf("Location() = %q, want %q", got, want)
+	}
 }
 
 func writeFile(t *testing.T, root, path, data string) {

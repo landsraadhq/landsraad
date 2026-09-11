@@ -216,6 +216,15 @@ func TestRepoIdentity(t *testing.T) {
 		{"trailing slash", Repo{URL: "https://github.com/org/monorepo/"}, "monorepo"},
 		{"git suffix", Repo{URL: "https://github.com/org/monorepo.git"}, "monorepo"},
 		{"explicit name wins", Repo{URL: "https://github.com/org/monorepo", Name: "core"}, "core"},
+		// A zero-valued Repo is what loadReposFile's no-repos.yaml fallback
+		// constructs (Name and URL both unset). path.Base("") is ".", which
+		// is not a name -- it is path.Base answering a question nobody
+		// asked. Entity.Location() renders "" as a bare path and anything
+		// else as "<repo>:<path>", so returning "." here would print
+		// ".:services/api/service.yaml" for the single-repository case,
+		// which is most first runs.
+		{"no url or name", Repo{}, ""},
+		{"name only, no url", Repo{Name: "x"}, "x"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.repo.Identity(); got != tt.want {

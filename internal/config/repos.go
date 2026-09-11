@@ -99,12 +99,22 @@ func HostKinds() []string {
 // example prints "monorepo services/api/service.yaml:4", and lengthening
 // every diagnostic to buy uniqueness is the wrong trade when uniqueness can
 // be bought by rejecting the collision instead. LoadRepos does exactly that.
+//
+// Empty when there is neither a Name nor a URL to derive one from — the
+// synthetic single-local-repository entry loadReposFile builds when there
+// is no repos.yaml at all. path.Base("") is ".", which is not a name; using
+// it would make Entity.Location() print ".:services/api/service.yaml"
+// instead of the bare path Location() exists to produce for exactly this
+// case.
 func (r *Repo) Identity() string {
 	if r.Name != "" {
 		return r.Name
 	}
 	u := strings.TrimSuffix(r.URL, "/")
 	u = strings.TrimSuffix(u, ".git")
+	if u == "" {
+		return ""
+	}
 	return path.Base(u)
 }
 
