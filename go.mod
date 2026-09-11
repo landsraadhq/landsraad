@@ -5,7 +5,7 @@ go 1.23
 require (
 	github.com/alecthomas/chroma/v2 v2.24.1
 	github.com/fsnotify/fsnotify v1.10.1
-	github.com/google/go-cmp v0.6.0
+	github.com/google/go-cmp v0.7.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.1
 	github.com/spf13/cobra v1.8.1
 	github.com/yuin/goldmark v1.8.6
