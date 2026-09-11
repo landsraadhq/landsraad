@@ -54,7 +54,7 @@ func ownerSet(e *catalog.Entity, _ Env) Result {
 	return Result{Check: "owner-set", Status: StatusPass, Detail: e.Metadata.Owner}
 }
 
-// unreadable says why a file a check needed could not be read.
+// Unreadable says why a file or directory a stage needed could not be read.
 //
 // sparsefs.ErrNotFetched means the file is sitting in the repository and cmd/'s
 // content planner never asked the host for its bytes. The sentinel exists
@@ -63,12 +63,25 @@ func ownerSet(e *catalog.Entity, _ Env) Result {
 // that is sitting in their repository" — and then every consumer dropped the
 // error and said "cannot read X", which sends them exactly there.
 //
+// sparsefs.ErrNotListed is the same kind of fact one level up: the path sits
+// below a directory the planner never asked the host to list. That is equally
+// a gap in what landsraad fetched and equally no evidence about the user's
+// files, so it gets the same wording rather than falling through to the
+// generic branch.
+//
 // Everything else gets the error itself. "cannot read X" collapsed a
 // permission problem, an EISDIR and a truncated read into one sentence that
 // says nothing about any of them.
-func unreadable(p string, err error) string {
+//
+// Exported because cmd/'s validate reads .landsraad/checks too, and a second
+// copy of this wording is how the two would drift apart.
+func Unreadable(p string, err error) string {
 	if errors.Is(err, sparsefs.ErrNotFetched) {
 		return fmt.Sprintf("%s is in the repository but its content was never fetched; "+
+			"this is a landsraad bug, not a problem with your catalog", p)
+	}
+	if errors.Is(err, sparsefs.ErrNotListed) {
+		return fmt.Sprintf("%s was never listed, so landsraad cannot read it; "+
 			"this is a landsraad bug, not a problem with your catalog", p)
 	}
 	return fmt.Sprintf("cannot read %s: %v", p, err)
@@ -93,7 +106,7 @@ func runbookPresent(e *catalog.Entity, env Env) Result {
 	if err != nil {
 		// Never pass for a file that could not be read: that is the
 		// exit-0-on-something-unexamined failure inside a single check.
-		return Result{Check: id, Status: StatusError, Detail: unreadable(e.Spec.Runbook, err)}
+		return Result{Check: id, Status: StatusError, Detail: Unreadable(e.Spec.Runbook, err)}
 	}
 	if bodyIsEmpty(data) {
 		return Result{Check: id, Status: StatusFail,
@@ -142,7 +155,7 @@ func alertsParse(e *catalog.Entity, env Env) Result {
 	}
 	data, err := fs.ReadFile(fsys, e.Spec.Alerts)
 	if err != nil {
-		return Result{Check: id, Status: StatusError, Detail: unreadable(e.Spec.Alerts, err)}
+		return Result{Check: id, Status: StatusError, Detail: Unreadable(e.Spec.Alerts, err)}
 	}
 	var rules alertRules
 	if err := yaml.Unmarshal(data, &rules); err != nil {

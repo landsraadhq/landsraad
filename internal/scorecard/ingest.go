@@ -2,6 +2,7 @@ package scorecard
 
 import (
 	_ "embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -110,7 +111,19 @@ func Ingest(src catalog.Sources, cat *catalog.Catalog, staleAfterDays int, now t
 // one.
 func ingestRepo(repo string, fsys fs.FS, cat *catalog.Catalog, out map[catalog.Ref]map[string]Reported, c *diag.Collector) {
 	entries, err := fs.ReadDir(fsys, ChecksDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		// No directory is not a problem: most repositories report no
+		// external results. Only this answer means that. A directory that
+		// exists but cannot be listed used to land here too, and dropped
+		// every result the repository reported without a word.
+		return
+	}
 	if err != nil {
+		c.Add(diag.Diagnostic{
+			Severity: diag.SevError, Repo: repo, File: ChecksDir, Line: 1,
+			Check:   "checks-unreadable",
+			Message: Unreadable(ChecksDir, err),
+		})
 		return
 	}
 	names := make([]string, 0, len(entries))
@@ -145,7 +158,7 @@ func ingestRepo(repo string, fsys fs.FS, cat *catalog.Catalog, out map[catalog.R
 			c.Add(diag.Diagnostic{
 				Severity: diag.SevError, Repo: repo, File: path, Line: 1,
 				Check:   "checks-unreadable",
-				Message: fmt.Sprintf("cannot read %s", path),
+				Message: Unreadable(path, err),
 			})
 			continue
 		}

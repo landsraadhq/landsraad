@@ -3,10 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/config"
@@ -576,6 +579,75 @@ func TestValidateAcceptsAWellFormedCheckResultsFile(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if code := Validate(fsys, &out, &errOut, diagText()); code != exitOK {
 		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitOK, errOut.String())
+	}
+}
+
+// failPathFS is a MapFS on which one path cannot be read: ReadDir and
+// ReadFile of it fail with a permission error, the shape os.DirFS gives
+// without depending on the test process's own permissions.
+type failPathFS struct {
+	fstest.MapFS
+	path string
+}
+
+func (f failPathFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	if name == f.path {
+		return nil, &fs.PathError{Op: "readdir", Path: name, Err: fs.ErrPermission}
+	}
+	return f.MapFS.ReadDir(name)
+}
+
+func (f failPathFS) ReadFile(name string) ([]byte, error) {
+	if name == f.path {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrPermission}
+	}
+	return f.MapFS.ReadFile(name)
+}
+
+// A .landsraad/checks that cannot be read used to validate clean.
+// validateCheckResults treated every ReadDir error as "no directory", so a
+// PR could break the directory and still ship green, and a results file it
+// could not read was reported without saying why.
+func TestValidateReportsUnreadableCheckResults(t *testing.T) {
+	for _, tt := range []struct {
+		name, path string
+		want       diag.Diagnostic
+	}{
+		{
+			name: "directory", path: ".landsraad/checks",
+			want: diag.Diagnostic{
+				Severity: diag.SevError, File: ".landsraad/checks", Line: 1,
+				Check:   "checks-unreadable",
+				Message: "cannot read .landsraad/checks: readdir .landsraad/checks: permission denied",
+			},
+		},
+		{
+			name: "file", path: ".landsraad/checks/scan.yaml",
+			want: diag.Diagnostic{
+				Severity: diag.SevError, File: ".landsraad/checks/scan.yaml", Line: 1,
+				Check:   "checks-unreadable",
+				Message: "cannot read .landsraad/checks/scan.yaml: open .landsraad/checks/scan.yaml: permission denied",
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			files := genFS()
+			files[".landsraad/checks/scan.yaml"] = &fstest.MapFile{Data: []byte(
+				"apiVersion: landsraad/v1\nkind: CheckResults\nproducer: ci/x\ngeneratedAt: 2026-09-08T14:00:00Z\nresults:\n  - { entity: service:api, check: image-scanned, status: pass }\n")}
+
+			var out, errOut bytes.Buffer
+			code := Validate(failPathFS{MapFS: files, path: tt.path}, &out, &errOut, diag.JSON{})
+			if code != exitValidation {
+				t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitValidation, errOut.String())
+			}
+			var ds []diag.Diagnostic
+			if err := json.Unmarshal(out.Bytes(), &ds); err != nil {
+				t.Fatalf("out is not diagnostics JSON: %v\n%s", err, out.String())
+			}
+			if diff := cmp.Diff([]diag.Diagnostic{tt.want}, ds); diff != "" {
+				t.Errorf("diagnostics mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
 

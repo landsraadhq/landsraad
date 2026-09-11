@@ -2,12 +2,16 @@ package scorecard
 
 import (
 	"fmt"
+	"io/fs"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+
 	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/diag"
+	"github.com/landsraadhq/landsraad/internal/fetch"
 )
 
 var now = time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
@@ -274,6 +278,99 @@ func TestIngestWithNoChecksDirectoryIsNotAnError(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("nothing to ingest, got %+v", got)
+	}
+}
+
+// failPathFS is a MapFS on which one path cannot be read. ReadDir and
+// ReadFile of it fail with a permission error, the shape os.DirFS gives for
+// a path the build user cannot read, without depending on the test
+// process's own permissions. Compare render's failFS.
+type failPathFS struct {
+	fstest.MapFS
+	path string
+}
+
+func (f failPathFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	if name == f.path {
+		return nil, &fs.PathError{Op: "readdir", Path: name, Err: fs.ErrPermission}
+	}
+	return f.MapFS.ReadDir(name)
+}
+
+func (f failPathFS) ReadFile(name string) ([]byte, error) {
+	if name == f.path {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrPermission}
+	}
+	return f.MapFS.ReadFile(name)
+}
+
+// A .landsraad/checks that exists but cannot be listed is a different fact
+// from no directory at all. ingestRepo used to treat both as "no results",
+// so every result the repository reported vanished from the scorecard
+// without a word.
+func TestIngestReportsAnUnreadableChecksDirectory(t *testing.T) {
+	cat := catalogOf(t, svc("api"))
+	var c diag.Collector
+
+	Ingest(catalog.SingleSource("platform", failPathFS{MapFS: fstest.MapFS{}, path: ChecksDir}), cat, 14, now, &c)
+
+	want := []diag.Diagnostic{{
+		Severity: diag.SevError, Repo: "platform", File: ".landsraad/checks", Line: 1,
+		Check:   "checks-unreadable",
+		Message: "cannot read .landsraad/checks: readdir .landsraad/checks: permission denied",
+	}}
+	if diff := cmp.Diff(want, c.Diagnostics()); diff != "" {
+		t.Errorf("diagnostics mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// ErrNotListed here means cmd/'s planner never listed a directory it always
+// expands (docsDirs seeds ChecksDir), so it is a landsraad bug. It has to be
+// loud: once every listed flag is earned (R45), a planner mistake would
+// otherwise surface as exactly the silence above.
+func TestIngestReportsAnUnlistedChecksDirectoryAsALandsraadBug(t *testing.T) {
+	cat := catalogOf(t, svc("api"))
+	remote := fetch.NewFS()
+	// The root listing saw .landsraad, and nothing ever listed inside it.
+	remote.AddDir(".", []fetch.Entry{{Path: ".landsraad", Dir: true}})
+	var c diag.Collector
+
+	Ingest(catalog.SingleSource("edge-gateway", remote), cat, 14, now, &c)
+
+	want := []diag.Diagnostic{{
+		Severity: diag.SevError, Repo: "edge-gateway", File: ".landsraad/checks", Line: 1,
+		Check: "checks-unreadable",
+		Message: ".landsraad/checks was never listed, so landsraad cannot read it; " +
+			"this is a landsraad bug, not a problem with your catalog",
+	}}
+	if diff := cmp.Diff(want, c.Diagnostics()); diff != "" {
+		t.Errorf("diagnostics mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A results file that was listed but whose bytes were never fetched. The
+// ReadFile branch used to say "cannot read .landsraad/checks/scan.yaml" and
+// stop there, which sends somebody to look at a file that is fine.
+func TestIngestReportsAnUnfetchedResultsFileAsALandsraadBug(t *testing.T) {
+	cat := catalogOf(t, svc("api"))
+	remote := fetch.NewFS()
+	remote.AddDir(".", []fetch.Entry{{Path: ".landsraad", Dir: true}})
+	remote.AddDir(".landsraad", []fetch.Entry{{Path: ".landsraad/checks", Dir: true}})
+	remote.AddDir(".landsraad/checks", []fetch.Entry{
+		{Path: ".landsraad/checks/scan.yaml", SHA: "0123456789abcdef0123456789abcdef01234567", Size: 40},
+	})
+	var c diag.Collector
+
+	Ingest(catalog.SingleSource("edge-gateway", remote), cat, 14, now, &c)
+
+	want := []diag.Diagnostic{{
+		Severity: diag.SevError, Repo: "edge-gateway", File: ".landsraad/checks/scan.yaml", Line: 1,
+		Check: "checks-unreadable",
+		Message: ".landsraad/checks/scan.yaml is in the repository but its content was never fetched; " +
+			"this is a landsraad bug, not a problem with your catalog",
+	}}
+	if diff := cmp.Diff(want, c.Diagnostics()); diff != "" {
+		t.Errorf("diagnostics mismatch (-want +got):\n%s", diff)
 	}
 }
 

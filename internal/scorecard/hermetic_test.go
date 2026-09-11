@@ -476,3 +476,28 @@ func TestAnUnreadableRunbookCarriesTheError(t *testing.T) {
 		t.Errorf("Detail = %q, want %q", got.Detail, want)
 	}
 }
+
+// ErrNotListed is the same kind of fact as ErrNotFetched: a gap in what
+// landsraad asked the host for, never evidence about the repository.
+// Unreadable used to word only ErrNotFetched as a landsraad bug. This one
+// fell through to "cannot read X: directory was never listed", which reads
+// as a problem with the user's files.
+func TestUnlistedFilesReadAsALandsraadBugNotAMissingFile(t *testing.T) {
+	// The root listing saw services/, and nothing ever listed inside it.
+	remote := fetch.NewFS()
+	remote.AddDir(".", []fetch.Entry{{Path: "services", Dir: true}})
+	env := Env{Sources: catalog.SingleSource("", remote), Now: time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)}
+
+	e := svc("api")
+	e.Spec.Runbook = "services/api/runbook.md"
+	got := run(t, "runbook-present", e, env)
+
+	if got.Status != StatusError {
+		t.Errorf("Status = %q, want %q", got.Status, StatusError)
+	}
+	want := "services/api/runbook.md was never listed, so landsraad cannot read it; " +
+		"this is a landsraad bug, not a problem with your catalog"
+	if got.Detail != want {
+		t.Errorf("Detail = %q, want %q", got.Detail, want)
+	}
+}

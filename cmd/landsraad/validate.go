@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -111,9 +112,18 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter) int {
 // validation loop above, rather than hardcoding "".
 func validateCheckResults(fsys fs.FS, repo string, c *diag.Collector) {
 	entries, err := fs.ReadDir(fsys, scorecard.ChecksDir)
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
 		// No directory is not a problem: most repositories report no external
-		// results.
+		// results. Only this answer means that; a directory that exists and
+		// cannot be listed is reported below, not validated as empty.
+		return
+	}
+	if err != nil {
+		c.Add(diag.Diagnostic{
+			Severity: diag.SevError, File: scorecard.ChecksDir, Line: 1,
+			Check:   "checks-unreadable",
+			Message: scorecard.Unreadable(scorecard.ChecksDir, err),
+		})
 		return
 	}
 	v, err := schema.New(scorecard.CheckResultsSchema)
@@ -135,7 +145,7 @@ func validateCheckResults(fsys fs.FS, repo string, c *diag.Collector) {
 			c.Add(diag.Diagnostic{
 				Severity: diag.SevError, File: path, Line: 1,
 				Check:   "checks-unreadable",
-				Message: fmt.Sprintf("cannot read %s", path),
+				Message: scorecard.Unreadable(path, err),
 			})
 			continue
 		}
