@@ -314,19 +314,28 @@ func TestCheckFilesReportsAnEntityWithNoFilesystem(t *testing.T) {
 // that may simply be false. It matters more since the fetch planner stopped
 // asking the host for unlisted paths: this function is now what diagnoses
 // them.
+//
+// The filesystem here is R28's truncated-tree fallback, which is where the
+// case is live: the root listing saw apps/ and the descent never went into
+// it, because no configured pattern reaches it. "apps exists and nobody
+// looked inside" is a different fact from "apps is not there", and only the
+// first one is true. docsDirs expands a runbook's and an alerts file's
+// directory, so this reaches CheckFiles through spec.path, which nothing
+// expands.
 func TestCheckFilesSaysWhenItNeverLookedRatherThanThatTheFileIsGone(t *testing.T) {
-	// A sparse filesystem that listed services/api and nothing else, the way
-	// `paths: [services/*]` leaves a repository whose runbook lives under
-	// docs/.
 	remote := fetch.NewFS()
+	remote.AddDir(".", []fetch.Entry{
+		{Path: "services", Dir: true},
+		{Path: "apps", Dir: true}, // seen in the root listing, never descended into
+	})
+	remote.AddDir("services", []fetch.Entry{{Path: "services/api", Dir: true}})
 	remote.AddDir("services/api", []fetch.Entry{
 		{Path: "services/api/service.yaml", SHA: "0123456789abcdef0123456789abcdef01234567"},
 	})
 
 	var c diag.Collector
 	e := ent("edge-gateway", "services/api/service.yaml", "api", KindService, 4)
-	e.Spec.Path = "services/api"
-	e.Spec.Runbook = "docs/runbooks/api.md"
+	e.Spec.Path = "apps/edge"
 	cat := NewCatalog([]*Entity{e}, &c)
 
 	CheckFiles(SingleSource("edge-gateway", remote), cat, &c)
@@ -339,12 +348,43 @@ func TestCheckFilesSaysWhenItNeverLookedRatherThanThatTheFileIsGone(t *testing.T
 	if d.Check != "unlisted-path" {
 		t.Errorf("Check = %q, want %q", d.Check, "unlisted-path")
 	}
-	want := `spec.runbook points at "docs/runbooks/api.md", which landsraad never looked for: no listing of "docs/runbooks" was ever fetched`
+	want := `spec.path points at "apps/edge", which landsraad never looked for: no listing of "apps" was ever fetched`
 	if d.Message != want {
 		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
 	}
 	wantHint := "widen this repository's `paths:` in repos.yaml to cover it, or move the file under a path that is already listed"
 	if d.Hint != wantHint {
 		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, wantHint)
+	}
+}
+
+// The other side of the same coin: a sparse filesystem that holds a COMPLETE
+// listing knows a path is absent, however deep it is, and must say
+// missing-file rather than sending somebody to widen a `paths:` that is
+// already `.`.
+func TestCheckFilesSaysMissingWhenACompleteListingProvesIt(t *testing.T) {
+	remote := fetch.FromEntries([]fetch.Entry{
+		{Path: "service.yaml", SHA: "0123456789abcdef0123456789abcdef01234567"},
+		{Path: "docs/index.md", SHA: "89abcdef0123456789abcdef0123456789abcdef"},
+	})
+
+	var c diag.Collector
+	e := ent("edge-gateway", "service.yaml", "edge", KindService, 4)
+	e.Spec.Runbook = "docs/runbooks/edge.md"
+	cat := NewCatalog([]*Entity{e}, &c)
+
+	CheckFiles(SingleSource("edge-gateway", remote), cat, &c)
+
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(ds), ds)
+	}
+	if ds[0].Check != "missing-file" {
+		t.Errorf("Check = %q, want %q: the whole repository was listed, so this file is genuinely not there",
+			ds[0].Check, "missing-file")
+	}
+	want := `spec.runbook points at "docs/runbooks/edge.md", which does not exist`
+	if ds[0].Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", ds[0].Message, want)
 	}
 }
