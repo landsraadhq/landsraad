@@ -679,11 +679,18 @@ func TestBuildMergesALocalAndARemoteRepository(t *testing.T) {
 // below are the ones where it is not.
 func remotePlatformRoot(t *testing.T, host, patterns string) string {
 	t.Helper()
+	return remotePlatformRootOn(t, "github", host, patterns)
+}
+
+// remotePlatformRootOn is remotePlatformRoot with the remote entry's host:
+// named, so the same platform can stand in front of either adapter.
+func remotePlatformRootOn(t *testing.T, kind, host, patterns string) string {
+	t.Helper()
 	return materialize(t, map[string]string{
 		"teams.yaml": "teams:\n  - name: team-platform\n    members: [alice]\n    slack: \"#plat\"\n    pagerduty: PLAT\n",
 		"repos.yaml": "repos:\n" +
 			"  - url: https://example.invalid/org/platform\n    local: true\n    paths: [services/*]\n" +
-			"  - url: https://" + host + "/org/edge-gateway\n    host: github\n    ref: main\n    paths: [" + patterns + "]\n",
+			"  - url: https://" + host + "/org/edge-gateway\n    host: " + kind + "\n    ref: main\n    paths: [" + patterns + "]\n",
 		"services/api/service.yaml": `apiVersion: landsraad/v1
 kind: Service
 metadata:
@@ -910,5 +917,53 @@ func TestBuildWithAnUnreachableRemote(t *testing.T) {
 	// short-circuited by MaxAttempts: 1 or a Sleep that was never wired up.
 	if sleeps != 4 {
 		t.Errorf("sleeps = %d, want 4 (2 opens × 2 retries each against the always-failing host)", sleeps)
+	}
+}
+
+// cmd's fake host used to speak only GitHub, so no test drove openRepos and
+// Build through the GitLab adapter end to end. This is the baseline R45 is
+// measured against: a satellite whose whole tree sits inside `paths: [.]`,
+// which GitLab.Open covers with one recursive listing.
+func TestBuildMergesARemoteGitLabRepository(t *testing.T) {
+	remote := materialize(t, map[string]string{
+		"service.yaml": `apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: edge
+  description: Edge gateway, hosted on GitLab.
+  owner: team-platform
+  tier: 1
+  lifecycle: production
+spec:
+  language: go
+  path: .
+  runbook: RUNBOOK.md
+`,
+		"RUNBOOK.md": "# Edge runbook\n\nDrain the pool, then page the on-call.\n",
+	})
+	srv := fakeGitLab(t, remote)
+	root := remotePlatformRootOn(t, "gitlab", srv.Listener.Addr().String(), ".")
+
+	w := openRemoteWorkspace(t, root, srv)
+	if got := w.Failures(); len(got) != 0 {
+		t.Fatalf("openRepos failed for %+v", got)
+	}
+	var errOut bytes.Buffer
+	files, code := Build(os.DirFS(root), w, &errOut, BuildOptions{
+		Now: testNow, Version: "test", LastEdit: noLastEdit(),
+	})
+	if code != exitOK {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitOK, errOut.String())
+	}
+	byPath := map[string][]byte{}
+	for _, f := range files {
+		byPath[f.Path] = f.Data
+	}
+	page, ok := byPath["entity/service/edge/runbook.html"]
+	if !ok {
+		t.Fatalf("the GitLab satellite's runbook was not rendered; pages: %v", sortedPaths(byPath))
+	}
+	if !strings.Contains(string(page), "Drain the pool") {
+		t.Errorf("the rendered runbook does not carry the fetched content:\n%s", page)
 	}
 }

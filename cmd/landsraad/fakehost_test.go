@@ -45,45 +45,8 @@ func fakeGitHubTruncatedTree(t *testing.T, dir string) *httptest.Server {
 func fakeGitHubHost(t *testing.T, dir string, truncate bool) *httptest.Server {
 	t.Helper()
 
-	type blob struct {
-		sha  string
-		data []byte
-	}
-	blobs := map[string]blob{}   // path -> blob
-	bySHA := map[string][]byte{} // sha  -> content
-	var dirs []string
-
-	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(dir, p)
-		if err != nil {
-			return err
-		}
-		rel = filepath.ToSlash(rel)
-		if rel == "." {
-			return nil
-		}
-		if d.IsDir() {
-			dirs = append(dirs, rel)
-			return nil
-		}
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		h := sha1.New()
-		fmt.Fprintf(h, "blob %d\x00", len(data))
-		h.Write(data)
-		sha := hex.EncodeToString(h.Sum(nil))
-		blobs[rel] = blob{sha, data}
-		bySHA[sha] = data
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("building the fake host from %s: %v", dir, err)
-	}
+	repo := readFixtureRepo(t, dir)
+	blobs, bySHA, dirs := repo.blobs, repo.bySHA, repo.dirs
 
 	// childrenOf is one non-recursive tree listing. GitHub reports paths
 	// relative to the tree being listed, not to the repository root, which is
@@ -158,6 +121,134 @@ func fakeGitHubHost(t *testing.T, dir string, truncate bool) *httptest.Server {
 			})
 		default:
 			t.Errorf("fake host got an unexpected request: %s", r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// fixtureRepo is a directory described the way a git host describes a
+// repository: every file with the blob sha git would give it, and every
+// directory. Both fake hosts serve one.
+type fixtureRepo struct {
+	blobs map[string]fixtureBlob // path -> blob
+	bySHA map[string][]byte      // sha  -> content
+	dirs  []string
+}
+
+type fixtureBlob struct {
+	sha  string
+	data []byte
+}
+
+// readFixtureRepo walks dir into a fixtureRepo, computing each blob sha the
+// way git does, so fetchBlobs' verification runs for real against either
+// fake host.
+func readFixtureRepo(t *testing.T, dir string) fixtureRepo {
+	t.Helper()
+	repo := fixtureRepo{blobs: map[string]fixtureBlob{}, bySHA: map[string][]byte{}}
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == "." {
+			return nil
+		}
+		if d.IsDir() {
+			repo.dirs = append(repo.dirs, rel)
+			return nil
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		h := sha1.New()
+		fmt.Fprintf(h, "blob %d\x00", len(data))
+		h.Write(data)
+		sha := hex.EncodeToString(h.Sum(nil))
+		repo.blobs[rel] = fixtureBlob{sha, data}
+		repo.bySHA[sha] = data
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("building the fake host from %s: %v", dir, err)
+	}
+	return repo
+}
+
+// fakeGitLab serves a directory as if it were a GitLab repository, through
+// the two endpoints a build with a configured ref calls: the tree listing
+// and raw blobs. The project and commit endpoints are not served; a test
+// that needs resolveRef or docs-fresh adds them, and until then a request
+// for either fails the test rather than being answered with a guess.
+//
+// A listing for a path that is not a directory answers 404, as GitLab has
+// since 17.7 (earlier versions answered 200 and []). Ruling R45 means the
+// adapter never asks for a directory no listing has shown, so it must not
+// care which; this fake takes the stricter of the two.
+//
+// Every listing fits one page. Pagination is TestGitLabFollowsEveryPage's
+// subject, not this fixture's.
+func fakeGitLab(t *testing.T, dir string) *httptest.Server {
+	t.Helper()
+	repo := readFixtureRepo(t, dir)
+	isDir := map[string]bool{".": true}
+	for _, d := range repo.dirs {
+		isDir[d] = true
+	}
+
+	// rows is one tree listing in GitLab's shape: full paths from the
+	// repository root, the opposite of GitHub's relative ones.
+	rows := func(parent string, recursive bool) []map[string]any {
+		under := func(p string) bool {
+			if recursive {
+				return parent == "." || strings.HasPrefix(p, parent+"/")
+			}
+			return path.Dir(p) == parent
+		}
+		out := []map[string]any{}
+		for _, d := range repo.dirs {
+			if under(d) {
+				out = append(out, map[string]any{"id": "t-" + d, "name": path.Base(d), "type": "tree", "path": d})
+			}
+		}
+		for p, b := range repo.blobs {
+			if under(p) {
+				out = append(out, map[string]any{"id": b.sha, "name": path.Base(p), "type": "blob", "path": p})
+			}
+		}
+		return out
+	}
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/repository/tree"):
+			parent := r.URL.Query().Get("path")
+			if parent == "" {
+				parent = "."
+			}
+			if !isDir[parent] {
+				w.WriteHeader(http.StatusNotFound)
+				w.Write([]byte(`{"message":"404 Tree Not Found"}`))
+				return
+			}
+			json.NewEncoder(w).Encode(rows(parent, r.URL.Query().Get("recursive") == "true"))
+		case strings.Contains(r.URL.Path, "/repository/blobs/"):
+			rest := r.URL.Path[strings.Index(r.URL.Path, "/repository/blobs/")+len("/repository/blobs/"):]
+			data, ok := repo.bySHA[strings.TrimSuffix(rest, "/raw")]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.Write(data)
+		default:
+			t.Errorf("fake GitLab got an unexpected request: %s", r.URL)
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
