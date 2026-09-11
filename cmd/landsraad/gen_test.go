@@ -126,6 +126,32 @@ spec:
 	}
 }
 
+// Fix round 2 (coordinator review): a single-repository run whose patterns
+// match nothing must produce EXACTLY the one diagnostic main always did —
+// not that error plus the per-repository warning that exists for telling
+// several repositories apart. Pinned as the full rendered text, the same
+// way the coordinator's own main-vs-branch comparison was done, so the
+// regression (confirmed to reproduce before this fix, by temporarily
+// reverting it and diffing this exact test's output against a `main`
+// worktree) cannot come back silently.
+func TestGenOnZeroMatchRepositoryEmitsExactlyOneDiagnostic(t *testing.T) {
+	fsys := genFS()
+	fsys["repos.yaml"] = &fstest.MapFile{Data: []byte("repos:\n  - url: https://github.com/org/monorepo\n    paths: [nope/*]\n")}
+
+	var out, errOut bytes.Buffer
+	code := Gen(fsys, "", &out, &errOut, diagText(), false)
+
+	if code != exitValidation {
+		t.Fatalf("exit = %d, want %d", code, exitValidation)
+	}
+	want := "error: repos.yaml:1 [no-entities]\n" +
+		"  no service.yaml found under any configured path (nope/*)\n" +
+		"  hint: add a repos.yaml listing the paths your services live under\n"
+	if out.String() != want {
+		t.Errorf("stdout\n got:\n%s\nwant:\n%s", out.String(), want)
+	}
+}
+
 // diagCollectorForTest hands out a collector whose diagnostics the test does
 // not care about: artifacts() reports through it, and these cases assert on
 // exit codes and file content instead.

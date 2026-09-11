@@ -13,6 +13,8 @@ import (
 	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/config"
 	"github.com/landsraadhq/landsraad/internal/diag"
+	"github.com/landsraadhq/landsraad/internal/fetch"
+	"github.com/landsraadhq/landsraad/internal/schema"
 )
 
 // The content set is every file a later stage will read. It is the whole
@@ -113,6 +115,99 @@ func TestTokenVarName(t *testing.T) {
 	}
 }
 
+// Fix round 2 (coordinator review): silent defaulting with no diagnostic
+// contradicts patternsFor's identical single-repository case
+// (defaultPatternsNote) and CLAUDE.md's guidance that degraded mode must be
+// visible in the artifact, not only in a log. This pins loadReposFile's
+// side of it: repos.yaml parses but names zero repositories.
+func TestLoadReposFileWithEmptyReposListAnnouncesDefaultPatterns(t *testing.T) {
+	fsys := fstest.MapFS{"repos.yaml": {Data: []byte("repos: []\n")}}
+	var c diag.Collector
+	repos := loadReposFile(fsys, &c)
+
+	if len(repos) != 1 || !repos[0].Local {
+		t.Fatalf("loadReposFile = %+v, want a single local fallback entry", repos)
+	}
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("got %d diagnostics, want exactly 1: %+v", len(ds), ds)
+	}
+	d := ds[0]
+	if d.Severity != diag.SevInfo {
+		t.Errorf("Severity = %v, want SevInfo — this is tolerated, not an error", d.Severity)
+	}
+	if d.Check != "default-patterns" {
+		t.Errorf("Check = %q, want %q", d.Check, "default-patterns")
+	}
+	want := "repos.yaml lists no repositories; using default paths (., services/*, workers/*, libs/*, topics/*)"
+	if d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+	wantHint := "add repos.yaml if your services live elsewhere"
+	if d.Hint != wantHint {
+		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, wantHint)
+	}
+}
+
+// openRepos's side of the same fix: one entry in an otherwise normal
+// repos.yaml names no paths:.
+func TestOpenReposEntryWithNoPathsAnnouncesDefaultPatterns(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "teams.yaml",
+		"teams:\n  - name: team-payments\n    members: [alice]\n    slack: \"#pay\"\n    pagerduty: PAY\n")
+	writeFile(t, dir, "repos.yaml",
+		"repos:\n  - url: https://github.com/org/monorepo\n    local: true\n")
+	writeFile(t, dir, "services/api/service.yaml", `apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: api
+  description: The API.
+  owner: team-payments
+  tier: 2
+  lifecycle: production
+spec:
+  path: services/api
+`)
+
+	var c diag.Collector
+	w := openRepos(context.Background(), reposOptions{
+		Root: dir, RootFS: os.DirFS(dir),
+		Lookup: func(string) (string, bool) { return "", false },
+		ErrOut: io.Discard,
+	}, &c)
+	if got := w.Failures(); len(got) != 0 {
+		t.Fatalf("Failures() = %+v, want none", got)
+	}
+
+	var found []diag.Diagnostic
+	for _, d := range c.Diagnostics() {
+		if d.Check == "default-patterns" {
+			found = append(found, d)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("got %d default-patterns diagnostics, want exactly 1: %+v", len(found), c.Diagnostics())
+	}
+	d := found[0]
+	if d.Severity != diag.SevInfo {
+		t.Errorf("Severity = %v, want SevInfo", d.Severity)
+	}
+	if d.Repo != "monorepo" {
+		t.Errorf("Repo = %q, want %q", d.Repo, "monorepo")
+	}
+	if d.Line != 2 {
+		t.Errorf("Line = %d, want 2 (the url: key's line)", d.Line)
+	}
+	want := "monorepo names no paths; using default paths (., services/*, workers/*, libs/*, topics/*)"
+	if d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+	wantHint := "add paths: to this entry if its services live elsewhere"
+	if d.Hint != wantHint {
+		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, wantHint)
+	}
+}
+
 // openRepos's only path this task can exercise without an HTTP fixture: no
 // repos.yaml at all, so loadReposFile's single-local-repository fallback is
 // what runs. It still drives the real Open path (os.DirFS over Root, not a
@@ -194,4 +289,186 @@ func TestParseRepoThenAssembleMatchesTheOldPipeline(t *testing.T) {
 	if ds := c.Diagnostics(); len(ds) != 0 {
 		t.Fatalf("got %d diagnostics on a good fixture: %+v", len(ds), ds)
 	}
+}
+
+// Fix round 2 (coordinator review): a single-repository run must produce
+// the ONE rich "no entities" diagnostic main always did, carrying the
+// searched paths — not the thinner per-repository warning that exists for
+// telling several repositories apart. This is parseRepo's half of that
+// property, pinned exactly rather than by substring.
+func TestParseRepoZeroFoundSoloExactMessage(t *testing.T) {
+	fsys := fstest.MapFS{"teams.yaml": {Data: []byte("x")}}
+	v := schemaValidatorForTest(t)
+	var c diag.Collector
+	entities := parseRepo("monorepo", fsys, []string{"services/*"}, true, v, &c)
+	if entities != nil {
+		t.Fatalf("entities = %+v, want nil", entities)
+	}
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("got %d diagnostics, want exactly 1: %+v", len(ds), ds)
+	}
+	d := ds[0]
+	if d.Severity != diag.SevError {
+		t.Errorf("Severity = %v, want SevError — this is what gates a single-repository build", d.Severity)
+	}
+	if d.Check != "no-entities" {
+		t.Errorf("Check = %q, want %q", d.Check, "no-entities")
+	}
+	want := "no service.yaml found under any configured path (services/*)"
+	if d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+	wantHint := "add a repos.yaml listing the paths your services live under"
+	if d.Hint != wantHint {
+		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, wantHint)
+	}
+}
+
+// parseRepo's other half: solo=false keeps the per-repository warning,
+// worded and severed differently on purpose (see TestParseRepoZeroFoundSoloExactMessage).
+func TestParseRepoZeroFoundMultiExactMessage(t *testing.T) {
+	fsys := fstest.MapFS{"teams.yaml": {Data: []byte("x")}}
+	v := schemaValidatorForTest(t)
+	var c diag.Collector
+	entities := parseRepo("monorepo", fsys, []string{"services/*"}, false, v, &c)
+	if entities != nil {
+		t.Fatalf("entities = %+v, want nil", entities)
+	}
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("got %d diagnostics, want exactly 1: %+v", len(ds), ds)
+	}
+	d := ds[0]
+	if d.Severity != diag.SevWarn {
+		t.Errorf("Severity = %v, want SevWarn — one repository among several being empty is not fatal by itself", d.Severity)
+	}
+	want := "no service.yaml found in monorepo under any configured path (services/*)"
+	if d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+	wantHint := "check this repository's `paths:` in repos.yaml"
+	if d.Hint != wantHint {
+		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, wantHint)
+	}
+}
+
+// assemble's half of the solo property: when there is at most one source,
+// a solo parseRepo call has already reported the single rich error, so
+// assemble must add nothing more — not even a thinner echo of it.
+func TestAssembleZeroEntitiesSoloAddsNoDiagnostic(t *testing.T) {
+	var c diag.Collector
+	cat, g, teams := assemble(nil, catalog.SingleSource("monorepo", fstest.MapFS{}), catalog.FullCatalog, fstest.MapFS{}, &c)
+	if cat != nil || g != nil || teams != nil {
+		t.Fatalf("assemble = (%v, %v, %v), want all nil", cat, g, teams)
+	}
+	if ds := c.Diagnostics(); len(ds) != 0 {
+		t.Fatalf("assemble added %d diagnostics for a solo empty catalog, want 0: %+v", len(ds), ds)
+	}
+}
+
+// assemble's multi-repository case: with more than one source, no single
+// per-repository warning can say the WHOLE catalog is empty, so assemble's
+// own error is the one diagnostic that must fire, pinned exactly.
+func TestAssembleZeroEntitiesMultiExactMessage(t *testing.T) {
+	src := catalog.Sources{"repo-a": fstest.MapFS{}, "repo-b": fstest.MapFS{}}
+	var c diag.Collector
+	cat, g, teams := assemble(nil, src, catalog.FullCatalog, fstest.MapFS{}, &c)
+	if cat != nil || g != nil || teams != nil {
+		t.Fatalf("assemble = (%v, %v, %v), want all nil", cat, g, teams)
+	}
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("got %d diagnostics, want exactly 1: %+v", len(ds), ds)
+	}
+	d := ds[0]
+	if d.Severity != diag.SevError {
+		t.Errorf("Severity = %v, want SevError", d.Severity)
+	}
+	want := "no service.yaml found in any configured repository"
+	if d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+	wantHint := "add a repos.yaml listing the paths your services live under"
+	if d.Hint != wantHint {
+		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, wantHint)
+	}
+}
+
+// The property end to end, composed the way workspace.ParseAll and a future
+// Build actually would: two repositories, neither matching anything, must
+// produce BOTH per-repository warnings AND the one aggregate error — the
+// multi-repository half of the coordinator's ruling, so the single-vs-multi
+// distinction is tested on both sides, not just asserted about parseRepo
+// and assemble in isolation.
+func TestWorkspaceParseAllThenAssembleMultiRepoZeroMatchKeepsBothDiagnostics(t *testing.T) {
+	w := &workspace{
+		sources: catalog.Sources{
+			"repo-a": fstest.MapFS{"teams.yaml": {Data: []byte("x")}},
+			"repo-b": fstest.MapFS{"teams.yaml": {Data: []byte("x")}},
+		},
+		patterns: map[string][]string{
+			"repo-a": {"services/*"},
+			"repo-b": {"services/*"},
+		},
+		fetchers: map[string]fetch.Fetcher{},
+	}
+	v := schemaValidatorForTest(t)
+	var c diag.Collector
+	entities := w.ParseAll(v, &c)
+	if len(entities) != 0 {
+		t.Fatalf("entities = %+v, want none", entities)
+	}
+	cat, g, teams := assemble(entities, w.Sources(), catalog.FullCatalog, fstest.MapFS{"teams.yaml": {Data: []byte("x")}}, &c)
+	if cat != nil || g != nil || teams != nil {
+		t.Fatalf("assemble = (%v, %v, %v), want all nil", cat, g, teams)
+	}
+
+	ds := c.Diagnostics()
+	if len(ds) != 3 {
+		t.Fatalf("got %d diagnostics, want exactly 3 (two per-repository warnings, one aggregate error): %+v", len(ds), ds)
+	}
+	var warns, errs int
+	for _, d := range ds {
+		if d.Check != "no-entities" {
+			t.Errorf("unexpected Check %q in %+v", d.Check, d)
+			continue
+		}
+		switch d.Severity {
+		case diag.SevWarn:
+			warns++
+			want := "no service.yaml found in " + d.Repo + " under any configured path (services/*)"
+			if d.Message != want {
+				t.Errorf("warning Message\n got: %s\nwant: %s", d.Message, want)
+			}
+		case diag.SevError:
+			errs++
+			want := "no service.yaml found in any configured repository"
+			if d.Message != want {
+				t.Errorf("error Message\n got: %s\nwant: %s", d.Message, want)
+			}
+		default:
+			t.Errorf("unexpected Severity %v in %+v", d.Severity, d)
+		}
+	}
+	if warns != 2 {
+		t.Errorf("got %d per-repository warnings, want 2", warns)
+	}
+	if errs != 1 {
+		t.Errorf("got %d aggregate errors, want 1", errs)
+	}
+}
+
+// schemaValidatorForTest compiles the embedded schema once per test that
+// calls parseRepo directly. Failure here means the embedded schema itself
+// is broken, which every other test in this package would also catch —
+// t.Fatal is appropriate rather than folding it into the diagnostics under
+// test.
+func schemaValidatorForTest(t *testing.T) *schema.Validator {
+	t.Helper()
+	v, err := schema.Default()
+	if err != nil {
+		t.Fatalf("schema.Default(): %v", err)
+	}
+	return v
 }

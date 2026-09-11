@@ -176,6 +176,30 @@ spec:
 	}
 }
 
+// Fix round 2 (coordinator review): score shares the same regression gen
+// had — a single-repository, zero-match run used to produce two "no
+// entities" diagnostics instead of main's one, with the gating error
+// losing the list of searched paths. Pinned here the same way as
+// TestGenOnZeroMatchRepositoryEmitsExactlyOneDiagnostic in gen_test.go, so
+// both consumers of the parseRepo/assemble split are covered.
+func TestScoreOnZeroMatchRepositoryEmitsExactlyOneDiagnostic(t *testing.T) {
+	fsys := scoreFS()
+	fsys["repos.yaml"] = &fstest.MapFile{Data: []byte("repos:\n  - url: https://github.com/org/monorepo\n    paths: [nope/*]\n")}
+
+	var out, errOut bytes.Buffer
+	_, code := Score(fsys, &out, &errOut, scoreOpts())
+
+	if code != exitValidation {
+		t.Fatalf("exit = %d, want %d", code, exitValidation)
+	}
+	want := "error: repos.yaml:1 [no-entities]\n" +
+		"  no service.yaml found under any configured path (nope/*)\n" +
+		"  hint: add a repos.yaml listing the paths your services live under\n"
+	if out.String() != want {
+		t.Errorf("stdout\n got:\n%s\nwant:\n%s", out.String(), want)
+	}
+}
+
 // An error raised during scoring — not only during loadCatalog — must also
 // gate the exit code. Two producers reporting the same (entity, check) at the
 // same instant is scorecard.Ingest's checks-tie error (spec §6: "a tie is an

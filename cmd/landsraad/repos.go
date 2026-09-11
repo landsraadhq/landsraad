@@ -87,13 +87,19 @@ func (w *workspace) FetcherFor(name string) (fetch.Fetcher, bool) {
 // a name collision, and every diagnostic's order — does not depend on map
 // iteration.
 func (w *workspace) ParseAll(v *schema.Validator, c *diag.Collector) []*catalog.Entity {
+	// solo, computed once from the same source count assemble will see
+	// (assemble receives this same workspace's Sources()): a build reading
+	// exactly one repository must get the single rich "no entities" error
+	// parseRepo produces when solo, not the per-repository warning that
+	// exists to distinguish repositories in a multi-repository build.
+	solo := len(w.sources) <= 1
 	var out []*catalog.Entity
 	for _, name := range w.sources.Names() {
 		fsys, ok := w.sources.Get(name)
 		if !ok {
 			continue
 		}
-		out = append(out, parseRepo(name, fsys, w.patterns[name], v, c)...)
+		out = append(out, parseRepo(name, fsys, w.patterns[name], solo, v, c)...)
 	}
 	return out
 }
@@ -140,6 +146,11 @@ func openRepos(ctx context.Context, o reposOptions, c *diag.Collector) *workspac
 		name := r.Identity()
 		patterns := r.Paths
 		if len(patterns) == 0 {
+			// Silent defaulting with no diagnostic contradicts patternsFor's
+			// identical single-repository case (defaultPatternsNote) and
+			// CLAUDE.md's guidance that degraded mode must be visible in the
+			// artifact, not only in a log.
+			c.Add(repoDefaultPatternsNote(name, r.Line))
 			patterns = config.DefaultPatterns()
 		}
 
@@ -176,8 +187,12 @@ func openRepos(ctx context.Context, o reposOptions, c *diag.Collector) *workspac
 			// in the workspace, so that cross-repository references resolve
 			// against the merged catalog rather than against one repository
 			// at a time. Parsing twice is cheap; fetching twice is not.
+			// solo is irrelevant here: scratch is thrown away below, so
+			// whichever "no entities" diagnostic parseRepo would have added
+			// to it never surfaces. ParseAll makes the real, kept decision
+			// once every repository is in the workspace.
 			var scratch diag.Collector
-			parsed := parseRepo(name, fsys, patterns, v, &scratch)
+			parsed := parseRepo(name, fsys, patterns, false, v, &scratch)
 
 			// Expand before contentSet: a spec.docs directory outside the
 			// configured paths may not be listed yet, and contentSet walks
@@ -362,6 +377,28 @@ func tokenVarName(name string) string {
 	return b.String()
 }
 
+// repoDefaultPatternsNote is defaultPatternsNote's per-repository twin.
+//
+// patternsFor's single-repository version can name the one diagnostic it
+// might emit after the fact, because there is only ever one repository to
+// mean. openRepos runs across every entry in repos.yaml, and each can
+// independently name no paths: — a diagnostic that cannot say which one is
+// silent about exactly the thing a multi-repository repos.yaml most needs
+// pointed out, so this carries Repo and the entry's own line rather than
+// reusing defaultPatternsNote's file-level Line 1.
+func repoDefaultPatternsNote(name string, line int) diag.Diagnostic {
+	return diag.Diagnostic{
+		Severity: diag.SevInfo,
+		Repo:     name,
+		File:     "repos.yaml",
+		Line:     line,
+		Check:    "default-patterns",
+		Message: fmt.Sprintf("%s names no paths; using default paths (%s)",
+			repoLabel(name), strings.Join(config.DefaultPatterns(), ", ")),
+		Hint: "add paths: to this entry if its services live elsewhere",
+	}
+}
+
 // loadReposFile reads repos.yaml, defaulting to a single local repository
 // when there is none. A checkout with no repos.yaml still builds.
 func loadReposFile(rootFS fs.FS, c *diag.Collector) []config.Repo {
@@ -372,6 +409,11 @@ func loadReposFile(rootFS fs.FS, c *diag.Collector) []config.Repo {
 	}
 	r := config.LoadRepos("repos.yaml", data, c)
 	if len(r.Repos) == 0 {
+		// Same degraded mode as an absent file — repos.yaml exists but names
+		// no repositories at all — and it deserves the same announcement:
+		// silent here would mean this specific case is invisible while its
+		// sibling three lines up is not.
+		c.Add(defaultPatternsNote("repos.yaml lists no repositories"))
 		return []config.Repo{{Local: true, Paths: config.DefaultPatterns(), Line: 1}}
 	}
 	// Exactly one entry is read from disk. LocalRepo applies ruling R26's
