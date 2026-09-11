@@ -1016,3 +1016,49 @@ spec:
 		t.Errorf("the rendered runbook does not carry the fetched content:\n%s", page)
 	}
 }
+
+// Ruling R36: a bad paths: entry on a remote repository used to reach
+// discover.Find inside openRepos and come back as a fetch failure — exit 1,
+// and a mere warning under --allow-partial, for a mistake in repos.yaml. It is
+// now repos-path at the entry's line, like every other repos.yaml mistake,
+// and the repository is still read, on the default paths.
+func TestOpenReposReportsARejectedRemotePatternAsConfiguration(t *testing.T) {
+	remote := materialize(t, map[string]string{
+		"service.yaml": `apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: edge
+  description: Edge gateway.
+  owner: team-platform
+  tier: 1
+  lifecycle: production
+spec:
+  language: go
+  path: .
+`,
+	})
+	srv := fakeGitHub(t, remote)
+	root := remotePlatformRoot(t, srv.Listener.Addr().String(), "/services/*")
+
+	var c diag.Collector
+	w := openRepos(context.Background(), reposOptions{
+		Root: root, RootFS: os.DirFS(root),
+		Cache:  fetch.NopCache{},
+		Lookup: func(string) (string, bool) { return "test-token", true },
+		ErrOut: io.Discard,
+		HTTP:   srv.Client(),
+	}, &c)
+
+	if got := w.Failures(); len(got) != 0 {
+		t.Errorf("a repos.yaml mistake was reported as a fetch failure: %+v", got)
+	}
+	want := diag.Diagnostic{
+		Severity: diag.SevError, File: "repos.yaml", Line: 5,
+		Check:   "repos-path",
+		Message: `path pattern "/services/*" must not be absolute; write a path relative to the repository root, for example "services/*"`,
+		Hint:    "paths: are globs relative to the repository root, such as services/*",
+	}
+	if ds := c.Diagnostics(); len(ds) != 1 || ds[0] != want {
+		t.Errorf("diagnostics = %+v, want exactly [%+v]", ds, want)
+	}
+}

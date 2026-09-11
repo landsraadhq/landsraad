@@ -754,3 +754,32 @@ func TestValidateToleratesTheFixturesCrossRepoRef(t *testing.T) {
 		t.Error("expected missing-teams: edge-gateway carries no teams.yaml of its own")
 	}
 }
+
+// Ruling R36: a bad paths: entry is a mistake in a file the user wrote, so it
+// is a diagnostic at its line and exit 2. validate used to exit 1 for it,
+// through discover.Find's error, while exiting 2 for a bad url: in the same
+// file. The entry falls back to the default paths without a second word:
+// the rejection is the diagnostic.
+func TestValidateReportsARejectedPathPatternAtItsLine(t *testing.T) {
+	fsys := genFS()
+	fsys["repos.yaml"] = &fstest.MapFile{Data: []byte("repos:\n  - url: https://github.com/org/monorepo\n    paths: [/services/*]\n")}
+
+	var out, errOut bytes.Buffer
+	code := Validate(fsys, &out, &errOut, diag.JSON{})
+	if code != exitValidation {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitValidation, errOut.String())
+	}
+	var ds []diag.Diagnostic
+	if err := json.Unmarshal(out.Bytes(), &ds); err != nil {
+		t.Fatalf("out is not diagnostics JSON: %v\n%s", err, out.String())
+	}
+	want := []diag.Diagnostic{{
+		Severity: diag.SevError, File: "repos.yaml", Line: 2,
+		Check:   "repos-path",
+		Message: `path pattern "/services/*" must not be absolute; write a path relative to the repository root, for example "services/*"`,
+		Hint:    "paths: are globs relative to the repository root, such as services/*",
+	}}
+	if diff := cmp.Diff(want, ds); diff != "" {
+		t.Errorf("diagnostics mismatch (-want +got):\n%s", diff)
+	}
+}

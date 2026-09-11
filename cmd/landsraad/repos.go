@@ -258,8 +258,12 @@ func openRepos(ctx context.Context, o reposOptions, c *diag.Collector) *workspac
 			// Silent defaulting with no diagnostic contradicts patternsFor's
 			// identical single-repository case (defaultPatternsNote) and
 			// CLAUDE.md's guidance that degraded mode must be visible in the
-			// artifact, not only in a log.
-			c.Add(repoDefaultPatternsNote(name, r.Line))
+			// artifact, not only in a log. The one silent case is an entry
+			// whose every pattern was rejected: repos-path already said so,
+			// and the default paths are that diagnostic's consequence.
+			if !r.PathsRejected() {
+				c.Add(repoDefaultPatternsNote(name, r.Line))
+			}
 			patterns = config.DefaultPatterns()
 		}
 

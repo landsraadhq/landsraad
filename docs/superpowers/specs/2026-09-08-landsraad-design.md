@@ -546,8 +546,8 @@ name.
 | Code | Meaning | Who fixes it |
 |---|---|---|
 | 0 | clean | — |
-| 1 | usage or config error | whoever ran it |
-| 2 | validation error — schema, collision, cycle, dangling ref | the YAML's author |
+| 1 | landsraad could not run — a bad flag, an unreadable root, a repository it could not fetch | whoever ran it |
+| 2 | a file you wrote has a problem a diagnostic points at — schema, collision, cycle, dangling ref, `repos.yaml` (ruling R36) | the YAML's author |
 | 3 | scorecard gate — a tier-required check failed | the service owner |
 
 2 and 3 are distinct because "your metadata is broken" and "your service does

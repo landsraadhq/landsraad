@@ -662,18 +662,13 @@ func TestFailureMessage(t *testing.T) {
 }
 
 // TestBuildExitsWhenReposYAMLIsMalformed pins newBuildCmd's own openRepos
-// gate (RunE: "if c.HasErrors() { os.Exit(exitUsage) }"), which had no
-// subprocess test of its own even though serve's identical gate
-// (TestServeWithoutWatchExitsWhenReposYAMLIsMalformed) does.
+// gate, which had no subprocess test of its own even though serve's
+// identical gate (TestServeWithoutWatchExitsWhenReposYAMLIsMalformed) does.
 //
-// This asserts today's ACTUAL behaviour, not a considered one: build exits
-// 1 (exitUsage) for the same malformed repos.yaml that validate and serve
-// exit 2 (exitValidation) for. repos-url is somebody's YAML being wrong,
-// which is what exitValidation means everywhere else in this codebase, so
-// build looks like the odd one out. But exit codes are a one-way door here,
-// and resolving that asymmetry is a decision for Q to make deliberately,
-// not a side effect of the task that happened to notice it. This test
-// exists to make the inconsistency visible and pinned, not to endorse it.
+// build used to exit 1 (exitUsage) here while validate and serve exited 2
+// for the same repos.yaml. Ruling R36 settled it: a mistake in a file the
+// user wrote exits 2 in every command, and 1 is kept for landsraad being
+// unable to run.
 func TestBuildExitsWhenReposYAMLIsMalformed(t *testing.T) {
 	dir := materialize(t, map[string]string{
 		"teams.yaml": "teams:\n  - name: team-payments\n    members: [alice]\n    slack: \"#pay\"\n    pagerduty: PAY\n",
@@ -683,8 +678,8 @@ func TestBuildExitsWhenReposYAMLIsMalformed(t *testing.T) {
 			"  path: services/ledger-api\n",
 	})
 	r := run(t, dir, "build")
-	if r.exitCode != exitUsage {
-		t.Fatalf("exit = %d, want %d; stderr:\n%s", r.exitCode, exitUsage, r.stderr)
+	if r.exitCode != exitValidation {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", r.exitCode, exitValidation, r.stderr)
 	}
 	want := "error: repos.yaml:2 [repos-url]\n" +
 		"  repository url must begin with https://, got \"git@github.com:org/monorepo.git\"\n" +

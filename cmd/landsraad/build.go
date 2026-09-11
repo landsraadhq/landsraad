@@ -412,7 +412,9 @@ func newBuildCmd() *cobra.Command {
 			}, &c)
 			reportDiagnostics(cmd.ErrOrStderr(), c.Diagnostics())
 			if c.HasErrors() {
-				os.Exit(exitUsage)
+				// A repos.yaml mistake: a file the user wrote, so 2, as
+				// validate and serve exit for the same file (ruling R36).
+				os.Exit(exitValidation)
 			}
 			opts := BuildOptions{
 				Mermaid: mermaid,

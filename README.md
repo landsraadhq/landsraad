@@ -126,8 +126,12 @@ Under `GITLAB_CI=true`, `--format gitlab` is auto-selected and writes a Code
 Quality report GitLab renders on the MR.
 
 Both can be forced explicitly with `--format text|json|github|gitlab`.
-`validate` exits `0` clean, `1` on a usage or config error, `2` when it found
-a problem in the catalog — script off the exit code, not the output.
+Every command exits `0` clean, `2` when a file you wrote has a problem a
+diagnostic points at — a `service.yaml`, `teams.yaml`, `repos.yaml` or
+`.landsraad/checks` file — and `1` when landsraad could not run: a bad flag,
+an unreadable directory, a repository it could not fetch. `score` also exits
+`3` when the catalog is valid and a service fails a check its tier requires.
+Script off the exit code, not the output.
 
 ## The portal
 

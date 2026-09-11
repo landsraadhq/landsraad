@@ -44,16 +44,17 @@ type File struct {
 func Find(fsys fs.FS, patterns []string) ([]string, error) {
 	seen := map[string]bool{}
 	for _, pattern := range patterns {
+		if err := CheckPattern(pattern); err != nil {
+			return nil, err
+		}
 		var dirs []string
 		if pattern == "." || pattern == "" {
 			dirs = []string{"."}
 		} else {
-			if !fs.ValidPath(pattern) {
-				return nil, errors.New(invalidPatternReason(pattern))
-			}
 			matches, err := fs.Glob(fsys, pattern)
 			if err != nil {
-				// Only ErrBadPattern is possible, and that is a config bug.
+				// CheckPattern has already refused every pattern fs.Glob
+				// could; ErrBadPattern is its only error.
 				return nil, fmt.Errorf("bad path pattern %q: %w", pattern, err)
 			}
 			dirs = matches
@@ -79,6 +80,28 @@ func Find(fsys fs.FS, patterns []string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// CheckPattern says why pattern can never name anything under the repository
+// root, or returns nil when it can. "." and "" mean the root itself.
+//
+// It is the one definition of a usable pattern. Find applies it before
+// searching, and repos.yaml loading applies it where the pattern is written,
+// so a mistake is reported at its line (ruling R36) and the two cannot
+// disagree about what counts as one.
+func CheckPattern(pattern string) error {
+	if pattern == "." || pattern == "" {
+		return nil
+	}
+	if !fs.ValidPath(pattern) {
+		return errors.New(invalidPatternReason(pattern))
+	}
+	// An empty name makes path.Match check the whole pattern's syntax. It is
+	// the same check fs.Glob opens with.
+	if _, err := path.Match(pattern, ""); err != nil {
+		return fmt.Errorf("bad path pattern %q: %w", pattern, err)
+	}
+	return nil
 }
 
 // invalidPatternReason diagnoses why fs.ValidPath rejected pattern, so the

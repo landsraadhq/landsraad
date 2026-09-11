@@ -32,13 +32,20 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter) int {
 	patterns := patternsFor(fsys, &c)
 	paths, err := discover.Find(fsys, patterns)
 	if err != nil {
-		fmt.Fprintf(errOut, "error: %v\n", err)
-		return exitUsage
+		// Unreachable for a pattern repos.yaml wrote: validateRepos rejects
+		// exactly what Find would (repos-path, ruling R36). Still a problem
+		// with a file the user wrote, so a diagnostic and exit 2, as
+		// parseRepo reports it, not exit 1: 1 is landsraad unable to run.
+		c.Add(diag.Diagnostic{
+			Severity: diag.SevError, File: "repos.yaml", Line: 1,
+			Check:   "discover",
+			Message: fmt.Sprintf("cannot search for %s files: %v", discover.Filename, err),
+		})
 	}
 	// Matching nothing at all is the single most likely way a first run goes
 	// wrong: a team whose code lives under apps/* would otherwise get a green
 	// check forever on a repo the tool never looked at.
-	if len(paths) == 0 {
+	if err == nil && len(paths) == 0 {
 		c.Add(diag.Diagnostic{
 			Severity: diag.SevError,
 			File:     "repos.yaml",

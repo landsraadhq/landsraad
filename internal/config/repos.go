@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/landsraadhq/landsraad/internal/diag"
+	"github.com/landsraadhq/landsraad/internal/discover"
 )
 
 // Repo is one entry in repos.yaml.
@@ -46,6 +47,10 @@ type Repo struct {
 	// fetch failure can point at the line that named the repository rather
 	// than at the top of the file.
 	Line int `yaml:"-"`
+
+	// pathsRejected is set by validateRepos when paths: named patterns and
+	// repos-path rejected every one. See PathsRejected.
+	pathsRejected bool
 }
 
 // Repos is the loaded repos.yaml.
@@ -118,6 +123,13 @@ func (r *Repo) Identity() string {
 	return path.Base(u)
 }
 
+// PathsRejected reports whether paths: named patterns and repos-path rejected
+// every one (ruling R36). Such an entry falls back to DefaultPatterns like one
+// that named none, but a caller announcing that fallback stays silent for it:
+// the rejection is the diagnostic and the fallback is its consequence, the
+// rule patternsFor already applies to a repos.yaml that failed to parse.
+func (r *Repo) PathsRejected() bool { return r.pathsRejected }
+
 // HostKind reports which adapter fetches this repository.
 //
 // known is false when the hostname is not one landsraad recognises and the
@@ -154,6 +166,10 @@ const (
 	LocalAssumedFirst
 	// LocalDefaulted: no entry named any paths, so DefaultPatterns are in use.
 	LocalDefaulted
+	// LocalRejected: the local entry named paths and repos-path rejected every
+	// one, so DefaultPatterns are in use. Not a separate thing to announce;
+	// see Repo.PathsRejected.
+	LocalRejected
 )
 
 // LocalRepo returns the entry marked `local: true`, or the only entry when
@@ -181,11 +197,17 @@ func (r *Repos) LocalPatterns() ([]string, LocalSource) {
 	local, ok := r.LocalRepo()
 	if !ok {
 		if len(r.Repos) == 0 || len(r.Repos[0].Paths) == 0 {
+			if len(r.Repos) > 0 && r.Repos[0].pathsRejected {
+				return DefaultPatterns(), LocalRejected
+			}
 			return DefaultPatterns(), LocalDefaulted
 		}
 		return r.Repos[0].Paths, LocalAssumedFirst
 	}
 	if len(local.Paths) == 0 {
+		if local.pathsRejected {
+			return DefaultPatterns(), LocalRejected
+		}
 		return DefaultPatterns(), LocalDefaulted
 	}
 	return local.Paths, LocalMarked
@@ -293,6 +315,28 @@ func validateRepos(file string, r *Repos, c *diag.Collector) {
 	local, _ := r.LocalRepo()
 	for i := range r.Repos {
 		e := &r.Repos[i]
+
+		// Checked before the url, and without a continue: a bad pattern and a
+		// bad url are two mistakes, and both are reported. A rejected pattern
+		// is dropped so it never reaches discover.Find, which would refuse it
+		// again as an error of its own (ruling R36).
+		if len(e.Paths) > 0 {
+			var kept []string
+			for _, p := range e.Paths {
+				if err := discover.CheckPattern(p); err != nil {
+					c.Add(diag.Diagnostic{
+						Severity: diag.SevError, File: file, Line: e.Line,
+						Check:   "repos-path",
+						Message: err.Error(),
+						Hint:    "paths: are globs relative to the repository root, such as services/*",
+					})
+					continue
+				}
+				kept = append(kept, p)
+			}
+			e.Paths = kept
+			e.pathsRejected = len(kept) == 0
+		}
 
 		if !strings.HasPrefix(e.URL, "https://") {
 			c.Add(diag.Diagnostic{

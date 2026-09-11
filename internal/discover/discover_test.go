@@ -195,3 +195,27 @@ func TestFindWorksOverOsDirFS(t *testing.T) {
 		t.Errorf("got %d entries from the fixture repo, want 3: %v", len(got), got)
 	}
 }
+
+// CheckPattern is the one definition of a usable pattern. Find applies it,
+// and repos.yaml loading reports it at the line that wrote the pattern
+// (ruling R36), so the two cannot disagree.
+func TestCheckPattern(t *testing.T) {
+	for _, tt := range []struct{ pattern, want string }{
+		{".", ""},
+		{"", ""},
+		{"services/*", ""},
+		{"services/api", ""},
+		{"/etc/*", `path pattern "/etc/*" must not be absolute; write a path relative to the repository root, for example "etc/*"`},
+		{"../shared/*", `path pattern "../shared/*" escapes the repository root via ".."; patterns must stay under the repository root`},
+		{"services/[", `bad path pattern "services/[": syntax error in pattern`},
+	} {
+		err := CheckPattern(tt.pattern)
+		got := ""
+		if err != nil {
+			got = err.Error()
+		}
+		if got != tt.want {
+			t.Errorf("CheckPattern(%q) = %q, want %q", tt.pattern, got, tt.want)
+		}
+	}
+}

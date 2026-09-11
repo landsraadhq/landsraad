@@ -306,6 +306,30 @@ func TestLoadReposDiagnostics(t *testing.T) {
 			wantHint:    "write it as https://github.com/org/api",
 		},
 		{
+			name:        "absolute path pattern",
+			yaml:        "repos:\n  - url: https://github.com/org/api\n    paths: [/services/*]\n",
+			wantCheck:   "repos-path",
+			wantLine:    2,
+			wantMessage: `path pattern "/services/*" must not be absolute; write a path relative to the repository root, for example "services/*"`,
+			wantHint:    "paths: are globs relative to the repository root, such as services/*",
+		},
+		{
+			name:        "path pattern escaping the root",
+			yaml:        "repos:\n  - url: https://github.com/org/api\n    paths: [../shared/*]\n",
+			wantCheck:   "repos-path",
+			wantLine:    2,
+			wantMessage: `path pattern "../shared/*" escapes the repository root via ".."; patterns must stay under the repository root`,
+			wantHint:    "paths: are globs relative to the repository root, such as services/*",
+		},
+		{
+			name:        "malformed glob",
+			yaml:        "repos:\n  - url: https://github.com/org/api\n    paths: [\"services/[\"]\n",
+			wantCheck:   "repos-path",
+			wantLine:    2,
+			wantMessage: `bad path pattern "services/[": syntax error in pattern`,
+			wantHint:    "paths: are globs relative to the repository root, such as services/*",
+		},
+		{
 			// Pins the ordering the host-check split depends on: a stated
 			// host: value landsraad does not support is checked before the
 			// local exemption, so marking the entry local: true does not
@@ -413,5 +437,30 @@ func TestLoadReposRecordsLines(t *testing.T) {
 	}
 	if r.Repos[1].Line != 4 {
 		t.Errorf("Repos[1].Line = %d, want 4", r.Repos[1].Line)
+	}
+}
+
+// Ruling R36: a rejected pattern is reported once, where it is written, and
+// never reaches discover.Find. The valid patterns beside it still search. An
+// entry left with none falls back to DefaultPatterns the way a repos.yaml
+// that failed to parse does — silently, because the rejection is the
+// diagnostic and the fallback is its consequence.
+func TestLoadReposDropsRejectedPatterns(t *testing.T) {
+	var c diag.Collector
+	r := LoadRepos("repos.yaml", []byte("repos:\n  - url: https://github.com/org/api\n    paths: [services/*, /workers/*]\n"), &c)
+	if got, why := r.LocalPatterns(); !slices.Equal(got, []string{"services/*"}) || why != LocalMarked {
+		t.Errorf("LocalPatterns = %v, %v; want [services/*], LocalMarked", got, why)
+	}
+	if r.Repos[0].PathsRejected() {
+		t.Error("PathsRejected() = true for an entry with a pattern left to search")
+	}
+
+	c = diag.Collector{}
+	r = LoadRepos("repos.yaml", []byte("repos:\n  - url: https://github.com/org/api\n    paths: [/services/*]\n"), &c)
+	if got, why := r.LocalPatterns(); !slices.Equal(got, DefaultPatterns()) || why != LocalRejected {
+		t.Errorf("LocalPatterns = %v, %v; want DefaultPatterns, LocalRejected", got, why)
+	}
+	if !r.Repos[0].PathsRejected() {
+		t.Error("PathsRejected() = false for an entry whose every pattern was rejected")
 	}
 }

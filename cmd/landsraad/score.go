@@ -154,10 +154,10 @@ func Score(fsys fs.FS, out, errOut io.Writer, opts ScoreOptions) ([]emit.File, i
 	// unwritable scorecard already does above. Exit 3 is a claim about the
 	// services — "your service does not meet the standard" — and a CI job that
 	// treats it as the expected gate result would swallow the fact that
-	// --history did nothing at all. Exit 1 is spec §12's "usage or config
-	// error, whoever ran it", which is precisely who fixes a file this process
-	// cannot read. Exit 0 was the wrong answer either way: the run printed
-	// "error:" and then reported itself clean.
+	// --history did nothing at all. Exit 1 is spec §12's "landsraad could not
+	// run", fixed by whoever ran it, which is precisely who fixes a file this
+	// process cannot read. Exit 0 was the wrong answer either way: the run
+	// printed "error:" and then reported itself clean.
 	if !historyOK {
 		return files, exitUsage
 	}
