@@ -320,7 +320,7 @@ func TestBuildRefusesAFailedFetch(t *testing.T) {
 		patterns: map[string][]string{"platform": {"services/*"}},
 		local:    "platform",
 		failures: []repoFailure{{
-			Name: "edge-gateway", URL: "https://github.com/org/edge-gateway", Line: 4, Kind: "github",
+			Name: "edge-gateway", Line: 4, Kind: "github",
 			Err: &fetch.StatusError{Status: 404, Method: "GET", Endpoint: "/repos/org/edge-gateway", Body: "Not Found", RateRemaining: -1},
 		}},
 	}
@@ -333,7 +333,7 @@ func TestBuildRefusesAFailedFetch(t *testing.T) {
 	if files != nil {
 		t.Error("Build produced files despite a failed fetch")
 	}
-	want := "error: cannot read edge-gateway: not found. A private repository with no token " +
+	want := "error: repos.yaml:4: cannot read edge-gateway: not found. A private repository with no token " +
 		"looks exactly like this; check the url and that LANDSRAAD_TOKEN_EDGE_GATEWAY or GITHUB_TOKEN is set\n"
 	if got := errOut.String(); !strings.Contains(got, want) {
 		t.Errorf("stderr =\n%s\nwant it to contain\n%s", got, want)
@@ -356,8 +356,8 @@ func TestBuildAllowPartialNamesTheFailures(t *testing.T) {
 		patterns: map[string][]string{"platform": {"services/*"}},
 		local:    "platform",
 		failures: []repoFailure{
-			{Name: "edge-gateway", URL: "https://github.com/org/edge-gateway", Line: 4, Err: errors.New("boom")},
-			{Name: "billing", URL: "https://gitlab.com/org/billing", Line: 7, Err: errors.New("boom")},
+			{Name: "edge-gateway", Line: 4, Err: errors.New("boom")},
+			{Name: "billing", Line: 7, Err: errors.New("boom")},
 		},
 	}
 	var errOut bytes.Buffer
@@ -381,8 +381,8 @@ func TestBuildAllowPartialNamesTheFailures(t *testing.T) {
 	}
 	// warn:, not error: -- and no refusal trailer, since --allow-partial
 	// downgrades it. Exact and sorted by name, same as the errors above.
-	wantWarnings := "warn: cannot read billing: boom\n" +
-		"warn: cannot read edge-gateway: boom\n"
+	wantWarnings := "warn: repos.yaml:7: cannot read billing: boom\n" +
+		"warn: repos.yaml:4: cannot read edge-gateway: boom\n"
 	if got := errOut.String(); !strings.Contains(got, wantWarnings) {
 		t.Errorf("stderr =\n%s\nmust contain\n%s", got, wantWarnings)
 	}
@@ -441,6 +441,9 @@ func TestBuildReportsAHostThatCannotAnswerDocsFresh(t *testing.T) {
 		},
 		patterns: map[string][]string{"platform": {"services/*"}, "edge-gateway": {"*"}},
 		local:    "platform",
+		// Where each entry sits in repos.yaml: the warning points at the one
+		// that named the repository whose host failed (ruling R38).
+		lines: map[string]int{"platform": 2, "edge-gateway": 5},
 		fetchers: map[string]fetch.Fetcher{
 			"edge-gateway": errFetcher{err: errors.New("GET /repos/org/edge-gateway/commits: HTTP 401: Bad credentials")},
 		},
@@ -456,7 +459,7 @@ func TestBuildReportsAHostThatCannotAnswerDocsFresh(t *testing.T) {
 		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitOK, errOut.String())
 	}
 
-	wantDiag := "warn: repos.yaml:1 [docs-fresh-unavailable]\n" +
+	wantDiag := "warn: repos.yaml:5 [docs-fresh-unavailable]\n" +
 		"  cannot ask edge-gateway's host when its files last changed: " +
 		"GET /repos/org/edge-gateway/commits: HTTP 401: Bad credentials\n" +
 		"  hint: docs-fresh is reported as not-reported for every entity in this repository; " +
@@ -636,7 +639,7 @@ func TestFailureMessage(t *testing.T) {
 		// send the reader to set GITHUB_TOKEN for a GitLab failure.
 		{
 			"self-hosted gitlab names GITLAB_TOKEN even though the url doesn't say gitlab",
-			repoFailure{Name: "edge", Kind: "gitlab", URL: "https://git.example.com/org/edge",
+			repoFailure{Name: "edge", Kind: "gitlab",
 				Err: &fetch.StatusError{Status: 404, RateRemaining: -1}},
 			"cannot read edge: not found. A private repository with no token looks exactly like this; " +
 				"check the url and that LANDSRAAD_TOKEN_EDGE or GITLAB_TOKEN is set",
@@ -647,7 +650,7 @@ func TestFailureMessage(t *testing.T) {
 		// avoid, so the hint names only the per-repository variable.
 		{
 			"unknown kind names only the per-repository variable",
-			repoFailure{Name: "edge", Kind: "", URL: "https://git.example.com/org/edge",
+			repoFailure{Name: "edge", Kind: "",
 				Err: &fetch.StatusError{Status: 404, RateRemaining: -1}},
 			"cannot read edge: not found. A private repository with no token looks exactly like this; " +
 				"check the url and that LANDSRAAD_TOKEN_EDGE is set",

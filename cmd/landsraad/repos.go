@@ -31,7 +31,9 @@ const blobParallel = 8
 // what build does with these; this file only collects them.
 type repoFailure struct {
 	Name string
-	URL  string
+	// Line is where the entry that named this repository sits in
+	// repos.yaml. reportFetchFailures prints it, so a failure points at the
+	// entry to fix rather than at the top of the file (ruling R38).
 	Line int
 	// Kind is the host adapter this repository would have used --
 	// "github", "gitlab", or "" when config.Repo.HostKind could not tell.
@@ -93,6 +95,10 @@ type workspace struct {
 	// a ref which no tree listing answers and no blob cache can hold
 	// (ruling R35). Nothing else touches a Fetcher after openRepos returns.
 	fetchers map[string]fetch.Fetcher
+	// lines is where each repository's entry sits in repos.yaml, so a
+	// diagnostic about a repository points at the entry that named it
+	// (ruling R38).
+	lines map[string]int
 	// edits is where that one caller puts the errors it cannot return.
 	// Shared by pointer across WithLocal, because serve --watch builds from
 	// a per-rebuild copy while the LastEditFunc it scores with was built
@@ -109,12 +115,21 @@ func (w *workspace) RecordLastEditFailure(repo string, err error) { w.edits.reco
 // TakeLastEditFailures returns what the scoring pass recorded, and empties
 // the log so the next build reports its own failures rather than every
 // failure since startup.
-func (w *workspace) TakeLastEditFailures() []repoEditFailure { return w.edits.take() }
+func (w *workspace) TakeLastEditFailures() []repoEditFailure {
+	out := w.edits.take()
+	for i := range out {
+		out[i].Line = w.lines[out[i].Repo]
+	}
+	return out
+}
 
 // repoEditFailure is one repository whose host could not say when a path was
 // last changed.
 type repoEditFailure struct {
 	Repo string
+	// Line is the repository's entry in repos.yaml, filled in by
+	// TakeLastEditFailures from the workspace that knows it.
+	Line int
 	Err  error
 }
 
@@ -219,7 +234,7 @@ func (w *workspace) WithLocal(fsys fs.FS) *workspace {
 	return &workspace{
 		sources:  w.sources.With(w.local, fsys),
 		patterns: w.patterns, local: w.local, failures: w.failures,
-		fetchers: w.fetchers,
+		fetchers: w.fetchers, lines: w.lines,
 		// Shared, not copied: the LastEditFunc scoring this rebuild was
 		// built from the original workspace at startup and writes there.
 		edits: w.edits,
@@ -249,12 +264,14 @@ func openRepos(ctx context.Context, o reposOptions, c *diag.Collector) *workspac
 		sources:  catalog.Sources{},
 		patterns: map[string][]string{},
 		fetchers: map[string]fetch.Fetcher{},
+		lines:    map[string]int{},
 		edits:    newLastEditLog(),
 	}
 	var failures []repoFailure
 
 	for _, r := range repos {
 		name := r.Identity()
+		w.lines[name] = r.Line
 		patterns := r.Paths
 		if len(patterns) == 0 {
 			// Silent defaulting with no diagnostic contradicts patternsFor's
@@ -283,7 +300,7 @@ func openRepos(ctx context.Context, o reposOptions, c *diag.Collector) *workspac
 			kind = ""
 		}
 		fail := func(err error) {
-			failures = append(failures, repoFailure{Name: name, URL: r.URL, Line: r.Line, Kind: kind, Err: err})
+			failures = append(failures, repoFailure{Name: name, Line: r.Line, Kind: kind, Err: err})
 		}
 
 		fsys, fetcher, err := openOne(ctx, r, patterns, o)

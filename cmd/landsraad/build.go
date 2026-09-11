@@ -162,6 +162,13 @@ func reportFetchFailures(fails []repoFailure, allowPartial bool, errOut io.Write
 		level = "warn"
 	}
 	for _, f := range sorted {
+		// The entry that named the repository, when the failure knows it:
+		// config.Repo.Line exists so that a fetch failure points at the line
+		// to fix rather than at the top of the file (ruling R38).
+		if f.Line > 0 {
+			fmt.Fprintf(errOut, "%s: repos.yaml:%d: %s\n", level, f.Line, failureMessage(f))
+			continue
+		}
 		fmt.Fprintf(errOut, "%s: %s\n", level, failureMessage(f))
 	}
 	if allowPartial {
@@ -231,7 +238,7 @@ func lastEditDiagnostic(f repoEditFailure) diag.Diagnostic {
 	return diag.Diagnostic{
 		Severity: diag.SevWarn,
 		File:     "repos.yaml",
-		Line:     1,
+		Line:     f.Line,
 		Check:    "docs-fresh-unavailable",
 		Message:  fmt.Sprintf("cannot ask %s's host when its files last changed: %v", f.Repo, f.Err),
 		Hint: fmt.Sprintf("docs-fresh is reported as not-reported for every entity in this repository; "+

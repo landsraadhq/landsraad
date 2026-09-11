@@ -874,3 +874,22 @@ func TestServeAcceptsAllowPartial(t *testing.T) {
 		t.Errorf("serve rejected the flag its own refusal trailer advises: %s", r.stderr)
 	}
 }
+
+// serve --watch builds every rebuild from WithLocal's copy of the startup
+// workspace. A copy that dropped lines would put every docs-fresh warning
+// after the first rebuild back at an entry's line 0 (ruling R38).
+func TestWithLocalKeepsEachRepositorysLine(t *testing.T) {
+	w := &workspace{
+		sources: catalog.Sources{"platform": fstest.MapFS{}},
+		local:   "platform",
+		lines:   map[string]int{"platform": 2, "edge-gateway": 5},
+		edits:   newLastEditLog(),
+	}
+	rebuilt := w.WithLocal(fstest.MapFS{})
+	rebuilt.RecordLastEditFailure("edge-gateway", errors.New("boom"))
+
+	got := rebuilt.TakeLastEditFailures()
+	if len(got) != 1 || got[0].Repo != "edge-gateway" || got[0].Line != 5 {
+		t.Errorf("TakeLastEditFailures = %+v, want edge-gateway at line 5", got)
+	}
+}
