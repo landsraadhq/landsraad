@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/spf13/cobra"
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/diag"
@@ -840,4 +842,35 @@ func TestServeWithWatchReflectsAnEditAfterAGoodBuild(t *testing.T) {
 	}
 
 	pollHTTPContains(t, "http://"+addr+"/", "after the edit", 3*time.Second)
+}
+
+// reportFetchFailures is shared by build and serve, and its trailer tells
+// the reader to pass --allow-partial. serve answered "Error: unknown flag:
+// --allow-partial" to anyone who took that advice. Advice a command cannot
+// take is worse than no advice, so both halves are pinned here: the trailer
+// still names the flag, and both commands still have it.
+func TestBothCommandsHaveTheFlagTheRefusalTrailerAdvises(t *testing.T) {
+	var errOut bytes.Buffer
+	reportFetchFailures([]repoFailure{{Name: "edge", Err: errors.New("boom")}}, false, &errOut)
+	if !strings.Contains(errOut.String(), "--allow-partial") {
+		t.Fatalf("the refusal trailer no longer names a flag; it says %q", errOut.String())
+	}
+	for _, cmd := range []*cobra.Command{newBuildCmd(), newServeCmd()} {
+		if cmd.Flags().Lookup("allow-partial") == nil {
+			t.Errorf("%s has no --allow-partial, and the shared refusal trailer tells the reader to pass it", cmd.Name())
+		}
+	}
+}
+
+// The same claim against the real binary, where cobra does the parsing.
+// --help is enough: an unknown flag fails before help is ever printed, and
+// this way the test never binds a port.
+func TestServeAcceptsAllowPartial(t *testing.T) {
+	r := run(t, materialize(t, integrationFixture()), "serve", "--allow-partial", "--help")
+	if r.exitCode != exitOK {
+		t.Fatalf("serve --allow-partial --help exit = %d, want %d; stderr:\n%s", r.exitCode, exitOK, r.stderr)
+	}
+	if strings.Contains(r.stderr, "unknown flag") {
+		t.Errorf("serve rejected the flag its own refusal trailer advises: %s", r.stderr)
+	}
 }

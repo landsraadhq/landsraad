@@ -340,8 +340,8 @@ func TestBuildRefusesAFailedFetch(t *testing.T) {
 	}
 	// The refusal trailer, exact and singular: one repository, "repository"
 	// not "repositories".
-	wantTrailer := "refusing to build a portal that is missing 1 repository; " +
-		"pass --allow-partial to build one anyway, with a banner saying so\n"
+	wantTrailer := "refusing to render a portal that is missing 1 repository; " +
+		"pass --allow-partial to render one anyway, with a banner saying so\n"
 	if got := errOut.String(); !strings.HasSuffix(got, wantTrailer) {
 		t.Errorf("stderr =\n%s\nmust end with\n%s", got, wantTrailer)
 	}
@@ -542,8 +542,8 @@ func TestReportFetchFailuresRefusalTrailerIsPlural(t *testing.T) {
 	}
 	want := "error: cannot read billing: boom\n" +
 		"error: cannot read edge-gateway: boom\n" +
-		"refusing to build a portal that is missing 2 repositories; " +
-		"pass --allow-partial to build one anyway, with a banner saying so\n"
+		"refusing to render a portal that is missing 2 repositories; " +
+		"pass --allow-partial to render one anyway, with a banner saying so\n"
 	if got := errOut.String(); got != want {
 		t.Errorf("errOut = %q, want %q", got, want)
 	}

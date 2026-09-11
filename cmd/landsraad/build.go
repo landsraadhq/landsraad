@@ -167,8 +167,12 @@ func reportFetchFailures(fails []repoFailure, allowPartial bool, errOut io.Write
 	if allowPartial {
 		return exitOK
 	}
+	// "render", not "build": serve shares this function, and build's own verb
+	// read as the name of the other command. Both commands now have the flag
+	// the trailer names -- serve used to answer "Error: unknown flag:
+	// --allow-partial" to anyone who took this advice.
 	fmt.Fprintf(errOut,
-		"refusing to build a portal that is missing %s; pass --allow-partial to build one anyway, with a banner saying so\n",
+		"refusing to render a portal that is missing %s; pass --allow-partial to render one anyway, with a banner saying so\n",
 		plural(len(fails), "repository", "repositories"))
 	return exitUsage
 }

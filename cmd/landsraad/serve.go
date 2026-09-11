@@ -290,9 +290,10 @@ const watchHelp = "rebuild when a file changes. Only the local repository is wat
 
 func newServeCmd() *cobra.Command {
 	var (
-		addr       string
-		watch      bool
-		mermaidSrc string
+		addr         string
+		watch        bool
+		mermaidSrc   string
+		allowPartial bool
 	)
 	cmd := &cobra.Command{
 		Use:   "serve [root]",
@@ -348,7 +349,7 @@ func newServeCmd() *cobra.Command {
 			err = Serve(resolved, w, addr, BuildOptions{
 				Mermaid:  mermaid,
 				LastEdit: multiLastEdit(cmd.Context(), resolved, w),
-				Version:  version(),
+				Version:  version(), AllowPartial: allowPartial,
 			}, func() time.Time { return time.Now().UTC() }, watch, cmd.ErrOrStderr())
 			if errors.Is(err, errInitialBuildFailed) {
 				// A server that could only ever answer 503 is worse than a
@@ -361,6 +362,16 @@ func newServeCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&addr, "addr", "localhost:8080", "address to listen on")
 	cmd.Flags().BoolVar(&watch, "watch", false, watchHelp)
+	// serve shares reportFetchFailures with build, and that trailer tells the
+	// reader to pass --allow-partial. It said so to serve's users too, who
+	// got "Error: unknown flag: --allow-partial" for following it. Given the
+	// choice between making the trailer command-aware and making the advice
+	// true, this is the one that leaves the two commands the same shape: a
+	// preview you cannot open because one of five satellites is down is the
+	// case --allow-partial exists for, and the banner makes the degraded mode
+	// just as visible in a served page as in a written one.
+	cmd.Flags().BoolVar(&allowPartial, "allow-partial", false,
+		"serve a portal from the repositories that could be read, with a banner naming the ones that could not")
 	cmd.Flags().StringVar(&mermaidSrc, "mermaid-src", "",
 		"Mermaid bundle: a URL, a path to a local file, or \"none\"")
 	return cmd
