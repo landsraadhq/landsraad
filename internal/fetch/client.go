@@ -192,13 +192,41 @@ func (c *Client) statusError(resp *http.Response, endpoint string, body []byte) 
 	return se
 }
 
-// redact removes the token from anything on its way to a user.
+// redact removes the token from anything on its way to a user, keeping the
+// error itself reachable underneath.
+//
+// It used to return errors.New(redacted), which threw the chain away: with a
+// token set, errors.Is(err, context.Canceled) was false, retryable said yes,
+// and Ctrl-C during an authenticated build — the normal path — made every
+// in-flight request sleep 1s then 2s and fire two more doomed requests
+// before giving up. Measured: no token, errors.Is true and no sleeps; token,
+// false and 3s of sleeping. The redaction is unchanged; only the chain is
+// kept.
 func (c *Client) redact(err error) error {
 	if c.token == "" {
 		return err
 	}
-	return errors.New(c.redactString(err.Error()))
+	redacted := c.redactString(err.Error())
+	if redacted == err.Error() {
+		return err
+	}
+	return &redactedError{msg: redacted, err: err}
 }
+
+// redactedError prints a message with the token removed and unwraps to the
+// error it replaced.
+//
+// Unwrap hands back the original, whose Error() still contains the token, so
+// nothing may print the wrapped error directly — errors.Is and errors.As are
+// what this exists for. That is the same bargain fmt.Errorf("%w") strikes,
+// and every printer in this codebase reaches an error through Error().
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }
 
 func (c *Client) redactString(s string) string {
 	if c.token == "" {

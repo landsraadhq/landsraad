@@ -3,6 +3,7 @@ package fetch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -238,6 +239,71 @@ func TestParseRepo(t *testing.T) {
 			}
 			if r.Owner != tt.wantOwner || r.Slug != tt.wantSlug {
 				t.Errorf("Owner/Slug = %q/%q, want %q/%q", r.Owner, r.Slug, tt.wantOwner, tt.wantSlug)
+			}
+		})
+	}
+}
+
+// Redaction must not cost the error chain.
+//
+// redact used to return errors.New(redacted), which threw away everything
+// underneath: with a token set, errors.Is(err, context.Canceled) was false,
+// retryable therefore said yes, and Ctrl-C during an authenticated
+// `landsraad build` -- the normal path -- made every in-flight request sleep
+// a real 1s then 2s and fire two more doomed requests before giving up.
+//
+// Both halves are asserted here, because fixing either one alone is a
+// regression: the token must still be gone, and the cause must still be
+// reachable.
+func TestRedactRemovesTheTokenAndKeepsTheChain(t *testing.T) {
+	c := NewClient(ClientOptions{Token: "secret-token-value"})
+	cause := fmt.Errorf("dial tcp 10.0.0.1:443: %w", context.Canceled)
+	err := c.redact(fmt.Errorf(`Get "https://secret-token-value@host/x": %w`, cause))
+
+	if strings.Contains(err.Error(), "secret-token-value") {
+		t.Errorf("token leaked into the error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "[redacted]") {
+		t.Errorf("err = %q, want the token replaced with [redacted]", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("errors.Is(err, context.Canceled) = false; redaction threw the chain away")
+	}
+}
+
+// A cancelled request is an answer, not a failure to retry -- and it must be
+// one whether or not a token is set, because retryable reads the chain that
+// redaction used to destroy.
+//
+// Measured before the fix: without a token, errors.Is(ctx.Canceled) was true
+// and there were no sleeps; with a token, false, and sleeps of 1s then 2s.
+func TestGetDoesNotRetryACancelledRequest(t *testing.T) {
+	for _, tt := range []struct{ name, token string }{
+		{"no token", ""},
+		{"token set", "secret-token-value"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var sleeps int
+			c := NewClient(ClientOptions{
+				HTTP:       &http.Client{Timeout: time.Second},
+				BaseURL:    "http://127.0.0.1:1",
+				Token:      tt.token,
+				AuthHeader: "Authorization", AuthPrefix: "Bearer ",
+				MaxAttempts: 3,
+				Sleep:       func(time.Duration) { sleeps++ },
+			})
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			_, _, err := c.Get(ctx, "/repos/o/r", nil, "")
+			if err == nil {
+				t.Fatal("Get succeeded against a cancelled context")
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("errors.Is(err, context.Canceled) = false for %v", err)
+			}
+			if sleeps != 0 {
+				t.Errorf("slept %d times before giving up on a cancelled request, want 0", sleeps)
 			}
 		})
 	}
