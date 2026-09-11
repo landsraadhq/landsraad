@@ -52,6 +52,22 @@ func Build(root fs.FS, w *workspace, errOut io.Writer, opts BuildOptions) ([]emi
 		return nil, code
 	}
 
+	// Reachable only under --allow-partial: without it reportFetchFailures
+	// has already refused. Every repository failed, so there is no catalog
+	// left to render — and that is not a validation failure. assemble's
+	// "no service.yaml found in any configured repository" is gated on
+	// len(src) > 1, which zero sources does not satisfy (and must not: that
+	// gate is what keeps a genuine single-repository run to exactly one rich
+	// error naming the searched paths), so Build fell through to the cat ==
+	// nil branch and exited 2 under "refusing to build a portal from a
+	// catalog with errors". Nobody's catalog had errors; the network failed,
+	// and exit 2 means "your YAML is wrong" everywhere else in this tool.
+	if len(w.Sources()) == 0 && len(w.Failures()) > 0 {
+		fmt.Fprintf(errOut,
+			"every repository failed, so there is nothing to build; --allow-partial renders the repositories that could be read, and none could\n")
+		return nil, exitUsage
+	}
+
 	v := defaultValidator(&c)
 	if v == nil {
 		reportDiagnostics(errOut, c.Diagnostics())

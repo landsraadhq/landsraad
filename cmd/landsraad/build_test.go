@@ -484,6 +484,46 @@ func TestBuildReportsAHostThatCannotAnswerDocsFresh(t *testing.T) {
 	}
 }
 
+// --allow-partial with nothing left to be partial about must say so, and
+// must not exit 2.
+//
+// assemble's "no service.yaml found in any configured repository" is gated on
+// len(src) > 1, so with zero surviving sources it emitted nothing and
+// returned nil, and Build took the cat == nil branch: two warn: lines, then
+// "refusing to build a portal from a catalog with errors", then exit 2.
+// Nobody's catalog had errors -- the network failed, and the user explicitly
+// asked for partial. Exit 2 means "your YAML is wrong" everywhere else in
+// this tool. The len(src) > 1 gate is deliberately untouched; it is what
+// keeps a genuine single-repository run to exactly one rich error.
+func TestBuildAllowPartialWithEveryRepositoryFailedExplainsItself(t *testing.T) {
+	w := &workspace{
+		sources:  catalog.Sources{},
+		patterns: map[string][]string{},
+		failures: []repoFailure{
+			{Name: "edge-gateway", Err: errors.New("boom")},
+			{Name: "platform", Err: errors.New("boom")},
+		},
+		edits: newLastEditLog(),
+	}
+	var errOut bytes.Buffer
+	files, code := Build(goodFixtureFS(t), w, &errOut, BuildOptions{
+		Now: buildNow, Version: "test", AllowPartial: true,
+	})
+	if code != exitUsage {
+		t.Errorf("exit = %d, want %d: the network failed, not the catalog", code, exitUsage)
+	}
+	if files != nil {
+		t.Error("Build produced files with no repository to build from")
+	}
+	want := "warn: cannot read edge-gateway: boom\n" +
+		"warn: cannot read platform: boom\n" +
+		"every repository failed, so there is nothing to build; " +
+		"--allow-partial renders the repositories that could be read, and none could\n"
+	if got := errOut.String(); got != want {
+		t.Errorf("stderr =\n%s\nwant\n%s", got, want)
+	}
+}
+
 // The refusal trailer goes through plural: TestBuildRefusesAFailedFetch
 // pins the singular ("1 repository"); this pins the plural two failures
 // produce ("2 repositories"). Exercised directly against
