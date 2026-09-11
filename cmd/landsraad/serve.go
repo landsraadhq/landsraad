@@ -298,9 +298,15 @@ func newServeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "serve [root]",
 		Short: "Preview the portal locally",
-		Long: "Render the portal and serve it from memory. Nothing is written to " +
-			"disk, so --watch cannot trigger itself by rebuilding into the tree it " +
-			"is watching.",
+		// "Nothing is written to disk" was false: serve passes
+		// cacheFor(resolved, false), which writes a real blob cache under
+		// .landsraad/cache. What is true -- and what the sentence was there to
+		// say -- is that the rendered SITE is never written, which is what
+		// keeps --watch from triggering itself.
+		Long: "Render the portal and serve it from memory. The site itself is never " +
+			"written to disk, so --watch cannot trigger itself by rebuilding into " +
+			"the tree it is watching; fetched repository contents are cached under " +
+			".landsraad/cache/.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			start := "."

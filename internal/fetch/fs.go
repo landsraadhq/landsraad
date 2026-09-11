@@ -1,11 +1,17 @@
 // Package fetch turns a remote repository into an io/fs.FS.
 //
 // It is the only package under internal/ that speaks HTTP, and it does so
-// only when cmd/ tells it to: every request happens before stage 1 or
-// between stages 1 and 3, never underneath a pipeline stage (ruling R25).
-// What the stages see is this package's *FS, whose bytes are already in
-// memory — which is what keeps "nothing under internal/ calls the network"
-// true of every stage in the program.
+// only when cmd/ tells it to: every CONTENT request happens before stage 1
+// or between stages 1 and 3 (ruling R25). What the stages see is this
+// package's *FS, whose bytes are already in memory.
+//
+// One request is made from inside a stage, and calling it an exception
+// rather than pretending it is not there is the point: docs-fresh asks a
+// host when a path was last changed, during Score, which is stage 7 (ruling
+// R35). It reaches the socket through scorecard.LastEditFunc — an injected
+// function type, not an import — which is why internal/scorecard still does
+// not import net/http and why a score against a purely local filesystem
+// still makes no request at all.
 //
 // Nothing here imports os. The blob cache is a Cache interface implemented
 // in cmd/, for the same reason every other write in this codebase is.

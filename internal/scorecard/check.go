@@ -81,6 +81,13 @@ type LastEditFunc func(repo, path string) (time.Time, bool)
 // Now is a value rather than a call to time.Now() so scoring is a pure
 // function of its inputs: a check that reads the clock has tests that fail at
 // midnight and a result that cannot be reproduced from a commit.
+//
+// LastEdit is where that stops being true, and saying so here is the point:
+// it is an effectful callback, and against a fetched repository it reaches a
+// host API from inside stage 7 (ruling R35). Score is pure in everything
+// except when a host says a path last changed. A function type rather than
+// an import is what keeps this package testable offline and free of
+// net/http — and what makes a purely local score make no request at all.
 type Env struct {
 	// Sources replaced a single fs.FS in Plan 4. A merged catalog holds
 	// entities from several repositories, so a check reads through
