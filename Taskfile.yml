@@ -7,9 +7,17 @@ tasks:
       - go build -o bin/landsraad ./cmd/landsraad
 
   test:
-    desc: Run all tests
+    desc: Run all tests under the race detector
     cmds:
-      - go test ./...
+      # -race, not a bare `go test`. TestGitHubConcurrentRefAccess and
+      # TestGitLabConcurrentRefAccess assert only that two concurrent calls
+      # return nil errors, which a racy resolveRef satisfies perfectly:
+      # deleting every g.mu call from GitHub.resolveRef passes `go test
+      # -count=20` twenty times out of twenty and fails under -race on the
+      # first run. Those two tests exist to protect against a bug an earlier
+      # review found, and without this flag this project's own gate could not
+      # see it.
+      - go test -race ./...
 
   lint:
     desc: Vet, check formatting, and enforce the rules CONTRIBUTING.md states
