@@ -299,3 +299,85 @@ func TestInvalidPathIsRejected(t *testing.T) {
 		}
 	}
 }
+
+// dir.ReadDir(n<=0) must return the entries REMAINING after any partial
+// read, not the whole listing again.
+//
+// io/fs's own reference implementation settles what "all" means here:
+// fstest.MapFS, after ReadDir(1) on a four-entry directory, answers
+// ReadDir(-1) with the remaining three. Returning four would hand a caller
+// that paged through a directory one entry at a time a duplicate of
+// everything it had already seen.
+//
+// Unreachable today, because *FS implements ReadDirFS and so fs.ReadDir,
+// fs.WalkDir and fs.Glob all call FS.ReadDir directly and never Open a
+// directory at all. That is exactly why it needs a test: nothing else in
+// the suite drives this method, and the next type to be handed a *dir
+// inherits the bug silently.
+func TestDirReadDirResumesFromTheOffset(t *testing.T) {
+	f := FromEntries([]Entry{
+		{Path: "d", Dir: true},
+		{Path: "d/a", SHA: "a"}, {Path: "d/b", SHA: "b"},
+		{Path: "d/c", SHA: "c"}, {Path: "d/e", SHA: "e"},
+	})
+	opened, err := f.Open("d")
+	if err != nil {
+		t.Fatalf("Open d: %v", err)
+	}
+	rd, ok := opened.(fs.ReadDirFile)
+	if !ok {
+		t.Fatal("an opened directory is not an fs.ReadDirFile")
+	}
+	first, err := rd.ReadDir(1)
+	if err != nil {
+		t.Fatalf("ReadDir(1): %v", err)
+	}
+	if len(first) != 1 || first[0].Name() != "a" {
+		t.Fatalf("ReadDir(1) = %v, want [a]", names(first))
+	}
+	rest, err := rd.ReadDir(-1)
+	if err != nil {
+		t.Fatalf("ReadDir(-1): %v", err)
+	}
+	if got := names(rest); !cmp.Equal(got, []string{"b", "c", "e"}) {
+		t.Errorf("ReadDir(-1) after ReadDir(1) = %v, want [b c e]; "+
+			"re-returning an already-read entry is a duplicate, not a listing", got)
+	}
+}
+
+// ReadDir on a path that is a FILE says so, rather than claiming landsraad
+// never listed it.
+//
+// A file is never in f.listed, so the listed check answered ErrNotListed —
+// "nothing is known about this path's directory" — for a path whose entry
+// landsraad is holding. That sends a reader to widen a `paths:` for a file
+// that was fetched successfully, which is the same false-diagnostic class
+// ErrNotListed exists to prevent.
+func TestReadDirOnAFileSaysItIsNotADirectory(t *testing.T) {
+	f := FromEntries(testEntries())
+
+	_, err := f.ReadDir("service.yaml")
+	if err == nil {
+		t.Fatal("ReadDir on a file succeeded")
+	}
+	if errors.Is(err, ErrNotListed) {
+		t.Errorf("ReadDir on a file = ErrNotListed; landsraad holds this entry, "+
+			"so %q is not something nobody looked for", "service.yaml")
+	}
+	var pe *fs.PathError
+	if !errors.As(err, &pe) {
+		t.Fatalf("error = %v (%T), want *fs.PathError", err, err)
+	}
+	if pe.Err.Error() != "not a directory" {
+		t.Errorf("error = %q, want %q", pe.Err.Error(), "not a directory")
+	}
+}
+
+// names is the entry names of a directory listing, in order.
+func names(ds []fs.DirEntry) []string {
+	out := make([]string, 0, len(ds))
+	for _, d := range ds {
+		out = append(out, d.Name())
+	}
+	return out
+}

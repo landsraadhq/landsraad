@@ -203,8 +203,17 @@ func (f *FS) Open(name string) (fs.File, error) {
 
 // ReadDir implements fs.ReadDirFS.
 func (f *FS) ReadDir(name string) ([]fs.DirEntry, error) {
-	if _, err := f.lookup("readdir", name); err != nil {
+	e, err := f.lookup("readdir", name)
+	if err != nil {
 		return nil, err
+	}
+	if !e.Dir {
+		// A file is never in f.listed, so the check below would answer
+		// ErrNotListed — "nothing is known about this path's directory" —
+		// about a path whose entry landsraad is holding. That is the
+		// false-diagnostic class ErrNotListed exists to prevent, pointed
+		// the other way.
+		return nil, &fs.PathError{Op: "readdir", Path: name, Err: errors.New("not a directory")}
 	}
 	if !f.listed[name] {
 		return nil, &fs.PathError{Op: "readdir", Path: name, Err: ErrNotListed}
@@ -307,7 +316,14 @@ func (f *file) Stat() (fs.FileInfo, error) { return f.info, nil }
 func (f *file) Read(p []byte) (int, error) { return f.r.Read(p) }
 func (f *file) Close() error               { return nil }
 
-// dir is an open directory. fs.WalkDir reaches it through ReadDirFile.
+// dir is an open directory.
+//
+// Nothing in landsraad reaches it: *FS implements ReadDirFS, so fs.ReadDir,
+// fs.WalkDir and fs.Glob all call FS.ReadDir directly and never Open a
+// directory. The earlier claim here — that fs.WalkDir arrives through
+// ReadDirFile — was false for that reason, and it mattered, because it told
+// a reader this method was covered by the WalkDir tests when nothing drove
+// it at all. It is tested directly instead.
 type dir struct {
 	fs     *FS
 	info   fileInfo
@@ -326,8 +342,14 @@ func (d *dir) ReadDir(n int) ([]fs.DirEntry, error) {
 		return nil, err
 	}
 	if n <= 0 {
+		// The entries REMAINING, not the whole listing again: fstest.MapFS,
+		// io/fs's own reference implementation, answers ReadDir(-1) after a
+		// partial read with what is left. Returning all of them hands a
+		// caller that paged through a directory a duplicate of everything
+		// it has already seen.
+		rest := all[d.offset:]
 		d.offset = len(all)
-		return all, nil
+		return rest, nil
 	}
 	if d.offset >= len(all) {
 		return nil, io.EOF
