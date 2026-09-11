@@ -233,7 +233,12 @@ func openRepos(ctx context.Context, o reposOptions, c *diag.Collector) *workspac
 
 			// Expand before contentSet: a spec.docs directory outside the
 			// configured paths may not be listed yet, and contentSet walks
-			// it to find the pages.
+			// it to find the pages. The order is load-bearing twice over
+			// now: contentSet skips any path absent from the listing, so a
+			// runbook or an alerts file outside those paths would be
+			// dropped here — and then reported as missing by CheckFiles —
+			// if its directory had not been listed first. docsDirs is what
+			// puts all three kinds of directory into this call.
 			if err := fetcher.Expand(ctx, remote, docsDirs(parsed)); err != nil {
 				fail(err)
 				continue
@@ -317,10 +322,32 @@ func openOne(ctx context.Context, r config.Repo, patterns []string, o reposOptio
 //
 // spec.path is deliberately absent: CheckFiles only stats it, and a stat is
 // answered from the tree listing for free (ruling R24).
+//
+// Every path is checked against the listing before it is asked for, which is
+// what keeps a user's YAML mistake a YAML mistake. fetchBlobs rejects a path
+// it cannot find an Entry for -- correctly, since that means the planner is
+// wrong -- and openRepos turns any fetch error into a repoFailure, which
+// drops the whole repository. So a spec.runbook naming a file that is not
+// there used to cost the entire repository: "landsraad could not read
+// edge-gateway" instead of "your runbook is missing", and under
+// --allow-partial an exit 0 with the repository silently absent. Skipping it
+// here leaves CheckFiles to report missing-file against the line in
+// service.yaml that is actually wrong, and runbook-present to fail the way
+// the scorecard is for. A fetch is not the right place to decide a user's
+// YAML is wrong.
+//
+// The check is a Stat, which for *fetch.FS is answered from the tree listing
+// and costs no request (ruling R24). It is also why docsDirs must expand a
+// runbook's and an alerts file's directory: a file that genuinely exists but
+// sits outside the configured patterns has to be LISTED before this can tell
+// it apart from one that is not there at all.
 func contentSet(fsys fs.FS, entities []*catalog.Entity) []string {
 	seen := map[string]bool{}
 	add := func(p string) {
 		if p == "" || !fs.ValidPath(p) {
+			return
+		}
+		if _, err := fs.Stat(fsys, p); err != nil {
 			return
 		}
 		seen[p] = true
@@ -358,18 +385,46 @@ func contentSet(fsys fs.FS, entities []*catalog.Entity) []string {
 	return out
 }
 
-// docsDirs is every directory that must be listed before contentSet can walk
-// it: each entity's spec.docs, plus the check-results directory.
+// docsDirs is every directory that must be listed before contentSet can see
+// it: each entity's spec.docs, the directory holding its spec.runbook and
+// the one holding its spec.alerts, plus the check-results directory.
 //
 // Separate from contentSet because listing and fetching are different
 // requests, and the listing has to happen first — contentSet cannot walk a
-// directory the host has not described yet.
+// directory the host has not described yet, and since contentSet now skips
+// anything absent from the listing, it cannot see a file in one either.
+//
+// The runbook's and the alerts file's directories are here because neither
+// is reachable from the configured patterns in an ordinary satellite layout:
+// `paths: [services/*]` with `runbook: docs/runbooks/api.md` puts the
+// runbook outside every prefix GitLab.Open lists and outside every directory
+// GitHub's truncated-tree descent walks. Without this the file is simply not
+// in the listing, and landsraad reports a runbook that is sitting in the
+// repository as missing.
+//
+// "." is deliberately never returned. Both adapters already list the
+// repository root (fetch.NewFS marks it, and GitHub's walk records its
+// contents), so a root-level runbook.md needs no expansion — and asking
+// GitHub to expand "." would recursively list the entire repository, which
+// is the one thing ruling R28's descent exists to avoid.
 func docsDirs(entities []*catalog.Entity) []string {
 	seen := map[string]bool{scorecard.ChecksDir: true}
-	for _, e := range entities {
-		if e.Spec.Docs != "" && fs.ValidPath(e.Spec.Docs) {
-			seen[e.Spec.Docs] = true
+	addDir := func(d string) {
+		if d == "" || d == "." || !fs.ValidPath(d) {
+			return
 		}
+		seen[d] = true
+	}
+	parentOf := func(p string) string {
+		if p == "" || !fs.ValidPath(p) {
+			return ""
+		}
+		return path.Dir(p)
+	}
+	for _, e := range entities {
+		addDir(e.Spec.Docs)
+		addDir(parentOf(e.Spec.Runbook))
+		addDir(parentOf(e.Spec.Alerts))
 	}
 	out := make([]string, 0, len(seen))
 	for d := range seen {

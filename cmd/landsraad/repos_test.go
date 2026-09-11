@@ -51,6 +51,30 @@ func TestContentSetIsEveryFileALaterStageReads(t *testing.T) {
 	}
 }
 
+// Fix round 2, the Critical one. fetchBlobs rejects a path it has no Entry
+// for, openRepos turns that into a repoFailure, and a repoFailure drops the
+// whole repository — so asking for a spec.runbook that is not in the listing
+// cost the catalog an entire repository instead of producing the
+// missing-file diagnostic and the failed runbook-present that a dangling
+// path is a case of. CheckFiles diagnoses it; a fetch does not.
+func TestContentSetSkipsAPathThatIsNotInTheListing(t *testing.T) {
+	fsys := fstest.MapFS{
+		"services/api/service.yaml": {Data: []byte("x")},
+		"services/api/runbook.md":   {Data: []byte("x")},
+	}
+	e := &catalog.Entity{SourceRepo: "mono", SourcePath: "services/api/service.yaml"}
+	e.Kind = "Service"
+	e.Metadata.Name = "api"
+	e.Spec.Runbook = "services/api/runbook.md" // there
+	e.Spec.Alerts = "services/api/alerts.yaml" // not there
+	e.Spec.Docs = "services/api/docs"          // not there either
+
+	want := []string{"services/api/runbook.md"}
+	if diff := cmp.Diff(want, contentSet(fsys, []*catalog.Entity{e})); diff != "" {
+		t.Errorf("contentSet mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestContentSetSkipsUnsetFields(t *testing.T) {
 	fsys := fstest.MapFS{"service.yaml": {Data: []byte("x")}}
 	e := &catalog.Entity{SourceRepo: "mono", SourcePath: "service.yaml"}
@@ -67,8 +91,25 @@ func TestDocsDirs(t *testing.T) {
 	b := &catalog.Entity{}
 	b.Spec.Docs = "services/api/docs" // duplicate
 	c := &catalog.Entity{}            // no docs
-	want := []string{".landsraad/checks", "services/api/docs"}
-	if diff := cmp.Diff(want, docsDirs([]*catalog.Entity{a, b, c})); diff != "" {
+
+	// The runbook's and the alerts file's directories are listed too. A
+	// satellite with `paths: [services/*]` and `runbook: docs/runbooks/api.md`
+	// has its runbook outside every prefix GitLab.Open lists and outside every
+	// directory GitHub's truncated-tree descent walks, so without these the
+	// file is in no listing and landsraad reports a runbook that is sitting in
+	// the repository as missing.
+	d := &catalog.Entity{}
+	d.Spec.Runbook = "docs/runbooks/api.md"
+	d.Spec.Alerts = "ops/alerts/api.yaml"
+
+	// "." is never returned: both adapters already list the repository root,
+	// and asking GitHub to expand "." would recursively list the whole
+	// repository — the one thing ruling R28's descent exists to avoid.
+	e := &catalog.Entity{}
+	e.Spec.Runbook = "runbook.md"
+
+	want := []string{".landsraad/checks", "docs/runbooks", "ops/alerts", "services/api/docs"}
+	if diff := cmp.Diff(want, docsDirs([]*catalog.Entity{a, b, c, d, e})); diff != "" {
 		t.Errorf("docsDirs mismatch (-want +got):\n%s", diff)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -667,6 +668,185 @@ func TestBuildMergesALocalAndARemoteRepository(t *testing.T) {
 			t.Errorf("%s carries a degraded-mode banner on a clean build", p)
 		}
 	}
+}
+
+// remotePlatformRoot materialises a platform repository holding one local
+// service and naming one remote repository at host, whose entry's paths: is
+// patterns.
+//
+// multirepoRoot's fixture hardcodes `paths: [.]`, which is the layout where a
+// satellite's whole tree is inside the configured path. The interesting cases
+// below are the ones where it is not.
+func remotePlatformRoot(t *testing.T, host, patterns string) string {
+	t.Helper()
+	return materialize(t, map[string]string{
+		"teams.yaml": "teams:\n  - name: team-platform\n    members: [alice]\n    slack: \"#plat\"\n    pagerduty: PLAT\n",
+		"repos.yaml": "repos:\n" +
+			"  - url: https://example.invalid/org/platform\n    local: true\n    paths: [services/*]\n" +
+			"  - url: https://" + host + "/org/edge-gateway\n    host: github\n    ref: main\n    paths: [" + patterns + "]\n",
+		"services/api/service.yaml": `apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: api
+  description: The platform API.
+  owner: team-platform
+  tier: 1
+  lifecycle: production
+spec:
+  language: go
+  path: services/api
+`,
+	})
+}
+
+// openRemoteWorkspace runs openRepos against root with srv standing in for
+// the host, and fails the test if repos.yaml itself did not parse.
+func openRemoteWorkspace(t *testing.T, root string, srv *httptest.Server) *workspace {
+	t.Helper()
+	var c diag.Collector
+	w := openRepos(context.Background(), reposOptions{
+		Root: root, RootFS: os.DirFS(root),
+		Cache:  fetch.NopCache{},
+		Lookup: func(string) (string, bool) { return "test-token", true },
+		ErrOut: io.Discard,
+		HTTP:   srv.Client(),
+	}, &c)
+	if ds := c.Diagnostics(); len(ds) != 0 {
+		t.Fatalf("openRepos reported %d diagnostics: %+v", len(ds), ds)
+	}
+	return w
+}
+
+// A spec.runbook naming a file that is not in the fetched repository is a
+// mistake in that repository's service.yaml, and it must be reported as one.
+//
+// It used to cost the whole repository. contentSet asked for every
+// spec.runbook it saw, fetchBlobs rejected a path with no Entry ("runbook.md
+// is not in the repository listing" — correctly, since that means the planner
+// is wrong), openRepos turned that into a repoFailure, and a repoFailure
+// drops the repository from the workspace entirely. So the headline
+// diagnostic of this whole product — "your runbook is missing", plus a failed
+// runbook-present — became "landsraad could not read your repository" the
+// moment the repository was remote, and under --allow-partial became exit 0
+// with the repository silently absent and a banner blaming the network for a
+// YAML problem. The identical dangling runbook: in a local repository has
+// always given the right answer.
+func TestBuildReportsADanglingRemoteRunbookInsteadOfDroppingTheRepository(t *testing.T) {
+	remote := materialize(t, map[string]string{
+		// No runbook.md anywhere in this repository.
+		"service.yaml": `apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: edge
+  description: Edge gateway, whose runbook is not there.
+  owner: team-platform
+  tier: 1
+  lifecycle: production
+spec:
+  language: go
+  path: .
+  runbook: runbook.md
+`,
+	})
+	srv := fakeGitHub(t, remote)
+	root := remotePlatformRoot(t, srv.Listener.Addr().String(), ".")
+
+	w := openRemoteWorkspace(t, root, srv)
+	if got := w.Failures(); len(got) != 0 {
+		t.Fatalf("the repository was dropped over a dangling runbook: %+v", got)
+	}
+	if _, ok := w.Sources().Get("edge-gateway"); !ok {
+		t.Fatal("edge-gateway is not in the catalog; a dangling spec.runbook must not cost the repository")
+	}
+
+	var errOut bytes.Buffer
+	files, code := Build(os.DirFS(root), w, &errOut, BuildOptions{
+		Now: testNow, Version: "test", LastEdit: noLastEdit(),
+	})
+	if code != exitValidation {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitValidation, errOut.String())
+	}
+	if files != nil {
+		t.Error("Build produced files from a catalog with errors")
+	}
+	// The whole of stderr: one diagnostic, against the line in the satellite's
+	// service.yaml that is actually wrong, and the refusal.
+	want := "error: service.yaml:4 [missing-file]\n" +
+		"  spec.runbook points at \"runbook.md\", which does not exist\n" +
+		"  hint: paths are relative to the repository root, slash-separated\n" +
+		"refusing to build a portal from a catalog with errors; it would publish the broken state as if it were the truth\n"
+	if got := errOut.String(); got != want {
+		t.Errorf("stderr =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// A runbook that genuinely exists but sits outside the configured paths must
+// be listed, fetched and rendered.
+//
+// `paths: [services/*]` with `runbook: docs/runbooks/edge.md` is an ordinary
+// satellite layout, and neither GitLab.Open (which lists only the patterns'
+// literal prefixes) nor GitHub's truncated-tree descent (which walks only
+// what the patterns reach) covers it. docsDirs expanded spec.docs and nothing
+// else, so the runbook was in no listing at all: before the fix every build
+// of such a repository failed outright, and with contentSet now skipping what
+// it cannot see, it would instead be reported as a file that does not exist.
+//
+// Served truncated deliberately: under a complete listing FromEntries marks
+// every directory and the runbook is found whether docsDirs expanded anything
+// or not, so the fixture could not tell the two apart.
+func TestBuildFetchesARunbookOutsideTheConfiguredPaths(t *testing.T) {
+	remote := materialize(t, map[string]string{
+		"services/edge/service.yaml": `apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: edge
+  description: Edge gateway, documented out of the way.
+  owner: team-platform
+  tier: 1
+  lifecycle: production
+spec:
+  language: go
+  path: services/edge
+  runbook: docs/runbooks/edge.md
+`,
+		"docs/runbooks/edge.md": "# Edge runbook\n\nPage the on-call, then drain the pool.\n",
+	})
+	srv := fakeGitHubTruncatedTree(t, remote)
+	root := remotePlatformRoot(t, srv.Listener.Addr().String(), "services/*")
+
+	w := openRemoteWorkspace(t, root, srv)
+	if got := w.Failures(); len(got) != 0 {
+		t.Fatalf("openRepos failed for %+v", got)
+	}
+
+	var errOut bytes.Buffer
+	files, code := Build(os.DirFS(root), w, &errOut, BuildOptions{
+		Now: testNow, Version: "test", LastEdit: noLastEdit(),
+	})
+	if code != exitOK {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitOK, errOut.String())
+	}
+	byPath := map[string][]byte{}
+	for _, f := range files {
+		byPath[f.Path] = f.Data
+	}
+	page, ok := byPath["entity/service/edge/runbook.html"]
+	if !ok {
+		t.Fatalf("the runbook outside the configured paths was not rendered; pages: %v", sortedPaths(byPath))
+	}
+	if !strings.Contains(string(page), "drain the pool") {
+		t.Errorf("the rendered runbook does not carry the fetched content:\n%s", page)
+	}
+}
+
+// sortedPaths names what a build produced, for a failure message.
+func sortedPaths(byPath map[string][]byte) []string {
+	out := make([]string, 0, len(byPath))
+	for p := range byPath {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // The same fixture with the host refusing everything: build must refuse, and
