@@ -892,3 +892,35 @@ func TestLoadCatalogStillReportsTeamsWhenEveryServiceFailsToParse(t *testing.T) 
 		t.Errorf("diagnostics mismatch (-want +got):\n%s", diff)
 	}
 }
+
+// Ruling R39: validate, gen and score name the repository they stand in by
+// the entry LocalPatterns reads its paths from — the one marked local: true,
+// or else the first — and by that entry's Identity(), as build does.
+// localRepoName used to take the first entry's url basename whatever local:
+// and name: said, and kept a trailing .git that Identity() trims.
+func TestLocalRepoNameIsTheLocalEntrysIdentity(t *testing.T) {
+	for _, tt := range []struct{ name, reposYAML, want string }{
+		{"no repos.yaml", "", ""},
+		{"sole entry", "repos:\n  - url: https://github.com/org/monorepo\n", "monorepo"},
+		{"sole entry with .git", "repos:\n  - url: https://github.com/org/monorepo.git\n", "monorepo"},
+		{"local entry is not first",
+			"repos:\n  - url: https://github.com/org/edge-gateway\n  - url: https://github.com/org/platform\n    local: true\n",
+			"platform"},
+		{"name: wins over the url",
+			"repos:\n  - url: https://github.com/org/platform\n    local: true\n    name: core\n",
+			"core"},
+		{"none marked: the first, as LocalPatterns assumes",
+			"repos:\n  - url: https://github.com/org/platform\n  - url: https://github.com/org/edge-gateway\n",
+			"platform"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fsys := fstest.MapFS{}
+			if tt.reposYAML != "" {
+				fsys["repos.yaml"] = &fstest.MapFile{Data: []byte(tt.reposYAML)}
+			}
+			if got := localRepoName(fsys); got != tt.want {
+				t.Errorf("localRepoName = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

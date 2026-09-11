@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -188,6 +187,12 @@ func validateCheckResults(fsys fs.FS, repo string, c *diag.Collector) {
 // localRepoName names the repo being validated, for provenance in diagnostics.
 // It is empty when repos.yaml is absent, and Entity.Location() renders that
 // case without a dangling prefix.
+//
+// It names the entry LocalPatterns reads the paths from — the one marked
+// local: true, or else the first — by that entry's Identity(), which honours
+// name: and trims .git. It used to take the first entry's url basename
+// whatever local: and name: said, so validate, gen and score could name the
+// repository they stand in differently from build (ruling R39).
 func localRepoName(fsys fs.FS) string {
 	data, err := fs.ReadFile(fsys, "repos.yaml")
 	if err != nil {
@@ -195,10 +200,13 @@ func localRepoName(fsys fs.FS) string {
 	}
 	var discard diag.Collector
 	r := config.LoadRepos("repos.yaml", data, &discard)
+	if local, ok := r.LocalRepo(); ok {
+		return local.Identity()
+	}
 	if len(r.Repos) == 0 {
 		return ""
 	}
-	return path.Base(strings.TrimSuffix(r.Repos[0].URL, "/"))
+	return r.Repos[0].Identity()
 }
 
 // patternsFor reads repos.yaml if present, falling back to the conventional
