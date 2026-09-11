@@ -487,11 +487,15 @@ func contentSet(fsys fs.FS, entities []*catalog.Entity) []string {
 // in the listing, and landsraad reports a runbook that is sitting in the
 // repository as missing.
 //
-// "." is deliberately never returned. Both adapters already list the
-// repository root (fetch.NewFS marks it, and GitHub's walk records its
-// contents), so a root-level runbook.md needs no expansion — and asking
-// GitHub to expand "." would recursively list the entire repository, which
-// is the one thing ruling R28's descent exists to avoid.
+// "." is deliberately never returned, and expanding it would not help
+// anyway. On GitHub the root's contents really are known — Open's complete
+// listing covers them, and walk() records them — so a root-level runbook.md
+// needs no expansion, while asking GitHub to expand "." would recursively
+// list the entire repository, the one thing ruling R28's descent exists to
+// avoid. On GitLab opened at non-root prefixes the root's contents are NOT
+// known, but fetch.NewFS marks "." listed regardless, so Expand(".") would
+// short-circuit and list nothing. That is the known root-listing gap; it is
+// a fact about the flag, not something this function can repair.
 func docsDirs(entities []*catalog.Entity) []string {
 	seen := map[string]bool{scorecard.ChecksDir: true}
 	addDir := func(d string) {

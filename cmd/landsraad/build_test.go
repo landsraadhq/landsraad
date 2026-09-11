@@ -582,7 +582,7 @@ func TestPartialBanner(t *testing.T) {
 				"so docs-fresh is not reported for its services.",
 		},
 		{
-			"two, named in sorted order",
+			"two repositories' docs-fresh went unanswered, named in sorted order",
 			nil, []repoEditFailure{{Repo: "edge-gateway"}, {Repo: "billing"}},
 			"Documentation freshness is unknown for billing and edge-gateway: their hosts did not answer, " +
 				"so docs-fresh is not reported for their services.",
