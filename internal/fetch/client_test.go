@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -469,5 +471,108 @@ func TestClientRefusesAResponseOverTheLimit(t *testing.T) {
 				t.Errorf("made %d requests, want 1: a response too large once is too large every time", calls)
 			}
 		})
+	}
+}
+
+// NewClient trims a trailing slash from BaseURL, so a base written with one
+// does not put a doubled slash into every request path.
+func TestClientJoinsATrailingSlashBaseURL(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient(ClientOptions{HTTP: srv.Client(), BaseURL: srv.URL + "/", Sleep: func(time.Duration) {}})
+
+	if _, _, err := c.Get(context.Background(), "/repos/o/r", nil, ""); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if gotPath != "/repos/o/r" {
+		t.Errorf("server saw path %q, want %q", gotPath, "/repos/o/r")
+	}
+}
+
+// The query is url.Values' encoding — sorted by key, a space as "+" — and
+// the path the server sees is the endpoint alone.
+func TestClientEncodesTheQuery(t *testing.T) {
+	var gotPath, gotQuery string
+	c, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		w.Write([]byte(`{}`))
+	})
+	q := url.Values{"b": {"2"}, "a": {"1 2"}}
+	if _, _, err := c.Get(context.Background(), "/x", q, ""); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if gotPath != "/x" || gotQuery != "a=1+2&b=2" {
+		t.Errorf("server saw %q with query %q, want %q with %q", gotPath, gotQuery, "/x", "a=1+2&b=2")
+	}
+}
+
+// StatusError's doc comment promises Endpoint is the path only, never the
+// full URL with its query: the error is printed to users, and a query is
+// where a future change would put something that must not be.
+func TestStatusErrorLeavesOutTheQuery(t *testing.T) {
+	c, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	_, _, err := c.Get(context.Background(), "/x", url.Values{"ref": {"main"}}, "")
+	want := "GET /x: HTTP 404: (empty response body)"
+	if err == nil || err.Error() != want {
+		t.Errorf("err = %v, want %q", err, want)
+	}
+}
+
+// A 403 with quota left is a permission, not a rate limit, and a permission
+// does not change if asked again: one request, no waiting.
+func TestClientDoesNotRetryAForbiddenWithQuotaLeft(t *testing.T) {
+	var calls int
+	var slept []time.Duration
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("X-RateLimit-Remaining", "4998")
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient(ClientOptions{
+		HTTP: srv.Client(), BaseURL: srv.URL,
+		Sleep: func(d time.Duration) { slept = append(slept, d) },
+	})
+
+	if _, _, err := c.Get(context.Background(), "/x", nil, ""); err == nil {
+		t.Fatal("Get succeeded on a 403")
+	}
+	if calls != 1 || len(slept) != 0 {
+		t.Errorf("calls = %d, slept %v; want 1 call and no waiting", calls, slept)
+	}
+}
+
+// A 429's Retry-After is how long the host asked us to wait, and backoff
+// uses it instead of its own 1s, 2s. No test reached that branch before.
+// No X-RateLimit-Reset here, so R44's early return does not apply.
+func TestClientWaitsWhatA429Asks(t *testing.T) {
+	var calls int
+	var slept []time.Duration
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient(ClientOptions{
+		HTTP: srv.Client(), BaseURL: srv.URL,
+		Sleep: func(d time.Duration) { slept = append(slept, d) },
+	})
+
+	_, _, err := c.Get(context.Background(), "/x", nil, "")
+	if !IsRateLimited(err) {
+		t.Fatalf("IsRateLimited(%v) = false, want true", err)
+	}
+	if calls != 3 {
+		t.Errorf("made %d requests, want 3", calls)
+	}
+	if want := []time.Duration{7 * time.Second, 7 * time.Second}; !slices.Equal(slept, want) {
+		t.Errorf("slept %v, want %v", slept, want)
 	}
 }
