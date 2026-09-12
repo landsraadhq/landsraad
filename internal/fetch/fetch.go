@@ -16,7 +16,6 @@ import (
 // one id. Deriving them once, here, is what keeps that difference inside
 // each adapter's URL builder instead of in cmd/.
 type Repo struct {
-	Name  string // the identity from repos.yaml; Entity.SourceRepo
 	URL   string
 	Ref   string // empty means "ask the host for its default branch"
 	Host  string // scheme://hostname, for building the API base
@@ -30,7 +29,7 @@ type Repo struct {
 // owner. GitHub's owner never nests, and treating its two-segment path the
 // same way gives the same answer — so there is one rule here rather than a
 // branch on which host it is.
-func ParseRepo(name, rawURL, ref string) (Repo, error) {
+func ParseRepo(rawURL, ref string) (Repo, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return Repo{}, fmt.Errorf("cannot parse repository url %q: %w", rawURL, err)
@@ -43,7 +42,7 @@ func ParseRepo(name, rawURL, ref string) (Repo, error) {
 			"repository url %q has no owner and name; expected https://%s/<owner>/<repo>", rawURL, u.Hostname())
 	}
 	return Repo{
-		Name: name, URL: rawURL, Ref: ref,
+		URL: rawURL, Ref: ref,
 		Host:  u.Scheme + "://" + u.Host,
 		Owner: owner, Slug: slug,
 	}, nil

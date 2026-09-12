@@ -61,7 +61,7 @@ func githubServer(t *testing.T, blobs map[string]string, truncated bool) *httpte
 
 func newTestGitHub(t *testing.T, srv *httptest.Server, ref string) *GitHub {
 	t.Helper()
-	r, err := ParseRepo("repo", "https://github.com/org/repo", ref)
+	r, err := ParseRepo("https://github.com/org/repo", ref)
 	if err != nil {
 		t.Fatalf("ParseRepo: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestGitHubBaseURL(t *testing.T) {
 		{"https://github.com/org/repo", "https://api.github.com"},
 		{"https://ghe.internal/org/repo", "https://ghe.internal/api/v3"},
 	} {
-		r, err := ParseRepo("n", tt.url, "")
+		r, err := ParseRepo(tt.url, "")
 		if err != nil {
 			t.Fatalf("ParseRepo: %v", err)
 		}

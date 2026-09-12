@@ -234,7 +234,7 @@ func TestParseRepo(t *testing.T) {
 		{"https://github.com/onlyowner", "", "", true},
 	} {
 		t.Run(tt.url, func(t *testing.T) {
-			r, err := ParseRepo("n", tt.url, "")
+			r, err := ParseRepo(tt.url, "")
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("ParseRepo error = %v, wantErr %v", err, tt.wantErr)
 			}

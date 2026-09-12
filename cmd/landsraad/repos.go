@@ -372,7 +372,7 @@ func openOne(ctx context.Context, r config.Repo, patterns []string, o reposOptio
 	if r.Local {
 		return os.DirFS(o.Root), nil, nil
 	}
-	repo, err := fetch.ParseRepo(r.Identity(), r.URL, r.Ref)
+	repo, err := fetch.ParseRepo(r.URL, r.Ref)
 	if err != nil {
 		return nil, nil, err
 	}

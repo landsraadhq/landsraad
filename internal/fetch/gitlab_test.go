@@ -20,7 +20,7 @@ import (
 
 func newTestGitLab(t *testing.T, srv *httptest.Server, ref string) *GitLab {
 	t.Helper()
-	r, err := ParseRepo("billing", "https://gitlab.com/group/sub/billing", ref)
+	r, err := ParseRepo("https://gitlab.com/group/sub/billing", ref)
 	if err != nil {
 		t.Fatalf("ParseRepo: %v", err)
 	}
@@ -617,7 +617,7 @@ func TestGitLabBaseURL(t *testing.T) {
 		{"https://gitlab.com/group/project", "https://gitlab.com/api/v4"},
 		{"https://gl.internal/group/project", "https://gl.internal/api/v4"},
 	} {
-		r, err := ParseRepo("n", tt.url, "")
+		r, err := ParseRepo(tt.url, "")
 		if err != nil {
 			t.Fatalf("ParseRepo: %v", err)
 		}
