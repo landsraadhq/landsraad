@@ -53,9 +53,14 @@ to return an `emit.File` and let `cmd/` write it. That is also what makes
 - Build, test and lint through **go-task**, never `make`.
 - Pipeline stages are typed pure functions **where practical** (spec §7);
   commands are explicit compositions. The type checker enforces stage
-  ordering. Stage 7 is the exception, and it is the same one as the `net/http`
-  rule's: `scorecard.Env.LastEdit` is an effectful callback, so `Score` is
-  pure in everything except when a host says a path last changed.
+  ordering. Stage 7 breaks that twice. First, the same exception as the
+  `net/http` rule's: `scorecard.Env.LastEdit` is an effectful callback, so
+  `Score` is pure in everything except when a host says a path last changed.
+  Second, in `cmd/landsraad/build.go`, `Score` and the later
+  `TakeLastEditFailures` that drains what that callback recorded compile in
+  either order — swapped, `build` exits 0 while every remote entity's
+  docs-fresh silently reports not-reported — so that ordering is held by a
+  behavioural test, not the type checker.
 - `apiVersion: landsraad/v1` — no domain, matching Kubernetes `apps/v1`.
 - Entity names are flat, unique per `(kind, name)`, referenced as `kind:name`.
 - Anything landing in a user's repository — the schema, `.landsraad/checks`,
