@@ -419,11 +419,7 @@ func TestRebuildAfterAGoodBuildKeepsServingLastGoodSite(t *testing.T) {
 // direct. TestServeWithoutWatchExitsWhenReposYAMLIsMalformed and its
 // --watch sibling below pin the actual refusal, through the real binary.
 func TestOpenReposReportsAMalformedReposYAML(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "teams.yaml",
-		"teams:\n  - name: team-payments\n    members: [alice]\n    slack: \"#pay\"\n    pagerduty: PAY\n")
-	writeFile(t, dir, "repos.yaml",
-		"repos:\n  - url: git@github.com:org/monorepo.git\n    paths: [services/*]\n")
+	dir := materialize(t, malformedReposFixture())
 
 	var c diag.Collector
 	openRepos(context.Background(), reposOptions{
@@ -437,11 +433,8 @@ func TestOpenReposReportsAMalformedReposYAML(t *testing.T) {
 	}
 	var errOut bytes.Buffer
 	reportDiagnostics(&errOut, c.Diagnostics(), false) // one repository: serve would pass false
-	want := "error: repos.yaml:2 [repos-url]\n" +
-		"  repository url must begin with https://, got \"git@github.com:org/monorepo.git\"\n" +
-		"  hint: write it as https://github.com/org/monorepo\n"
-	if errOut.String() != want {
-		t.Errorf("stderr = %q, want %q", errOut.String(), want)
+	if errOut.String() != malformedReposStderr {
+		t.Errorf("stderr = %q, want %q", errOut.String(), malformedReposStderr)
 	}
 }
 
@@ -606,22 +599,13 @@ func TestServeWithoutWatchExitsWhenTheFirstBuildFails(t *testing.T) {
 // diagnostic and nothing else: no "build failed" line, because no build was
 // attempted.
 func TestServeWithoutWatchExitsWhenReposYAMLIsMalformed(t *testing.T) {
-	dir := materialize(t, map[string]string{
-		"teams.yaml": "teams:\n  - name: team-payments\n    members: [alice]\n    slack: \"#pay\"\n    pagerduty: PAY\n",
-		"repos.yaml": "repos:\n  - url: git@github.com:org/monorepo.git\n    paths: [services/*]\n",
-		"services/ledger-api/service.yaml": "apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: ledger-api\n" +
-			"  owner: team-payments\n  tier: 1\n  lifecycle: production\nspec:\n" +
-			"  path: services/ledger-api\n",
-	})
+	dir := materialize(t, malformedReposFixture())
 	r := run(t, dir, "serve")
 	if r.exitCode != exitValidation {
 		t.Fatalf("exit = %d, want %d; stderr:\n%s", r.exitCode, exitValidation, r.stderr)
 	}
-	want := "error: repos.yaml:2 [repos-url]\n" +
-		"  repository url must begin with https://, got \"git@github.com:org/monorepo.git\"\n" +
-		"  hint: write it as https://github.com/org/monorepo\n"
-	if r.stderr != want {
-		t.Errorf("stderr = %q, want %q", r.stderr, want)
+	if r.stderr != malformedReposStderr {
+		t.Errorf("stderr = %q, want %q", r.stderr, malformedReposStderr)
 	}
 }
 
@@ -644,22 +628,13 @@ func TestServeWithoutWatchExitsWhenReposYAMLIsMalformed(t *testing.T) {
 // sibling test above would not catch that regression, since it never
 // passes --watch at all.
 func TestServeWithWatchAlsoExitsWhenReposYAMLIsMalformed(t *testing.T) {
-	dir := materialize(t, map[string]string{
-		"teams.yaml": "teams:\n  - name: team-payments\n    members: [alice]\n    slack: \"#pay\"\n    pagerduty: PAY\n",
-		"repos.yaml": "repos:\n  - url: git@github.com:org/monorepo.git\n    paths: [services/*]\n",
-		"services/ledger-api/service.yaml": "apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: ledger-api\n" +
-			"  owner: team-payments\n  tier: 1\n  lifecycle: production\nspec:\n" +
-			"  path: services/ledger-api\n",
-	})
+	dir := materialize(t, malformedReposFixture())
 	r := run(t, dir, "serve", "--watch")
 	if r.exitCode != exitValidation {
 		t.Fatalf("exit = %d, want %d; stderr:\n%s", r.exitCode, exitValidation, r.stderr)
 	}
-	want := "error: repos.yaml:2 [repos-url]\n" +
-		"  repository url must begin with https://, got \"git@github.com:org/monorepo.git\"\n" +
-		"  hint: write it as https://github.com/org/monorepo\n"
-	if r.stderr != want {
-		t.Errorf("stderr = %q, want %q", r.stderr, want)
+	if r.stderr != malformedReposStderr {
+		t.Errorf("stderr = %q, want %q", r.stderr, malformedReposStderr)
 	}
 }
 

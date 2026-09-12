@@ -133,6 +133,27 @@ spec:
 	}
 }
 
+// malformedReposFixture is a repository whose only mistake is repos.yaml
+// writing its url in ssh form, which validateRepos rejects as repos-url.
+// Every command that reads repos.yaml is tested against it, and they must
+// all be looking at the same mistake. A fresh map each call, because a test
+// is free to change what it is given.
+func malformedReposFixture() map[string]string {
+	return map[string]string{
+		"teams.yaml": "teams:\n  - name: team-payments\n    members: [alice]\n    slack: \"#pay\"\n    pagerduty: PAY\n",
+		"repos.yaml": "repos:\n  - url: git@github.com:org/monorepo.git\n    paths: [services/*]\n",
+		"services/ledger-api/service.yaml": "apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: ledger-api\n" +
+			"  owner: team-payments\n  tier: 1\n  lifecycle: production\nspec:\n" +
+			"  path: services/ledger-api\n",
+	}
+}
+
+// malformedReposStderr is exactly what every command prints for
+// malformedReposFixture, and nothing else.
+const malformedReposStderr = "error: repos.yaml:2 [repos-url]\n" +
+	"  repository url must begin with https://, got \"git@github.com:org/monorepo.git\"\n" +
+	"  hint: write it as https://github.com/org/monorepo\n"
+
 // TestIntegrationGenValidateAndScoreChainOnARealCheckout exercises Phase 1
 // (validate) and Phase 2 (gen, score) together against one real checkout:
 // gen's artifacts are written to disk, then validate and gen --check read

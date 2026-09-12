@@ -750,21 +750,12 @@ func TestFailureMessage(t *testing.T) {
 // user wrote exits 2 in every command, and 1 is kept for landsraad being
 // unable to run.
 func TestBuildExitsWhenReposYAMLIsMalformed(t *testing.T) {
-	dir := materialize(t, map[string]string{
-		"teams.yaml": "teams:\n  - name: team-payments\n    members: [alice]\n    slack: \"#pay\"\n    pagerduty: PAY\n",
-		"repos.yaml": "repos:\n  - url: git@github.com:org/monorepo.git\n    paths: [services/*]\n",
-		"services/ledger-api/service.yaml": "apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: ledger-api\n" +
-			"  owner: team-payments\n  tier: 1\n  lifecycle: production\nspec:\n" +
-			"  path: services/ledger-api\n",
-	})
+	dir := materialize(t, malformedReposFixture())
 	r := run(t, dir, "build")
 	if r.exitCode != exitValidation {
 		t.Fatalf("exit = %d, want %d; stderr:\n%s", r.exitCode, exitValidation, r.stderr)
 	}
-	want := "error: repos.yaml:2 [repos-url]\n" +
-		"  repository url must begin with https://, got \"git@github.com:org/monorepo.git\"\n" +
-		"  hint: write it as https://github.com/org/monorepo\n"
-	if r.stderr != want {
-		t.Errorf("stderr = %q, want %q", r.stderr, want)
+	if r.stderr != malformedReposStderr {
+		t.Errorf("stderr = %q, want %q", r.stderr, malformedReposStderr)
 	}
 }
