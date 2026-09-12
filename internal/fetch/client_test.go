@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/go-cmp/cmp"
 )
@@ -397,6 +398,33 @@ func TestClientDoesNotRetryARateLimitBeforeItResets(t *testing.T) {
 			}
 			if diff := cmp.Diff(tt.wantSleep, slept); diff != "" {
 				t.Errorf("sleeps mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// A diagnostic is printed to a terminal and embedded in JSON, and a byte
+// slice through the middle of a character is valid in neither. The cut was
+// a bare s[:200], so an error body with an em dash straddling byte 200 came
+// back with half the dash and then "…".
+func TestSummariseNeverSplitsACharacter(t *testing.T) {
+	for _, tt := range []struct{ name, body, want string }{
+		{
+			// "—" is three bytes, at 199, 200 and 201: a cut at 200 lands inside it.
+			"a character straddling the cut is dropped whole",
+			strings.Repeat("a", 199) + "—" + strings.Repeat("b", 10),
+			strings.Repeat("a", 199) + "…",
+		},
+		{"ASCII is cut at exactly 200 bytes", strings.Repeat("a", 250), strings.Repeat("a", 200) + "…"},
+		{"a short body is untouched", "Not Found", "Not Found"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := summarise(tt.body)
+			if got != tt.want {
+				t.Errorf("summarise = %q, want %q", got, tt.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("summarise returned invalid UTF-8: %q", got)
 			}
 		})
 	}

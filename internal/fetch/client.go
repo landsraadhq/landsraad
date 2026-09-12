@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // ClientOptions constructs a Client. Every field is injected — there is no
@@ -249,11 +250,19 @@ func (c *Client) redactString(s string) string {
 
 // summarise trims a response body to something printable. A host's error
 // body can be a full HTML page, and a diagnostic is one line.
+//
+// The cut backs off to the start of a character. A bare s[:200] can end
+// inside a multi-byte one, and a diagnostic is printed to a terminal and
+// embedded in JSON, neither of which should carry half a character.
 func summarise(body string) string {
 	s := strings.TrimSpace(body)
 	s = strings.Join(strings.Fields(s), " ")
 	if len(s) > 200 {
-		s = s[:200] + "…"
+		cut := 200
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut] + "…"
 	}
 	if s == "" {
 		s = "(empty response body)"
