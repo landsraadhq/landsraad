@@ -27,7 +27,7 @@ func newTestGitLab(t *testing.T, srv *httptest.Server, ref string) *GitLab {
 	c := NewClient(ClientOptions{
 		HTTP: srv.Client(), BaseURL: srv.URL, Token: "glpat-x",
 		AuthHeader: "PRIVATE-TOKEN", AuthPrefix: "",
-		MaxAttempts: 1, Sleep: func(time.Duration) {},
+		Sleep: func(time.Duration) {},
 	})
 	return NewGitLab(r, c, NopCache{}, 4)
 }

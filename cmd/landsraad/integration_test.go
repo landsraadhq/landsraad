@@ -914,7 +914,7 @@ func TestBuildWithAnUnreachableRemote(t *testing.T) {
 	// 3 attempts per Get, and the client sleeps between attempts 1→2 and
 	// 2→3 but not after the final one, so 2 sleeps per Get × 2 opens = 4.
 	// This is what proves the retry path actually ran rather than being
-	// short-circuited by MaxAttempts: 1 or a Sleep that was never wired up.
+	// short-circuited by a Sleep that was never wired up.
 	if sleeps != 4 {
 		t.Errorf("sleeps = %d, want 4 (2 opens × 2 retries each against the always-failing host)", sleeps)
 	}

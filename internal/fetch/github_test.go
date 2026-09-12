@@ -68,8 +68,8 @@ func newTestGitHub(t *testing.T, srv *httptest.Server, ref string) *GitHub {
 	c := NewClient(ClientOptions{
 		HTTP: srv.Client(), BaseURL: srv.URL, Token: "t",
 		AuthHeader: "Authorization", AuthPrefix: "Bearer ",
-		Headers:     map[string]string{"X-GitHub-Api-Version": "2026-03-10", "Accept": "application/vnd.github+json"},
-		MaxAttempts: 1, Sleep: func(time.Duration) {},
+		Headers: map[string]string{"X-GitHub-Api-Version": "2026-03-10", "Accept": "application/vnd.github+json"},
+		Sleep:   func(time.Duration) {},
 	})
 	return NewGitHub(r, c, NopCache{}, 4)
 }

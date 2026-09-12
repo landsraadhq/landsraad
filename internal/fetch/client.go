@@ -18,13 +18,12 @@ import (
 // because two repositories on two hosts with two tokens must be able to
 // coexist in one process.
 type ClientOptions struct {
-	HTTP        *http.Client
-	BaseURL     string
-	Token       string
-	AuthHeader  string // "Authorization" on GitHub, "PRIVATE-TOKEN" on GitLab
-	AuthPrefix  string // "Bearer " on GitHub, "" on GitLab
-	Headers     map[string]string
-	MaxAttempts int
+	HTTP       *http.Client
+	BaseURL    string
+	Token      string
+	AuthHeader string // "Authorization" on GitHub, "PRIVATE-TOKEN" on GitLab
+	AuthPrefix string // "Bearer " on GitHub, "" on GitLab
+	Headers    map[string]string
 	// Sleep is how the client waits between retries. Injected so the test
 	// suite runs in milliseconds instead of in the backoff schedule.
 	Sleep func(time.Duration)
@@ -36,28 +35,24 @@ type ClientOptions struct {
 
 // Client is one host's API, already authenticated.
 type Client struct {
-	http        *http.Client
-	base        string
-	token       string
-	authHeader  string
-	authPrefix  string
-	headers     map[string]string
-	maxAttempts int
-	sleep       func(time.Duration)
-	now         func() time.Time
+	http       *http.Client
+	base       string
+	token      string
+	authHeader string
+	authPrefix string
+	headers    map[string]string
+	sleep      func(time.Duration)
+	now        func() time.Time
 }
 
 func NewClient(o ClientOptions) *Client {
 	c := &Client{
 		http: o.HTTP, base: strings.TrimSuffix(o.BaseURL, "/"),
 		token: o.Token, authHeader: o.AuthHeader, authPrefix: o.AuthPrefix,
-		headers: o.Headers, maxAttempts: o.MaxAttempts, sleep: o.Sleep, now: o.Now,
+		headers: o.Headers, sleep: o.Sleep, now: o.Now,
 	}
 	if c.http == nil {
 		c.http = &http.Client{Timeout: 30 * time.Second}
-	}
-	if c.maxAttempts < 1 {
-		c.maxAttempts = 3
 	}
 	if c.sleep == nil {
 		c.sleep = time.Sleep
@@ -131,17 +126,17 @@ func (c *Client) Get(ctx context.Context, endpoint string, query url.Values, acc
 		target += "?" + query.Encode()
 	}
 	var last error
-	for attempt := 1; attempt <= c.maxAttempts; attempt++ {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		body, header, err := c.once(ctx, target, endpoint, accept)
 		if err == nil {
 			return body, header, nil
 		}
 		last = err
-		if !retryable(err) || attempt == c.maxAttempts {
+		if !retryable(err) || attempt == maxAttempts {
 			return nil, nil, err
 		}
 		wait := backoff(attempt, err)
-		if c.tooEarlyToRetry(err, remainingBackoff(attempt, c.maxAttempts, err)) {
+		if c.tooEarlyToRetry(err, remainingBackoff(attempt, maxAttempts, err)) {
 			return nil, nil, err
 		}
 		c.sleep(wait)
@@ -308,18 +303,24 @@ func (c *Client) tooEarlyToRetry(err error, remaining time.Duration) bool {
 }
 
 // remainingBackoff sums the wait before every attempt still to come, from
-// attempt up to the client's last, maxAttempts-1 — the earliest moment the
-// final attempt could fire. That is the total a spent rate limit's reset
-// has to outlast for giving up to be correct: a reset inside any single
-// step's wait still leaves a later attempt worth making, so tooEarlyToRetry
-// decides on this sum rather than on the next wait alone (ruling R44).
-func remainingBackoff(attempt, maxAttempts int, err error) time.Duration {
+// attempt up to lastAttempt-1 — the earliest moment the final attempt could
+// fire. That is the total a spent rate limit's reset has to outlast for
+// giving up to be correct: a reset inside any single step's wait still
+// leaves a later attempt worth making, so tooEarlyToRetry decides on this
+// sum rather than on the next wait alone (ruling R44).
+func remainingBackoff(attempt, lastAttempt int, err error) time.Duration {
 	var total time.Duration
-	for a := attempt; a < maxAttempts; a++ {
+	for a := attempt; a < lastAttempt; a++ {
 		total += backoff(a, err)
 	}
 	return total
 }
+
+// maxAttempts is how many times a retryable request is tried: once, then
+// twice more after backoff's 1s and 2s. A constant, not an option: nothing
+// in production ever set it, and a knob only tests turn lets a test pass
+// against a retry path production never takes.
+const maxAttempts = 3
 
 // backoff is 1s, 2s, 4s, unless the host said how long to wait.
 func backoff(attempt int, err error) time.Duration {

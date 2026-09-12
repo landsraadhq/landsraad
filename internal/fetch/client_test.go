@@ -20,14 +20,13 @@ func testClient(t *testing.T, h http.HandlerFunc) (*Client, *httptest.Server) {
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return NewClient(ClientOptions{
-		HTTP:        srv.Client(),
-		BaseURL:     srv.URL,
-		Token:       "secret-token-value",
-		AuthHeader:  "Authorization",
-		AuthPrefix:  "Bearer ",
-		Headers:     map[string]string{"X-GitHub-Api-Version": "2026-03-10"},
-		MaxAttempts: 3,
-		Sleep:       func(time.Duration) {}, // tests never wait
+		HTTP:       srv.Client(),
+		BaseURL:    srv.URL,
+		Token:      "secret-token-value",
+		AuthHeader: "Authorization",
+		AuthPrefix: "Bearer ",
+		Headers:    map[string]string{"X-GitHub-Api-Version": "2026-03-10"},
+		Sleep:      func(time.Duration) {}, // tests never wait
 	}), srv
 }
 
@@ -105,13 +104,12 @@ func TestClientErrorsNeverCarryTheToken(t *testing.T) {
 	t.Run("transport_error_path", func(t *testing.T) {
 		// Trigger a transport error by pointing at a non-existent server.
 		c := NewClient(ClientOptions{
-			HTTP:        &http.Client{Timeout: 100 * time.Millisecond},
-			BaseURL:     "http://127.0.0.1:1", // unlikely to be listening
-			Token:       "secret-token-value",
-			AuthHeader:  "Authorization",
-			AuthPrefix:  "Bearer ",
-			MaxAttempts: 1,
-			Sleep:       func(time.Duration) {},
+			HTTP:       &http.Client{Timeout: 100 * time.Millisecond},
+			BaseURL:    "http://127.0.0.1:1", // unlikely to be listening
+			Token:      "secret-token-value",
+			AuthHeader: "Authorization",
+			AuthPrefix: "Bearer ",
+			Sleep:      func(time.Duration) {},
 		})
 		_, _, err := c.Get(context.Background(), "/x", nil, "")
 		if err == nil {
@@ -293,8 +291,7 @@ func TestGetDoesNotRetryACancelledRequest(t *testing.T) {
 				BaseURL:    "http://127.0.0.1:1",
 				Token:      tt.token,
 				AuthHeader: "Authorization", AuthPrefix: "Bearer ",
-				MaxAttempts: 3,
-				Sleep:       func(time.Duration) { sleeps++ },
+				Sleep: func(time.Duration) { sleeps++ },
 			})
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
@@ -383,7 +380,7 @@ func TestClientDoesNotRetryARateLimitBeforeItResets(t *testing.T) {
 			t.Cleanup(srv.Close)
 			var slept []time.Duration
 			c := NewClient(ClientOptions{
-				HTTP: srv.Client(), BaseURL: srv.URL, MaxAttempts: 3,
+				HTTP: srv.Client(), BaseURL: srv.URL,
 				Sleep: func(d time.Duration) { slept = append(slept, d) },
 				Now:   func() time.Time { return now },
 			})
