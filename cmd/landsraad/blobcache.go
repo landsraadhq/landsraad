@@ -8,9 +8,6 @@ import (
 	"github.com/landsraadhq/landsraad/internal/fetch"
 )
 
-// A signature drift here would otherwise go unnoticed until Task 13 wires
-// this into build.go — nothing else in the tree references *blobCache as a
-// fetch.Cache yet.
 var _ fetch.Cache = (*blobCache)(nil)
 
 // blobCache is the on-disk half of ruling R27: a content-addressed store
@@ -89,6 +86,8 @@ func (c *blobCache) Put(sha string, data []byte) error {
 	if err != nil {
 		return err
 	}
+	// A no-op after a successful Rename, when the temp file is already gone;
+	// it exists for the three returns above that one.
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()

@@ -74,25 +74,27 @@ func TestBlobCacheRejectsAnythingThatIsNotASha(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, sha := range []string{
-		"../../../etc/passwd",
-		"..",
-		"/absolute",
-		"356a192b7913b04c54574d18c28d46e6395428ab/../../x",
-		"not-hex-at-all-not-hex-at-all-not-hex-aa",
-		"",
-		"356a192b", // too short
+	for _, tt := range []struct{ sha, wantPut string }{
+		{"../../../etc/passwd", `refusing to cache under "../../../etc/passwd": not a git object id`},
+		{"..", `refusing to cache under "..": not a git object id`},
+		{"/absolute", `refusing to cache under "/absolute": not a git object id`},
+		{"356a192b7913b04c54574d18c28d46e6395428ab/../../x",
+			`refusing to cache under "356a192b7913b04c54574d18c28d46e6395428ab/../../x": not a git object id`},
+		{"not-hex-at-all-not-hex-at-all-not-hex-aa",
+			`refusing to cache under "not-hex-at-all-not-hex-at-all-not-hex-aa": not a git object id`},
+		{"", `refusing to cache under "": not a git object id`},
+		{"356a192b", `refusing to cache under "356a192b": not a git object id`}, // too short
 	} {
-		t.Run(sha, func(t *testing.T) {
-			if _, ok := safeBlobPath(root, sha); ok {
-				t.Errorf("safeBlobPath accepted %q", sha)
+		t.Run(tt.sha, func(t *testing.T) {
+			if _, ok := safeBlobPath(root, tt.sha); ok {
+				t.Errorf("safeBlobPath accepted %q", tt.sha)
 			}
 			c := newBlobCache(root)
-			if err := c.Put(sha, []byte("x")); err == nil {
-				t.Errorf("Put accepted %q", sha)
+			if err := c.Put(tt.sha, []byte("x")); err == nil || err.Error() != tt.wantPut {
+				t.Errorf("Put(%q) = %v, want %q", tt.sha, err, tt.wantPut)
 			}
-			if _, hit := c.Get(sha); hit {
-				t.Errorf("Get accepted %q", sha)
+			if _, hit := c.Get(tt.sha); hit {
+				t.Errorf("Get accepted %q", tt.sha)
 			}
 		})
 	}
