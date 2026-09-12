@@ -367,14 +367,60 @@ func TestADocumentThatWasListedButNeverFetchedReadsAsALandsraadBug(t *testing.T)
 		t.Fatalf("got %d diagnostics, want 1: %+v", len(ds), ds)
 	}
 	got := ds[0]
-	wantMsg := "services/api/docs/index.md is in the repository but its content was never fetched"
+	wantMsg := "services/api/docs/index.md is in the repository but its content was never fetched; " +
+		"this is a landsraad bug, not a problem with your catalog"
 	if got.Message != wantMsg {
 		t.Errorf("Message = %q, want %q", got.Message, wantMsg)
 	}
-	wantHint := "this is a landsraad bug, not a problem with your catalog: " +
-		"cmd/'s contentSet must name every file a stage reads"
-	if got.Hint != wantHint {
-		t.Errorf("Hint = %q, want %q", got.Hint, wantHint)
+	// No Hint: scorecard.Unreadable's message already says this is a
+	// landsraad bug, and a Hint repeating that would say it twice.
+	if got.Hint != "" {
+		t.Errorf("Hint = %q, want none", got.Hint)
+	}
+}
+
+// A runbook whose directory was never listed at all is the same kind of
+// landsraad bug as ErrNotFetched, one level up, and must read as one rather
+// than sending the reader to fix a spec.runbook that is not wrong.
+//
+// unreadableDoc used to have no branch for sparsefs.ErrNotListed and fell
+// through to "cannot read X: directory was never listed", with a hint
+// pointing at spec.docs or spec.runbook — blaming the user's catalog for
+// what internal/sparsefs/errors.go itself calls a planner bug.
+func TestARunbookWhoseDirectoryWasNeverListedReadsAsALandsraadBug(t *testing.T) {
+	e := ent("api", catalog.KindService, "team-payments", 1)
+	e.Spec.Docs = "services/api/docs"
+	e.Spec.Runbook = "services/api/RUNBOOK.md"
+	in := input(t, fstest.MapFS{
+		"services/api/docs/index.md": {Data: []byte("# API\n\nThe overview.\n")},
+		"services/api/RUNBOOK.md":    {Data: []byte("# Runbook\n\nSteps.\n")},
+	}, e)
+
+	// A sparse filesystem that listed and fetched the docs directory but
+	// never listed services/api itself, so the runbook's own directory —
+	// outside spec.docs — is unknown rather than merely unfetched.
+	remote := fetch.NewFS()
+	remote.AddDir("services/api/docs", []fetch.Entry{
+		{Path: "services/api/docs/index.md", SHA: "0123456789abcdef0123456789abcdef01234567", Size: 20},
+	})
+	remote.Put("services/api/docs/index.md", []byte("# API\n\nThe overview.\n"))
+	in.Sources = catalog.SingleSource("", remote)
+
+	var c diag.Collector
+	Site(in, &c)
+
+	ds := c.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(ds), ds)
+	}
+	got := ds[0]
+	wantMsg := "services/api/RUNBOOK.md was never listed, so landsraad cannot read it; " +
+		"this is a landsraad bug, not a problem with your catalog"
+	if got.Message != wantMsg {
+		t.Errorf("Message = %q, want %q", got.Message, wantMsg)
+	}
+	if got.Hint != "" {
+		t.Errorf("Hint = %q, want none", got.Hint)
 	}
 }
 

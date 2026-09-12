@@ -15,6 +15,7 @@ import (
 	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/emit"
 	"github.com/landsraadhq/landsraad/internal/render/md"
+	"github.com/landsraadhq/landsraad/internal/scorecard"
 	"github.com/landsraadhq/landsraad/internal/sparsefs"
 )
 
@@ -201,34 +202,31 @@ func relativeURL(fromURL, toURL string) string {
 }
 
 // unreadableDoc reports a document that could not be read, saying which of
-// the two very different reasons it was.
+// the three very different reasons it was.
 //
-// sparsefs.ErrNotFetched means the file is sitting in the repository and cmd/'s
-// content planner never asked the host for it. That is a landsraad bug, and
-// it gets catalog.MissingSourceDiagnostic's treatment: saying so is the
-// difference between somebody fixing their catalog (which is fine) and
-// somebody filing this. Discarding the error made the two indistinguishable
-// — and made a plain permission error indistinguishable from both.
+// sparsefs.ErrNotFetched means the file is sitting in the repository and
+// cmd/'s content planner never asked the host for its bytes. sparsefs.ErrNotListed
+// is the same fact one level up: nothing ever listed the directory the file
+// is in. Both are landsraad bugs, never a user's mistake — before this,
+// ErrNotListed fell through to the branch below and told the reader to go
+// check spec.docs or spec.runbook, which is the opposite of what the
+// sentinel means. Everything else is reported with the error itself.
+//
+// scorecard.Unreadable already carries this wording, for the same class of
+// error ingest.go and cmd/'s validate report (ruling R40); this used to be a
+// third, drifted copy of it.
 func unreadableDoc(e *catalog.Entity, repoPath string, err error) diag.Diagnostic {
-	if errors.Is(err, sparsefs.ErrNotFetched) {
-		return diag.Diagnostic{
-			Severity: diag.SevError, File: repoPath, Line: 1,
-			Repo:    e.SourceRepo,
-			Entity:  e.Metadata.Name,
-			Check:   "docs-unreadable",
-			Message: fmt.Sprintf("%s is in the repository but its content was never fetched", repoPath),
-			Hint: "this is a landsraad bug, not a problem with your catalog: cmd/'s contentSet " +
-				"must name every file a stage reads",
-		}
-	}
-	return diag.Diagnostic{
+	d := diag.Diagnostic{
 		Severity: diag.SevError, File: repoPath, Line: 1,
 		Repo:    e.SourceRepo,
 		Entity:  e.Metadata.Name,
 		Check:   "docs-unreadable",
-		Message: fmt.Sprintf("cannot read %s: %v", repoPath, err),
-		Hint:    "the file is named by spec.docs or spec.runbook",
+		Message: scorecard.Unreadable(repoPath, err),
 	}
+	if !errors.Is(err, sparsefs.ErrNotFetched) && !errors.Is(err, sparsefs.ErrNotListed) {
+		d.Hint = "the file is named by spec.docs or spec.runbook"
+	}
+	return d
 }
 
 // docsFor renders one entity's documentation.
