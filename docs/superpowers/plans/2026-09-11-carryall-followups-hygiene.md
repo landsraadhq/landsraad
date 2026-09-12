@@ -12,7 +12,7 @@
 
 **Runs after** the behaviour plan (R40, R45, R36–R44), on the same branch, `carryall-followups`. Where the behaviour plan changes a file, this plan names symbols rather than line numbers. It relies on these results of the behaviour plan:
 
-- `internal/fetch/client.go`: `ClientOptions` has `Now func() time.Time`, defaulting to `time.Now` in `NewClient` like `Sleep`. `Get` returns without sleeping when the error `IsRateLimited`, `RateReset` is non-zero, and the next retry would fire before `RateReset`. `MaxAttempts` still exists.
+- `internal/fetch/client.go`: `ClientOptions` has `Now func() time.Time`, defaulting to `time.Now` in `NewClient` like `Sleep`. `Get` returns without sleeping when the error `IsRateLimited`, `RateReset` is non-zero, and **no remaining retry** could fire after `RateReset` — the decision is made on `remainingBackoff(attempt, maxAttempts, err)`, the sum of every wait still to come, not on the next wait alone. `MaxAttempts` still exists. Note for Task 2: `remainingBackoff` takes the attempt budget as a parameter, so `Get` now names `c.maxAttempts` in **three** places, not two.
 - `cmd/landsraad/build.go`: `repoFailure` has no `URL` field; it keeps `Name`, `Line`, `Kind`, `Err`. `failureMessage` is unchanged. `reportFetchFailures` prints `"%s: repos.yaml:%d: %s\n"` (level, line, message) when `Line > 0`, else `"%s: %s\n"`.
 - `internal/fetch/gitlab.go`: `Open` and `Expand` rewritten per R45; `literalPrefixes` unchanged; `ancestorsOf` (in `githubwalk.go`) now used by GitLab too.
 - `internal/fetch/fs.go`: `NewFS` marks nothing listed; `FromEntries` marks `"."`.
