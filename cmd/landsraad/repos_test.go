@@ -149,6 +149,9 @@ func TestTokenVarName(t *testing.T) {
 		{"edge-gateway", "LANDSRAAD_TOKEN_EDGE_GATEWAY"},
 		{"my.repo", "LANDSRAAD_TOKEN_MY_REPO"},
 		{"api", "LANDSRAAD_TOKEN_API"},
+		// One underscore for É, which is two bytes in UTF-8: characters are
+		// replaced, not bytes.
+		{"café", "LANDSRAAD_TOKEN_CAF_"},
 	} {
 		if got := tokenVarName(tt.name); got != tt.want {
 			t.Errorf("tokenVarName(%q) = %q, want %q", tt.name, got, tt.want)

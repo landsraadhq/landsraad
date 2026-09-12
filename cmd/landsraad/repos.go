@@ -564,8 +564,9 @@ func tokenFor(r config.Repo, look func(string) (string, bool)) string {
 	return ""
 }
 
-// tokenVarName is LANDSRAAD_TOKEN_<NAME>: uppercased, every byte that is not
-// a letter or a digit replaced with an underscore. Stated rather than clever,
+// tokenVarName is LANDSRAAD_TOKEN_<NAME>: uppercased, every character that
+// is not an ASCII letter or digit replaced with one underscore. A character,
+// not a byte: "café" is LANDSRAAD_TOKEN_CAF_. Stated rather than clever,
 // because a variable nobody can guess is a variable nobody sets.
 func tokenVarName(name string) string {
 	var b strings.Builder

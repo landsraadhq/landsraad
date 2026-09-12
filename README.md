@@ -189,7 +189,8 @@ still uses `master`.
 rest of the file, and a token there is a token in everyone's clone forever.
 landsraad reads one from the environment instead, per repository:
 `LANDSRAAD_TOKEN_<NAME>` first (the repository's `name`, or its derived
-identity, uppercased with every non-alphanumeric byte replaced by `_`), then
+identity, uppercased, with every character that is not an ASCII letter or
+digit replaced by `_`), then
 `GITHUB_TOKEN` or `GITLAB_TOKEN` by host. No token is not an error — public
 repositories work without one — but a **private** repository with no token
 returns a 404 from both hosts, identical to a repository that does not
