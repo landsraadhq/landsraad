@@ -1038,8 +1038,9 @@ In `blobcache.go`, delete the three comment lines above `var _ fetch.Cache = (*b
 Replace `	defer os.Remove(tmp.Name())` with:
 
 ```go
-	// A no-op after a successful Rename, when the temp file is already gone;
-	// it exists for the three returns above that one.
+	// A no-op only after a successful Rename, when the temp file is already
+	// gone; it cleans up for the two returns above it and for a Rename that
+	// fails.
 	defer os.Remove(tmp.Name())
 ```
 
