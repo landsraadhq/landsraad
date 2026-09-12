@@ -1253,7 +1253,7 @@ In `README.md`, replace
 
 ```markdown
 `LANDSRAAD_TOKEN_<NAME>` first (the repository's `name`, or its derived
-identity, uppercased with every non-alphanumeric byte replaced by `_`), then
+identity, uppercased with every character that is not an ASCII letter or digit replaced by one `_`), then
 ```
 
 with
@@ -1275,7 +1275,9 @@ In `repos.go`, replace `tokenVarName`'s doc comment with:
 
 - [ ] **Step 4: Verify**
 
-Run: `go test ./cmd/landsraad/ -run 'TestTokenVarName' -count=1 && grep -n 'non-alphanumeric byte' README.md cmd/landsraad/repos.go`
+Run: `go test ./cmd/landsraad/ -run 'TestTokenVarName' -count=1 && grep -rn 'non-alphanumeric byte' README.md cmd/landsraad/`
+
+The grep covers the whole of `cmd/landsraad/`, not just `repos.go`: the same wording also sits above `TestTokenVarName` in `repos_test.go`, and a grep narrowed to the two files the step edits would leave the file contradicting itself three lines from the case it adds.
 Expected: PASS, and no grep output.
 
 - [ ] **Step 5: Commit**
