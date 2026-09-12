@@ -208,11 +208,20 @@ func (g *GitHub) listDir(ctx context.Context, f *FS, dir string) error {
 
 // expandRecursive lists dir and everything beneath it. Used by Expand for a
 // spec.docs directory, whose subdirectories each hold pages.
+//
+// Scans via eachEntry rather than Entries(), for the same reason as
+// covered: no sort, no snapshot copy, on every one of the (depth-many)
+// levels this recurses through. The recursive call below mutates f.entries
+// while this range is still open on it, which is safe here even though
+// Entries()'s copy is what usually shields a caller from that: any entry
+// AddDir adds during the recursion is a child of e.Path, one level deeper
+// than dir, so it can never match this level's `path.Dir(e.Path) == dir`
+// filter — whether or not Go's map iteration happens to surface it.
 func (g *GitHub) expandRecursive(ctx context.Context, f *FS, dir string) error {
 	if err := g.listDir(ctx, f, dir); err != nil {
 		return err
 	}
-	for _, e := range f.Entries() {
+	for e := range f.eachEntry {
 		if !e.Dir || path.Dir(e.Path) != dir {
 			continue
 		}

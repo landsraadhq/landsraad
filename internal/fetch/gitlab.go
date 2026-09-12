@@ -258,6 +258,13 @@ func showsDir(f *FS, dir string) (bool, error) {
 // which is what a recursive listing of dir establishes. Listed(dir) alone no
 // longer says that: reach lists ancestors one level deep, so a directory can
 // be listed with nothing beneath it known.
+//
+// Scans via eachEntry rather than Entries(): reach calls this once per
+// directory Expand is asked about — roughly three per entity — and
+// Entries()'s sort plus slice copy turned that into an O(n log n),
+// O(n)-allocating pass over the whole repository's entries each time. On a
+// large monorepo that dominates Expand's cost, none of it a network
+// request; eachEntry answers the same yes/no by scanning the map directly.
 func covered(f *FS, dir string) bool {
 	if !f.Listed(dir) {
 		return false
@@ -266,7 +273,7 @@ func covered(f *FS, dir string) bool {
 	if dir == "." {
 		prefix = ""
 	}
-	for _, e := range f.Entries() {
+	for e := range f.eachEntry {
 		if e.Dir && strings.HasPrefix(e.Path, prefix) && !f.Listed(e.Path) {
 			return false
 		}

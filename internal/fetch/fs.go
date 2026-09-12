@@ -184,6 +184,20 @@ func (f *FS) Entries() []Entry {
 	return out
 }
 
+// eachEntry iterates over every known entry, in map order, without sorting
+// or copying them into a slice first. For a caller like covered that scans
+// once, does not care about order, and does not mutate f while iterating:
+// Entries' slice is a snapshot precisely so a caller CAN mutate f during the
+// walk (or hold the result past f's next change); eachEntry offers no such
+// guarantee, so it is only safe where the caller doesn't need one.
+func (f *FS) eachEntry(yield func(Entry) bool) {
+	for _, e := range f.entries {
+		if !yield(e) {
+			return
+		}
+	}
+}
+
 // Listed reports whether a directory's contents are known.
 func (f *FS) Listed(dir string) bool { return f.listed[dir] }
 
