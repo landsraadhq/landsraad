@@ -142,8 +142,9 @@ func TestTokenFor(t *testing.T) {
 }
 
 // The name is normalised the way the ruling states: uppercased, every
-// non-alphanumeric byte to underscore. A repository called "edge-gateway"
-// must not need a variable nobody could guess.
+// character that is not an ASCII letter or digit replaced by one
+// underscore. A repository called "edge-gateway" must not need a
+// variable nobody could guess.
 func TestTokenVarName(t *testing.T) {
 	for _, tt := range []struct{ name, want string }{
 		{"edge-gateway", "LANDSRAAD_TOKEN_EDGE_GATEWAY"},
