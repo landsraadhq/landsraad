@@ -2,125 +2,130 @@
 
 What Plan 4 left behind, written down on the day it merged. Everything here
 was found by a review or an audit, verified against the code, and
-deliberately not fixed — either because it needs a decision, or because it
-was not worth widening a finished branch for.
+deliberately not fixed at the time — either because it needed a decision,
+or because it was not worth widening a finished branch for.
 
-Nothing in this file blocks anything. It exists so the next person does not
-have to rediscover it.
+**Closed, on the `carryall-followups` branch.** Every item was re-verified
+before anything was decided, and the decisions are recorded in
+`docs/superpowers/specs/2026-09-11-carryall-followups-design.md`. That pass
+found this file wrong in four places, each corrected below where it
+occurs, and found eight problems it did not mention (the spec's N1–N8).
+Each item now says where it went: a ruling, R36–R45, described in the spec,
+or a task in `docs/superpowers/plans/2026-09-11-carryall-followups-hygiene.md`.
 
 ## Two decisions
 
 Both change what landsraad requires of a user's repository, which this
-project treats as a one-way door. Each has a test pinning today's behaviour
-so the current answer is visible rather than accidental.
+project treats as a one-way door.
 
 ### 1. `build` exits 1 where `validate` and `serve` exit 2
 
-For the same malformed `repos.yaml`, `build` exits `exitUsage` (1) while
-`validate` and `serve` exit `exitValidation` (2). `repos-url` is somebody's
-YAML being wrong, which is what 2 means everywhere else in the tool, so
-`build` looks like the odd one out.
+For the same malformed `repos.yaml`, `build` exited `exitUsage` (1) while
+`validate` and `serve` exited `exitValidation` (2).
 
-Pinned by `TestBuildExitsWhenReposYAMLIsMalformed`
-(`cmd/landsraad/build_test.go`), whose comment says the same thing at
-length. Changing it changes a documented exit code.
+**Resolved by R36.** The inconsistency was wider than this: `validate`
+itself exited 1 for a bad `paths:` and 2 for a bad `url:`, and the README
+documented 1 for "a config error". There is now one rule: 2 when a file
+you wrote has a problem a diagnostic can point at, 1 when landsraad could
+not run. `build` exits 2 here.
 
 ### 2. `validate` fails inside a satellite repository
 
 Ruling R34 puts `teams.yaml` and `standards.yaml` in the root repository
-only. So `landsraad validate`, run inside a fetched satellite's own
-checkout, fails with `missing-teams` — a repository's own team gets an
-error in their CI about a file they were never meant to have.
+only, so `landsraad validate`, run inside a satellite's own checkout,
+failed with `missing-teams` about a file that team was never meant to have.
 
-`TestValidateToleratesTheFixturesCrossRepoRef`
-(`cmd/landsraad/validate_test.go`) asserts this against
-`testdata/multirepo/edge-gateway`, and reasons that "a real user only ever
-validates it as part of a checkout that has one." That reasoning is the
-open question, not the settled answer: a satellite's own CI has no such
-checkout, and the only workarounds available to that team are duplicating
-`teams.yaml` into every satellite — defeating the point of having one — or
-not running `validate` at all.
+**Resolved by R37:** `landsraad validate --satellite` skips owner
+resolution and says so. Without the flag nothing changes.
 
 ## One root, three symptoms
 
-`NewFS` marks `"."` listed at construction without proof that anything
-enumerated the root. Three known issues are that one fact:
+`NewFS` marked `"."` listed at construction without proof that anything
+enumerated the root. Three known issues were that one fact:
 
-- `GitLab.Open` on non-root prefixes leaves a root marked listed whose
-  contents nobody fetched, so `fs.Stat` answers `fs.ErrNotExist` for a file
-  sitting in the repository — the false statement `ErrNotListed` exists to
-  prevent. A test currently pins that `ErrNotExist` answer.
-- `FS.lookup`'s climb inherits the same imprecision at `"."`. It does not
-  introduce it — the immediate-parent rule already gave the same confident
-  answer one level down — and the code says so at `internal/fetch/fs.go`.
-- `docsDirs`' comment (`cmd/landsraad/repos.go`) justifies never returning
-  `"."` with "both adapters already list the repository root", which is
-  true of GitHub and false of GitLab.
+- `GitLab.Open` on non-root prefixes left a root marked listed whose
+  contents nobody fetched, so `fs.Stat` answered `fs.ErrNotExist` for a
+  file sitting in the repository.
+- `FS.lookup`'s climb inherited the same imprecision at `"."`.
+- `docsDirs`' comment was said to claim "both adapters already list the
+  repository root". **Correction:** that was already out of date when this
+  file was written; the comment had been corrected to say GitLab's root is
+  not known.
 
-Fixing the flag honestly reaches `fs.Glob` inside `discover.Find`, which is
-why it was not a finish-line change. Treat it as one item.
+**Resolved by R45**, and not by `NewFS` alone. Listing the GitLab root and
+nothing else would have made a missing `docs/runbooks` under an existing
+`docs/` read as "never looked", and a 404 cannot stand in for a listing:
+GitLab answers one for a missing path only from 17.7, and also when Gitaly
+is down. A directory is now marked listed only by a listing that covered
+it, which is the discipline GitHub's descent already followed. `fs.Glob`
+did not need to change: `discover.Find` treats both answers the same.
 
 ## Deferred
 
 ### Missing tests, behaviour believed correct
 
-- A cache hit whose bytes fail `verifyBlob` falls through to a real fetch
-  (`internal/fetch/blobs.go`). Correct by inspection, untested.
-- No test asserts the retry *count* for a rate-limited 403.
+- A cache hit whose bytes fail `verifyBlob` falls through to a real fetch.
+  **Hygiene Task 6**, with a valid hit alongside it: no test took any cache
+  hit at all.
+- No test asserted the retry *count* for a rate-limited 403. **R44** for a
+  spent quota, which is no longer retried when the retry would fire before
+  the reset; **hygiene Task 4** for a 403 with quota left and a 429's
+  `Retry-After`.
 - No coverage of a trailing-slash `BaseURL`, or of a populated query.
-- `literalPrefixes`' edge cases have no direct unit test; `ancestorsOf`'s
-  multi-level reversal is correct by inspection only.
-- `blobCache.Put`'s exact rejection message is unasserted.
-- `workspace.FetcherFor` is exercised only through `multiLastEdit`.
-- `assemble`'s `len(src) > 1` gate also changes the case where files match
-  but every one fails to parse. That is closer to pre-Plan-4 behaviour than
-  what it replaced, and has no test either way.
+  **Hygiene Task 4.**
+- `literalPrefixes`' edge cases and `ancestorsOf`'s multi-level reversal.
+  **Hygiene Task 7.**
+- `blobCache.Put`'s exact rejection message. **Hygiene Task 8.**
+- `workspace.FetcherFor` was exercised only through `multiLastEdit`.
+  **Hygiene Task 9**, which covers the three routes through `multiLastEdit`
+  that had no test.
+- `assemble`'s `len(src) > 1` gate. **R42.** It was a regression, not a
+  neutral change: since Plan 4, a run where every `service.yaml` failed to
+  parse also hid every `teams.yaml` diagnostic.
 
 ### Latent correctness
 
-- `summarise` truncates at `s[:200]` (`internal/fetch/client.go`), which can
-  split a multi-byte rune and put invalid UTF-8 in a diagnostic.
-- `firstErr` in `fetchBlobs` is whichever worker loses the race, so two
-  failures in one repository can print differently across runs. `Paths` is
-  sorted for reproducibility; this is not.
-- A response over 64 MB is silently truncated by the `io.LimitReader`. A
-  blob would fail SHA verification; a tree listing would fail to parse — so
-  it surfaces as a confusing error rather than "response too large".
-- `ingest.go` collapses `ErrNotListed` into "no results" when reading
-  `.landsraad/checks`. Not currently reachable: `docsDirs` always seeds the
-  directory and `Expand` runs first.
-- `diag.Text` never prints `Repo`, so a satellite's `missing-file` says
-  `service.yaml:4` without naming the repository it came from.
-- `Expand`-before-`contentSet` ordering is enforced by comments, not types.
-  Running them out of order now makes `CheckFiles` report a file that is
-  really there as missing.
+- `summarise` could split a multi-byte rune. **Hygiene Task 1.**
+- `firstErr` in `fetchBlobs` was whichever worker lost the race. **Hygiene
+  Task 6.** Worse than stated: the first sorted path was printed beside
+  another path's error.
+- A response over 64 MB was silently truncated. **Hygiene Task 3**, which
+  also keeps the refusal from being retried.
+- `ingest.go` collapsed `ErrNotListed` into "no results". **R40**, which
+  also reports a `.landsraad/checks` that is a file, or cannot be read, on
+  any filesystem.
+- `diag.Text` never printed `Repo`. **R41.** `Repo` meant two things; it now
+  always names the repository that holds `File`, and multi-repository
+  `build` and `serve` print it.
+- `Expand`-before-`contentSet` ordering was enforced by comments, not
+  types. **Correction:** out of order, the result is `docs-unreadable`,
+  labelled a landsraad bug, not a false `missing-file`, because
+  `CheckFiles` stats after `Expand` has listed the directory. **Hygiene
+  Task 13** makes the order a type.
 
 ### Cosmetic
 
-- `blobcache.go`'s `var _ fetch.Cache` comment says nothing else references
-  `*blobCache` as a `fetch.Cache`. `cacheFor` does, and the compiler checks
-  the same thing.
-- `repoFailure.URL` and `.Line` are written and never read, though
-  `config.Repo.Line`'s doc comment promises a fetch failure will point at
-  the line that named the repository.
-- `serve.go` shadows its `w *workspace` parameter with the fsnotify
-  watcher. Compiles only because the workspace is unused after `newRebuild`.
-- `ClientOptions.MaxAttempts` has no production consumer; only tests set it.
-- `fetch.Cache` documents no concurrency contract although `fetchBlobs`
-  calls it from parallel workers, while `*FS` next door documents a careful
-  single-goroutine one. Both shipped implementations are safe.
-- `README` says `tokenVarName` replaces every non-alphanumeric *byte*; it
-  iterates runes.
-- A `local: true` entry with a `name:` and no `url:` is rejected for a URL
-  nothing ever reads.
-- `internal/render/docs.go`'s `docsFor` comment reads as universal against a
-  deliberate early return a few lines below.
-- `github.go`'s `ref string // resolved on first use` predates the mutex
-  that now guards every access to it.
-- `blobcache.go` defers `os.Remove` on the temp file even after a successful
-  rename — one failed syscall, harmless.
-- The malformed-`repos.yaml` fixture and its expected diagnostic are spelled
-  out in three tests. A fourth would justify extracting it.
+- `blobcache.go`'s `var _ fetch.Cache` comment. **Hygiene Task 8.**
+- `repoFailure.URL` and `.Line` were written and never read. **R38:** a
+  fetch failure now cites the line that named the repository; `URL` is
+  gone.
+- `serve.go` shadowed its `w *workspace` parameter with the fsnotify
+  watcher. **Correction:** the shadow would compile even if the workspace
+  were used, so this was readability only. **Hygiene Task 11.**
+- `ClientOptions.MaxAttempts` had no production consumer. **Hygiene Task 2:**
+  a constant.
+- `fetch.Cache` documented no concurrency contract. **Hygiene Task 11.**
+- `README` said `tokenVarName` replaces every non-alphanumeric *byte*.
+  **Hygiene Task 10.**
+- A `local: true` entry with a `name:` and no `url:` is rejected. **R39:**
+  the rejection stays, because loosening `repos.yaml` cannot be undone.
+  `localRepoName` now picks the local entry by `local:` and `name:`.
+- `docsFor`'s comment read as universal. **Hygiene Task 11.**
+- `github.go`'s `ref` comment predated the mutex. **Hygiene Task 11.**
+- `blobcache.go` deferred `os.Remove` even after a successful rename.
+  **Hygiene Task 8:** commented, not restructured.
+- The malformed-`repos.yaml` fixture was spelled out in three tests.
+  **Correction:** four. **Hygiene Task 12.**
 
 ## Deliberately not done
 
@@ -128,6 +133,7 @@ The `GitHub` and `GitLab` adapters duplicate roughly 25–30 lines across
 `resolveRef` and `LastEdit` — a memo-plus-mutex pattern in which a data race
 was already found once and fixed in both copies by hand. Both a review and
 an audit raised extracting it, and both agreed waiting is defensible: this
-project requires three examples for an abstraction, and there are two. A
-third adapter is the trigger; extract then, and extract only the lock
-discipline, not the endpoints or JSON shapes, which differ honestly.
+project requires three examples for an abstraction, and there are two —
+still two when this file was closed. A third adapter is the trigger;
+extract then, and extract only the lock discipline, not the endpoints or
+JSON shapes, which differ honestly.

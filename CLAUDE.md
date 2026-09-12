@@ -14,12 +14,16 @@ platform team.
 | Plan 2 — scorecard and generated artefacts, 12 tasks | `docs/superpowers/plans/2026-09-09-landsraad-scorecard-and-artifacts.md` |
 | Plan 3 — the portal renderer, 15 tasks | `docs/superpowers/plans/2026-09-09-landsraad-portal-renderer.md` |
 | Plan 4 — Carryall, multi-repo fetching, 16 tasks | `docs/superpowers/plans/2026-09-10-landsraad-carryall.md` |
+| Carryall follow-ups — design, rulings R36–R45 | `docs/superpowers/specs/2026-09-11-carryall-followups-design.md` |
+| Carryall follow-ups — behaviour, 13 tasks | `docs/superpowers/plans/2026-09-11-carryall-followups-behaviour.md` |
+| Carryall follow-ups — hygiene, 14 tasks | `docs/superpowers/plans/2026-09-11-carryall-followups-hygiene.md` |
 | Composition principles in depth | `/composition` |
 
 Plan 1 delivered scope A, the catalog core (`validate`). Plan 2 delivered B and
 C (`gen`, `score`). Plan 3 delivered D, the portal (`build`, `serve`), against
 the local repository. Plan 4 delivered Carryall — multi-repo fetching over the
-GitHub and GitLab APIs. v1 is complete.
+GitHub and GitLab APIs, completing v1. The Carryall follow-ups then closed
+what Plan 4 left behind: rulings R36–R45, then hygiene.
 
 ## Non-negotiable, and enforced by hooks
 
