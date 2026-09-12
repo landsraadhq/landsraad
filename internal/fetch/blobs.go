@@ -110,15 +110,13 @@ func fetchBlobs(ctx context.Context, f *FS, paths []string, parallel int, cache 
 	go func() { wg.Wait(); close(results) }()
 
 	seen := make(map[string]bool)
+	errs := make(map[string]error)
 	var failed []string
-	var firstErr error
 	for r := range results {
 		seen[r.path] = true
 		if r.err != nil {
 			failed = append(failed, r.path)
-			if firstErr == nil {
-				firstErr = r.err
-			}
+			errs[r.path] = r.err
 			continue
 		}
 		f.Put(r.path, r.data)
@@ -129,17 +127,19 @@ func fetchBlobs(ctx context.Context, f *FS, paths []string, parallel int, cache 
 	for _, p := range paths {
 		if !seen[p] {
 			failed = append(failed, p)
-			if firstErr == nil {
-				firstErr = ctx.Err()
-			}
+			errs[p] = ctx.Err()
 		}
 	}
 
-	if firstErr != nil {
+	if len(failed) > 0 {
 		// Sorted so the message is the same on every run: the worker pool
-		// finishes in whatever order it finishes.
+		// finishes in whatever order it finishes. The error is the first
+		// path's own, for the same reason. It used to be whichever failure
+		// arrived first, printed beside whichever path sorted first — one
+		// file's error against another file's name, and failureMessage's
+		// advice could change between two runs of the same build.
 		slices.Sort(failed)
-		return &FetchError{Paths: failed, Err: firstErr}
+		return &FetchError{Paths: failed, Err: errs[failed[0]]}
 	}
 	return nil
 }
