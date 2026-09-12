@@ -225,26 +225,26 @@ func Serve(root string, w *workspace, addr string, opts BuildOptions, now func()
 	}
 
 	if watch {
-		w, err := fsnotify.NewWatcher()
+		watcher, err := fsnotify.NewWatcher()
 		if err != nil {
 			return fmt.Errorf("cannot watch %s: %w", root, err)
 		}
-		defer w.Close()
-		if err := watchDirs(root, w); err != nil {
+		defer watcher.Close()
+		if err := watchDirs(root, watcher); err != nil {
 			return fmt.Errorf("cannot watch %s: %w", root, err)
 		}
 		go func() {
 			var timer *time.Timer
 			for {
 				select {
-				case event, ok := <-w.Events:
+				case event, ok := <-watcher.Events:
 					if !ok {
 						return
 					}
 					if event.Op&fsnotify.Create != 0 {
 						if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
 							// A new directory is invisible until added.
-							_ = watchDirs(event.Name, w)
+							_ = watchDirs(event.Name, watcher)
 						}
 					}
 					if timer != nil {
@@ -253,7 +253,7 @@ func Serve(root string, w *workspace, addr string, opts BuildOptions, now func()
 					timer = time.AfterFunc(debounce, func() {
 						rebuild("  change detected, rebuilding\n")
 					})
-				case err, ok := <-w.Errors:
+				case err, ok := <-watcher.Errors:
 					if !ok {
 						return
 					}

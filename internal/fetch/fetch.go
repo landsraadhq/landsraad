@@ -92,6 +92,18 @@ type Fetcher interface {
 // writes real files, and nothing under internal/ may import os. A miss is
 // never an error: a cache that cannot answer is a slow build, not a broken
 // one, so Get has no error return at all.
+//
+// Get and Put must be safe to call from several goroutines at once,
+// including two Puts for the same sha: fetchBlobs calls both from inside its
+// parallel workers, not from the single goroutine that funnels results into
+// *FS. Two paths with identical content share a sha, so two workers writing
+// one key at the same moment is an ordinary build, not a corner case.
+// Content addressing makes that race harmless for any implementation whose
+// writes are atomic — both writers hold the same bytes — which is why
+// blobCache's temp-file-and-rename is enough and NopCache needs nothing.
+//
+// fetchBlobs discards Put's error, for the same reason a miss is not one: a
+// cache that cannot write makes a slower build, not a wrong one.
 type Cache interface {
 	Get(sha string) ([]byte, bool)
 	Put(sha string, data []byte) error

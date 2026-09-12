@@ -233,8 +233,10 @@ func unreadableDoc(e *catalog.Entity, repoPath string, err error) diag.Diagnosti
 
 // docsFor renders one entity's documentation.
 //
-// Every failure is reported and skipped. One unreadable document must not
-// cost the reader the other pages (spec §12).
+// A failure is reported and skipped: one unreadable document must not cost
+// the reader the other pages (spec §12). The single exception is an entity
+// whose repository has no filesystem at all, which is reported once and
+// returns — see the comment where in.Sources is resolved.
 func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markdown, c *diag.Collector) entityDocs {
 	var out entityDocs
 	ref := e.Ref()

@@ -18,11 +18,14 @@ type GitHub struct {
 	cache    Cache
 	parallel int
 
-	ref string // resolved on first use
-
+	// mu guards ref, edits and shas. A caller expanding one directory can
+	// run against the same *GitHub as a LastEdit for a different path, and
+	// either may be the first to resolve ref lazily; ref was read and
+	// written unguarded until a review caught the race.
 	mu    sync.Mutex
+	ref   string            // repos.yaml's ref, or the default branch once resolveRef has asked
 	edits map[string]edit   // memoized LastEdit answers (ruling R35)
-	shas  map[string]string // subtree shas the truncated-tree descent (R28) has learned, keyed by path; guarded alongside ref and edits for the same reason both of those are
+	shas  map[string]string // subtree shas the truncated-tree descent (R28) has learned, keyed by path
 }
 
 type edit struct {
