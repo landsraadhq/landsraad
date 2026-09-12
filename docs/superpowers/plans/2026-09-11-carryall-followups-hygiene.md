@@ -1202,7 +1202,7 @@ Apply one mutation to `multiLastEdit` in `build.go` at a time, run the Step 2 co
 | Mutation | Must fail |
 |---|---|
 | `if repo == w.local {` → `if false && repo == w.local {` | `TestMultiLastEditAsksGitForTheLocalRepository` (got 1970, the fetcher's answer) |
-| `return t, known` → `return t, true` | `TestMultiLastEditRoutesEachRepository` (billing) |
+| `return t, known` → `return t, known \|\| true` | `TestMultiLastEditRoutesEachRepository` (billing). Written this way on purpose: the obvious `return t, true` leaves `known` unused, so the package fails to compile instead of the named test failing, which proves nothing. |
 | `if !ok { return time.Time{}, false }` → `if !ok { return time.Now(), true }` | `TestMultiLastEditRoutesEachRepository` (nobody) |
 
 `git diff --stat` then shows only the two test files.
