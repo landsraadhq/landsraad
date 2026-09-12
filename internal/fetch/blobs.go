@@ -20,21 +20,25 @@ type blobGetter func(ctx context.Context, sha string) ([]byte, error)
 // file or forty went missing. Err is kept for classification: IsNotFound and
 // IsRateLimited see through Unwrap, so cmd/ can tell "your token expired"
 // from "that file is gone".
+//
+// It does not name the repository. The one place that prints it,
+// failureMessage, already opens with "cannot read <name>:", and a Repo field
+// here made that line say the name twice: "cannot read edge-gateway:
+// edge-gateway: cannot fetch …".
 type FetchError struct {
-	Repo  string
 	Paths []string
 	Err   error
 }
 
 func (e *FetchError) Error() string {
 	if len(e.Paths) == 0 {
-		return fmt.Sprintf("%s: cannot fetch files: %v", e.Repo, e.Err)
+		return fmt.Sprintf("cannot fetch files: %v", e.Err)
 	}
 	if len(e.Paths) == 1 {
-		return fmt.Sprintf("%s: cannot fetch %s: %v", e.Repo, e.Paths[0], e.Err)
+		return fmt.Sprintf("cannot fetch %s: %v", e.Paths[0], e.Err)
 	}
-	return fmt.Sprintf("%s: cannot fetch %d files, starting with %s: %v",
-		e.Repo, len(e.Paths), e.Paths[0], e.Err)
+	return fmt.Sprintf("cannot fetch %d files, starting with %s: %v",
+		len(e.Paths), e.Paths[0], e.Err)
 }
 
 func (e *FetchError) Unwrap() error { return e.Err }
@@ -45,7 +49,7 @@ func (e *FetchError) Unwrap() error { return e.Err }
 // nothing else that happens here. The cache is consulted first and populated
 // after, keyed on the git blob sha from the tree listing — content-addressed,
 // so a hit cannot be stale (ruling R27).
-func fetchBlobs(ctx context.Context, repo string, f *FS, paths []string, parallel int, cache Cache, get blobGetter) error {
+func fetchBlobs(ctx context.Context, f *FS, paths []string, parallel int, cache Cache, get blobGetter) error {
 	if parallel < 1 {
 		parallel = 1
 	}
@@ -135,7 +139,7 @@ func fetchBlobs(ctx context.Context, repo string, f *FS, paths []string, paralle
 		// Sorted so the message is the same on every run: the worker pool
 		// finishes in whatever order it finishes.
 		slices.Sort(failed)
-		return &FetchError{Repo: repo, Paths: failed, Err: firstErr}
+		return &FetchError{Paths: failed, Err: firstErr}
 	}
 	return nil
 }

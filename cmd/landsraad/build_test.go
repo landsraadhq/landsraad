@@ -552,6 +552,25 @@ func TestReportFetchFailuresRefusalTrailerIsPlural(t *testing.T) {
 	}
 }
 
+// The whole line a user reads for a failed blob, with R38's repos.yaml line
+// in front of it: the repository named once.
+func TestReportFetchFailuresNamesAFailedBlobsRepositoryOnce(t *testing.T) {
+	fails := []repoFailure{{
+		Name: "edge-gateway", Line: 4, Kind: "github",
+		Err: &fetch.FetchError{Paths: []string{"docs/index.md"}, Err: errors.New("boom")},
+	}}
+	var errOut bytes.Buffer
+	if code := reportFetchFailures(fails, false, &errOut); code != exitUsage {
+		t.Errorf("code = %d, want %d", code, exitUsage)
+	}
+	want := "error: repos.yaml:4: cannot read edge-gateway: cannot fetch docs/index.md: boom\n" +
+		"refusing to render a portal that is missing 1 repository; " +
+		"pass --allow-partial to render one anyway, with a banner saying so\n"
+	if got := errOut.String(); got != want {
+		t.Errorf("errOut = %q, want %q", got, want)
+	}
+}
+
 func TestPartialBanner(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
@@ -654,6 +673,15 @@ func TestFailureMessage(t *testing.T) {
 				Err: &fetch.StatusError{Status: 404, RateRemaining: -1}},
 			"cannot read edge: not found. A private repository with no token looks exactly like this; " +
 				"check the url and that LANDSRAAD_TOKEN_EDGE is set",
+		},
+		// A FetchError used to name its repository too, so this line said
+		// it twice: "cannot read edge: edge: cannot fetch docs/index.md: boom".
+		{
+			"a failed blob names the repository once",
+			repoFailure{Name: "edge", Kind: "github", Err: &fetch.FetchError{
+				Paths: []string{"docs/index.md"}, Err: errors.New("boom"),
+			}},
+			"cannot read edge: cannot fetch docs/index.md: boom",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

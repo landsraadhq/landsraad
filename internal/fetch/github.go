@@ -162,7 +162,7 @@ func (g *GitHub) Expand(ctx context.Context, f *FS, dirs []string) error {
 }
 
 func (g *GitHub) Fetch(ctx context.Context, f *FS, paths []string) error {
-	return fetchBlobs(ctx, g.repo.Name, f, paths, g.parallel, g.cache,
+	return fetchBlobs(ctx, f, paths, g.parallel, g.cache,
 		func(ctx context.Context, sha string) ([]byte, error) {
 			body, _, err := g.c.Get(ctx, g.base()+"/git/blobs/"+url.PathEscape(sha),
 				nil, "application/vnd.github.raw+json")

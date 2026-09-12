@@ -332,7 +332,7 @@ func (g *GitLab) Expand(ctx context.Context, f *FS, dirs []string) error {
 }
 
 func (g *GitLab) Fetch(ctx context.Context, f *FS, paths []string) error {
-	return fetchBlobs(ctx, g.repo.Name, f, paths, g.parallel, g.cache,
+	return fetchBlobs(ctx, f, paths, g.parallel, g.cache,
 		func(ctx context.Context, sha string) ([]byte, error) {
 			body, _, err := g.c.Get(ctx,
 				g.project()+"/repository/blobs/"+url.PathEscape(sha)+"/raw", nil, "")
