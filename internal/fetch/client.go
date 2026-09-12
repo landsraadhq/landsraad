@@ -166,12 +166,17 @@ func (c *Client) once(ctx context.Context, target, endpoint, accept string) ([]b
 		return nil, nil, fmt.Errorf("GET %s: %w", endpoint, c.redact(err))
 	}
 	defer resp.Body.Close()
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	// One byte past the limit, so a response that fills it exactly is told
+	// apart from one that did not fit.
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if resp.StatusCode/100 != 2 {
 		return nil, nil, c.statusError(resp, endpoint, body)
 	}
 	if readErr != nil {
 		return nil, nil, fmt.Errorf("GET %s: cannot read the response: %w", endpoint, readErr)
+	}
+	if len(body) > maxResponseBytes {
+		return nil, nil, fmt.Errorf("GET %s: %w", endpoint, errTooLarge)
 	}
 	return body, resp.Header, nil
 }
@@ -243,6 +248,19 @@ func (c *Client) redactString(s string) string {
 	return strings.ReplaceAll(s, c.token, "[redacted]")
 }
 
+// maxResponseBytes caps one response. A tree listing never gets near it —
+// GitHub truncates a recursive listing at 7 MB and GitLab pages at 100 rows
+// — so in practice this is a blob, which GitHub serves up to 100 MB.
+const maxResponseBytes = 64 << 20
+
+// errTooLarge is a response that did not fit under maxResponseBytes.
+//
+// The limit used to truncate silently, and the truncated blob then failed
+// its sha check, so a size limit reached the user as corruption. It is not
+// retryable: asking again downloads the same bytes to be refused the same
+// way.
+var errTooLarge = fmt.Errorf("response larger than %d MB", maxResponseBytes>>20)
+
 // summarise trims a response body to something printable. A host's error
 // body can be a full HTML page, and a diagnostic is one line.
 //
@@ -268,11 +286,13 @@ func summarise(body string) string {
 // retryable is true for the failures that go away on their own: a 5xx, a
 // rate limit, and a transport error. A 404 is an answer and a 401 is a
 // decision; repeating either spends somebody's quota to be told the same
-// thing three times.
+// thing three times. So is a response too large to accept.
 func retryable(err error) bool {
 	var se *StatusError
 	if !errors.As(err, &se) {
-		return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+		return !errors.Is(err, context.Canceled) &&
+			!errors.Is(err, context.DeadlineExceeded) &&
+			!errors.Is(err, errTooLarge)
 	}
 	return se.Status/100 == 5 || IsRateLimited(err)
 }

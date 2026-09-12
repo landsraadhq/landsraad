@@ -426,3 +426,48 @@ func TestSummariseNeverSplitsACharacter(t *testing.T) {
 		})
 	}
 }
+
+// A response over the limit is refused by name, once.
+//
+// io.LimitReader used to stop at 64 MB and say nothing, so a 65 MB blob
+// arrived truncated and failed its sha check: a corruption message for a
+// size limit. And retryable treats any non-status error as transient, so
+// the refusal must be excluded or it downloads 64 MB three times.
+//
+// Two real 64 MB responses, deliberately. The limit is a constant with no
+// test knob (see maxAttempts for why), and the exact boundary is where an
+// off-by-one would hide.
+func TestClientRefusesAResponseOverTheLimit(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		size    int
+		wantErr string
+	}{
+		{"exactly the limit is accepted", maxResponseBytes, ""},
+		{"one byte over is refused", maxResponseBytes + 1, "GET /big: response larger than 64 MB"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls int
+			c, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.Write(make([]byte, tt.size))
+			})
+			body, _, err := c.Get(context.Background(), "/big", nil, "")
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Get: %v", err)
+				}
+				if len(body) != tt.size {
+					t.Errorf("len(body) = %d, want %d", len(body), tt.size)
+				}
+				return
+			}
+			if err == nil || err.Error() != tt.wantErr {
+				t.Fatalf("err = %v, want %q", err, tt.wantErr)
+			}
+			if calls != 1 {
+				t.Errorf("made %d requests, want 1: a response too large once is too large every time", calls)
+			}
+		})
+	}
+}
