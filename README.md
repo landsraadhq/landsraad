@@ -128,10 +128,11 @@ Quality report GitLab renders on the MR.
 Both can be forced explicitly with `--format text|json|github|gitlab`.
 Every command exits `0` clean, `2` when a file you wrote has a problem a
 diagnostic points at — a `service.yaml`, `teams.yaml`, `repos.yaml` or
-`.landsraad/checks` file — and `1` when landsraad could not run: a bad flag,
-an unreadable directory, a repository it could not fetch. `score` also exits
-`3` when the catalog is valid and a service fails a check its tier requires.
-Script off the exit code, not the output.
+`.landsraad/checks` file — or when `gen --check` finds a generated artifact
+stale, and `1` when landsraad could not run: a bad flag, an unreadable
+directory, a repository it could not fetch. `score` also exits `3` when the
+catalog is valid and a service fails a check its tier requires. Script off
+the exit code, not the output.
 
 ## The portal
 
