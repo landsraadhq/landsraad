@@ -408,6 +408,55 @@ func (f errFetcher) LastEdit(context.Context, string) (time.Time, bool, error) {
 	return time.Time{}, false, f.err
 }
 
+// fixedEditFetcher is a host with one answer for every path. Like
+// errFetcher, only LastEdit is reachable.
+type fixedEditFetcher struct {
+	t     time.Time
+	known bool
+}
+
+func (f fixedEditFetcher) Open(context.Context, []string) (*fetch.FS, error) {
+	panic("fixedEditFetcher.Open: openRepos is not part of this test")
+}
+func (f fixedEditFetcher) Expand(context.Context, *fetch.FS, []string) error {
+	panic("fixedEditFetcher.Expand: openRepos is not part of this test")
+}
+func (f fixedEditFetcher) Fetch(context.Context, *fetch.FS, []string) error {
+	panic("fixedEditFetcher.Fetch: openRepos is not part of this test")
+}
+func (f fixedEditFetcher) LastEdit(context.Context, string) (time.Time, bool, error) {
+	return f.t, f.known, nil
+}
+
+// multiLastEdit's routes other than a host error, which
+// TestBuildReportsAHostThatCannotAnswerDocsFresh covers. None of these fail,
+// so none may record a failure.
+func TestMultiLastEditRoutesEachRepository(t *testing.T) {
+	when := time.Date(2026, 8, 1, 9, 30, 0, 0, time.UTC)
+	w := &workspace{
+		local: "platform",
+		fetchers: map[string]fetch.Fetcher{
+			"edge-gateway": fixedEditFetcher{t: when, known: true},
+			"billing":      fixedEditFetcher{known: false},
+		},
+		edits: newLastEditLog(),
+	}
+	lastEdit := multiLastEdit(context.Background(), t.TempDir(), w)
+
+	if got, ok := lastEdit("edge-gateway", "docs"); !ok || !got.Equal(when) {
+		t.Errorf("remote: LastEdit = %v, %v; want %v, true — the host's answer", got, ok, when)
+	}
+	if got, ok := lastEdit("billing", "docs"); ok {
+		t.Errorf("remote with no history: LastEdit = %v, true; want false — unknown, not a date", got)
+	}
+	if got, ok := lastEdit("nobody", "docs"); ok {
+		t.Errorf("repository with no fetcher: LastEdit = %v, true; want false", got)
+	}
+	if got := w.TakeLastEditFailures(); len(got) != 0 {
+		t.Errorf("recorded %v, want no failures: nothing here failed", got)
+	}
+}
+
 // remoteWithTwoDocumentedServices is a fetched repository holding two
 // entities that both have documentation, so docs-fresh asks its host twice.
 func remoteWithTwoDocumentedServices() fstest.MapFS {
