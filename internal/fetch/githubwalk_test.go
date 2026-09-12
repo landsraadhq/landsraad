@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 // bigRepoServer always reports the recursive listing as truncated, so every
@@ -215,5 +217,26 @@ func TestGitHubWalkStopsOnAMidDescentError(t *testing.T) {
 	g := newTestGitHub(t, srv, "trunk")
 	if _, err := g.Open(context.Background(), []string{"services/*"}); err == nil {
 		t.Fatal("Open with a failing mid-descent tree request returned a nil error")
+	}
+}
+
+// ancestorsOf is the order both adapters list a directory's parents in:
+// root first, so each listing can see the next segment. No behavioural test
+// reaches a case with more than one ancestor whose order matters.
+func TestAncestorsOf(t *testing.T) {
+	for _, tt := range []struct {
+		dir  string
+		want []string
+	}{
+		{".", nil},
+		{"a", nil},
+		{"a/b", []string{"a"}},
+		{"a/b/c/d", []string{"a", "a/b", "a/b/c"}},
+	} {
+		t.Run(tt.dir, func(t *testing.T) {
+			if diff := cmp.Diff(tt.want, ancestorsOf(tt.dir)); diff != "" {
+				t.Errorf("ancestorsOf(%q) mismatch (-want +got):\n%s", tt.dir, diff)
+			}
+		})
 	}
 }

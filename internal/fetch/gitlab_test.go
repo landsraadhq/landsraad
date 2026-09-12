@@ -626,3 +626,30 @@ func TestGitLabBaseURL(t *testing.T) {
 		}
 	}
 }
+
+// literalPrefixes decides which directories GitLab.Open lists recursively.
+func TestLiteralPrefixes(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		patterns []string
+		want     []string
+	}{
+		{"no patterns lists the root", nil, []string{"."}},
+		{"each pattern's literal directory", []string{"services/*", "workers/*"}, []string{"services", "workers"}},
+		{"a repeated pattern is listed once", []string{"services/*", "services/*"}, []string{"services"}},
+		{"a leading wildcard needs the root", []string{"*/api"}, []string{"."}},
+		{"the root subsumes everything else", []string{"services/*", "."}, []string{"."}},
+		{"a literal path is its own prefix", []string{"services/api"}, []string{"services/api"}},
+		{"an empty pattern is the root", []string{""}, []string{"."}},
+		// Not subsumed, though services/api is inside services. Harmless
+		// since R45, because GitLab.Open skips a prefix an earlier recursive
+		// listing already covered; pinned so that changing it is a decision.
+		{"a nested prefix is kept", []string{"services/*", "services/api/*"}, []string{"services", "services/api"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if diff := cmp.Diff(tt.want, literalPrefixes(tt.patterns)); diff != "" {
+				t.Errorf("literalPrefixes(%q) mismatch (-want +got):\n%s", tt.patterns, diff)
+			}
+		})
+	}
+}
