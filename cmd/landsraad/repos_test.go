@@ -46,7 +46,7 @@ func TestContentSetIsEveryFileALaterStageReads(t *testing.T) {
 		"services/api/docs/index.md",
 		"services/api/runbook.md",
 	}
-	if diff := cmp.Diff(want, contentSet(fsys, []*catalog.Entity{e})); diff != "" {
+	if diff := cmp.Diff(want, contentSet(expanded{fsys: fsys, entities: []*catalog.Entity{e}})); diff != "" {
 		t.Errorf("contentSet mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -70,7 +70,7 @@ func TestContentSetSkipsAPathThatIsNotInTheListing(t *testing.T) {
 	e.Spec.Docs = "services/api/docs"          // not there either
 
 	want := []string{"services/api/runbook.md"}
-	if diff := cmp.Diff(want, contentSet(fsys, []*catalog.Entity{e})); diff != "" {
+	if diff := cmp.Diff(want, contentSet(expanded{fsys: fsys, entities: []*catalog.Entity{e}})); diff != "" {
 		t.Errorf("contentSet mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -80,7 +80,7 @@ func TestContentSetSkipsUnsetFields(t *testing.T) {
 	e := &catalog.Entity{SourceRepo: "mono", SourcePath: "service.yaml"}
 	e.Kind = "Library"
 	e.Metadata.Name = "lib"
-	if got := contentSet(fsys, []*catalog.Entity{e}); len(got) != 0 {
+	if got := contentSet(expanded{fsys: fsys, entities: []*catalog.Entity{e}}); len(got) != 0 {
 		t.Errorf("contentSet = %v, want none: the entity names no files", got)
 	}
 }

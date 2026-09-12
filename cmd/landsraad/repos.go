@@ -339,19 +339,16 @@ func openRepos(ctx context.Context, o reposOptions, c *diag.Collector) *workspac
 			var scratch diag.Collector
 			parsed := parseRepo(name, fsys, patterns, false, v, &scratch).entities
 
-			// Expand before contentSet: a spec.docs directory outside the
-			// configured paths may not be listed yet, and contentSet walks
-			// it to find the pages. The order is load-bearing twice over
-			// now: contentSet skips any path absent from the listing, so a
-			// runbook or an alerts file outside those paths would be
-			// dropped here — and then reported as missing by CheckFiles —
-			// if its directory had not been listed first. docsDirs is what
-			// puts all three kinds of directory into this call.
-			if err := fetcher.Expand(ctx, remote, docsDirs(parsed)); err != nil {
+			// expand lists every directory these entities name — spec.docs,
+			// and the directories holding spec.runbook and spec.alerts —
+			// and contentSet accepts nothing else, so the listing always
+			// comes first. See expanded.
+			x, err := expand(ctx, fetcher, remote, parsed)
+			if err != nil {
 				fail(err)
 				continue
 			}
-			if err := fetcher.Fetch(ctx, remote, contentSet(fsys, parsed)); err != nil {
+			if err := fetcher.Fetch(ctx, remote, contentSet(x)); err != nil {
 				fail(err)
 				continue
 			}
@@ -420,6 +417,32 @@ func openOne(ctx context.Context, r config.Repo, patterns []string, o reposOptio
 	return fsys, f, nil
 }
 
+// expanded is one repository's filesystem after every directory its
+// entities name has been listed: the only state in which contentSet's
+// answer is complete.
+//
+// The order used to be held by a comment at the call site. Out of order,
+// contentSet cannot see a runbook, an alerts file or a docs page outside
+// the configured paths, so none is fetched, and the stage that reads it
+// reports a landsraad bug (fetch.ErrNotFetched) instead of the page. expand
+// is the only function that builds one, and contentSet takes nothing else.
+// A struct literal in this package can still bypass it — the tests do, to
+// hand contentSet a listing directly — so this is a signpost for the next
+// reader, not a proof.
+type expanded struct {
+	fsys     fs.FS
+	entities []*catalog.Entity
+}
+
+// expand lists every directory docsDirs names, and returns the one input
+// contentSet accepts.
+func expand(ctx context.Context, f fetch.Fetcher, remote *fetch.FS, entities []*catalog.Entity) (expanded, error) {
+	if err := f.Expand(ctx, remote, docsDirs(entities)); err != nil {
+		return expanded{}, err
+	}
+	return expanded{fsys: remote, entities: entities}, nil
+}
+
 // contentSet is every file a later stage will read from this repository.
 //
 // Exactly five things, and the list is not a guess: it is every fs.ReadFile
@@ -449,7 +472,8 @@ func openOne(ctx context.Context, r config.Repo, patterns []string, o reposOptio
 // runbook's and an alerts file's directory: a file that genuinely exists but
 // sits outside the configured patterns has to be LISTED before this can tell
 // it apart from one that is not there at all.
-func contentSet(fsys fs.FS, entities []*catalog.Entity) []string {
+func contentSet(x expanded) []string {
+	fsys, entities := x.fsys, x.entities
 	seen := map[string]bool{}
 	add := func(p string) {
 		if p == "" || !fs.ValidPath(p) {
