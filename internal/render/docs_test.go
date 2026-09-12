@@ -15,7 +15,11 @@ import (
 )
 
 // failFS wraps an fstest.MapFS, making reads of one named path fail with a
-// real error.
+// real error. Compare cmd/landsraad/validate_test.go's and
+// internal/scorecard/ingest_test.go's failPathFS, which override
+// ReadDir+ReadFile instead of ReadFile+Stat — this one deliberately leaves
+// ReadDir working, because three of this file's call sites need the
+// directory walk to succeed while the read itself fails.
 //
 // fstest.MapFS implements ReadFile and Stat directly (confirmed against
 // $GOROOT/src/testing/fstest/mapfs.go), so io/fs's package-level ReadFile

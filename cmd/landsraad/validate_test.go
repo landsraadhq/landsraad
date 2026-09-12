@@ -607,7 +607,9 @@ func TestValidateAcceptsAWellFormedCheckResultsFile(t *testing.T) {
 
 // failPathFS is a MapFS on which one path cannot be read: ReadDir and
 // ReadFile of it fail with a permission error, the shape os.DirFS gives
-// without depending on the test process's own permissions.
+// without depending on the test process's own permissions. Byte-identical
+// to internal/scorecard/ingest_test.go's failPathFS; compare also render's
+// failFS, which overrides ReadFile+Stat instead of ReadDir+ReadFile.
 type failPathFS struct {
 	fstest.MapFS
 	path string
