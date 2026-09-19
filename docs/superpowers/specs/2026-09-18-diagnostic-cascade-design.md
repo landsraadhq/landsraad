@@ -227,8 +227,11 @@ so as written it invites re-adding precisely what this project removed.
 
 R46 moved the `teams.yaml` **read** above `loadCatalogScoped`'s give-up paths
 and stopped there. `owners-skipped` is emitted by `Teams.ValidateOwners`
-(`internal/config/teams.go:146`), which `assemble` calls at `gen.go:257` —
-below its own empty-catalog return at `gen.go:248`. So an unparseable
+(`internal/config/teams.go:151`), which `assemble` called only on its last
+line — below the early return in its empty-catalog branch. Those two
+`assemble` positions are named structurally and not by line number on
+purpose: this ruling's own fix moves both, and R48 above is about citations
+that quietly stop being true. So an unparseable
 `repos.yaml` still suppressed an unparseable `teams.yaml`'s note, which is the
 one thing R46 forbids, and `validate` reported it while `gen` and `score` did
 not, which is the disagreement R43 forbids.
