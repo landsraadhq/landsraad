@@ -214,8 +214,8 @@ func TestScoreReportsTeamsProblemsWhenReposYAMLFailedToParse(t *testing.T) {
 
 	_, code := Score(fsys, &out, &errOut, scoreOpts())
 
-	if code == exitOK {
-		t.Fatalf("a malformed repos.yaml must not exit clean, got %d", code)
+	if code != exitValidation {
+		t.Fatalf("exit = %d, want %d", code, exitValidation)
 	}
 	if want := "teams.yaml not found at the repository root, so no owner can be resolved"; !strings.Contains(out.String(), want) {
 		t.Errorf("score must report teams.yaml problems alongside repos-parse (R46); missing %q:\n%s", want, out.String())
