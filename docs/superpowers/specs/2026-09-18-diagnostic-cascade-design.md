@@ -27,11 +27,29 @@ play:
 | `repos-parse` | reported | reported |
 | `missing-teams` | reported | **gone** |
 
-`teams-parse` and `owners-skipped` are lost the same way, and `score` behaves
-identically — both reach `loadCatalog`. `validate` still reports them, because
-it calls `checkOwners` directly, so `gen` and `score` now disagree with
-`validate` about the same directory. That is what R43 ("one id for a missing
+`teams-parse` is lost the same way, and `score` behaves identically — both
+reach `loadCatalog`. `validate` still reports them, because it calls
+`checkOwners` directly, so `gen` and `score` now disagree with `validate`
+about the same directory. That is what R43 ("one id for a missing
 `teams.yaml`") exists to prevent.
+
+The loss is wider than `teams.yaml`, and this section originally understated
+it. Returning before `parseRepo` and `assemble` drops every diagnostic that
+needs the catalog those two build. Measured the same way, on a repository with
+a broken `repos.yaml`, a valid `teams.yaml` and one `service.yaml` *inside*
+the fallback globs carrying a bad `tier` and an undefined field:
+
+| | before | after |
+|---|---|---|
+| `repos-parse` | reported | reported |
+| `schema` at `/metadata/tier` | reported | **gone** |
+| `schema` at `/nonsense` | reported | **gone** |
+| `routing-no-pagerduty` | reported | **gone** |
+
+`owners-skipped` belongs in this second table, not the first: it comes from
+`Teams.ValidateOwners` (`internal/config/teams.go:151`), which `assemble`
+calls with the catalog in hand. Reading `teams.yaml` earlier cannot restore
+it, and the fix that does is in R46 below.
 
 The reasoning error is worth naming, because it is the same error in both
 directions: `repos-parse` and `missing-teams` are not two diagnostics for one
@@ -50,20 +68,53 @@ failure, but one call up, `loadReposFile` has every element of the defect
 
 `teams.yaml` is a different file from `repos.yaml` and from the embedded
 schema. No failure to read either of those may suppress its diagnostics. R42
-established this for the empty-catalog return; it holds for every return.
+established this for the empty-catalog return; it holds for every return in
+the single-repository load composition, and for every return in `Build` that
+is reached with a catalog to read. It does not reach above `Build`'s
+fetch-failure refusals (`reportFetchFailures` at `build.go:51`, and the
+all-repositories-failed branch below it): a fetch failure is neither of R46's
+two causes, nothing has been read yet when either fires, and hoisting the read
+above them would change what a network failure prints.
 
 `loadCatalogScoped` has two give-up paths before `assemble` — `v == nil` (a
 schema that will not compile, which is a landsraad bug) and `!patternsKnown`
 (added by `d8148f1`). Both currently skip the read. The second is the
 regression; the first is a pre-existing hole the second was modelled on.
 
-The mechanism is not a helper called on each return path, because that requires
-every future give-up path to remember. `assemble` uses its `cfg fs.FS`
-parameter for exactly one thing — `fs.ReadFile(cfg, "teams.yaml")` at
-`gen.go:163` — so `cfg` becomes `teams *config.Teams`, the read is hoisted
-above both give-up paths, and `assemble` can no longer run before it. Ordering
-becomes a compile error rather than a convention, which is the rule this
-project already applies elsewhere.
+**Part 1: hoist the read.** The mechanism is not a helper called on each
+return path, because that requires every future give-up path to remember.
+`assemble` uses its `cfg fs.FS` parameter for exactly one thing —
+`fs.ReadFile(cfg, "teams.yaml")` at `gen.go:163` — so `cfg` becomes
+`teams *config.Teams` and the read moves above both give-up paths. `assemble`
+can then no longer read `teams.yaml` itself, so it cannot run against an
+unread one. That is weaker than ordering-as-a-compile-error and must be
+described as what it is: `*config.Teams`'s zero value is valid and
+load-bearing — `assemble` treats `teams == nil` as "already reported" and
+returns all-nil — so `assemble(p, src, scope, nil, c)` still compiles and
+still bypasses `loadTeamsFor`. The type stops a caller passing a filesystem;
+it does not stop a caller passing a literal `nil`. Which is exactly why no
+give-up path may return above the `loadTeamsFor` call, and why that
+arrangement is held by tests rather than by the compiler.
+
+Part 1 restores what `loadTeamsFor` itself reports — `missing-teams`,
+`teams-parse` — and nothing more. It does not restore `owners-skipped`, the
+`schema` diagnostics on the files that were found, or the generators' checks,
+because all of those need the catalog `parseRepo` and `assemble` build, and
+the `!patternsKnown` return is above both.
+
+**Part 2: suppress the diagnostic, not the load.** `!patternsKnown` stops
+being a give-up path at all. It becomes a parameter on `parseRepo`, gating
+only the zero-found diagnostic — which is what `validate.go` already does,
+one condition on one `if`. `loadCatalogScoped` is then left with a single
+give-up path (`v == nil`), `gen` and `score` agree with `validate` on the
+same filesystem again (R43), and `no-entities` is still suppressed off a
+guessed pattern set.
+
+The multi-repository callers in `repos.go` pass `true` unconditionally. That
+is sound rather than lucky, and R47 is why: a `repos.yaml` that did not parse
+yields no repositories, so `ParseAll` and `openRepos`' phase-1 loop never
+iterate on that path. R47's "no flag need be threaded anywhere" was a claim
+about the multi-repository path, and it still holds there.
 
 Consequence accepted: a nil validator now also reports the user's `teams.yaml`
 problems. That is correct — the exit code is unchanged, and a landsraad bug is

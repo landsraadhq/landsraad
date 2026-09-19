@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -180,6 +181,102 @@ func TestGenReportsTeamsProblemsWhenReposYAMLFailedToParse(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("stdout must report both files' problems in one run (R46); missing:\n  %s\ngot:\n%s", want, got)
 		}
+	}
+}
+
+// Ruling R46's other half, and the half the first fix left open: an
+// unparseable repos.yaml must suppress `no-entities` and NOTHING ELSE. The
+// give-up path it replaced returned before parseRepo and assemble, so every
+// diagnostic that needs a catalog — the schema errors on the files that WERE
+// found, the generators' ownership errors — went with it, and gen disagreed
+// with validate about the same directory (ruling R43).
+//
+// Two fixtures, because the two halves cannot both be live in one. With a
+// service.yaml inside the fallback globs, files are found and `no-entities`
+// is structurally out of play, so the schema error is the live assertion.
+// With it outside them, nothing is found and `no-entities` is exactly what a
+// guessed pattern set would wrongly report.
+func TestGenSuppressesOnlyNoEntitiesWhenReposYAMLFailedToParse(t *testing.T) {
+	const brokenRepos = "kind: Service\n  bad: indent\n"
+	// A tier the schema rejects and a field it does not define: two
+	// diagnostics that can only exist if the files were found, read and
+	// validated after repos.yaml failed to parse.
+	badService := []byte("apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: api\n" +
+		"  owner: team-payments\n  tier: 9\n  lifecycle: production\n  nonsense: true\n")
+
+	cases := []struct {
+		name  string
+		fsys  fstest.MapFS
+		wants []string
+	}{
+		{
+			// services/* is one of config.DefaultPatterns(), so the guessed
+			// patterns do find this file.
+			name: "diagnostics that need a catalog survive",
+			fsys: fstest.MapFS{
+				"repos.yaml":                {Data: []byte(brokenRepos)},
+				"teams.yaml":                genFS()["teams.yaml"],
+				"services/api/service.yaml": {Data: badService},
+			},
+			wants: []string{
+				"at '/metadata/tier': value must be one of 1, 2, 3",
+				"at '/metadata/nonsense': unknown field 'nonsense'",
+			},
+		},
+		{
+			// svc/* is under no default glob, so the fallback finds nothing —
+			// precisely when the spurious no-entities appeared.
+			name: "no-entities stays suppressed",
+			fsys: fstest.MapFS{
+				"repos.yaml":           {Data: []byte(brokenRepos)},
+				"teams.yaml":           genFS()["teams.yaml"],
+				"svc/api/service.yaml": {Data: badService},
+			},
+			wants: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+
+			code := Gen(tc.fsys, t.TempDir(), &out, &errOut, diag.JSON{}, false)
+
+			if code != exitValidation {
+				t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitValidation, errOut.String())
+			}
+			var ds []diag.Diagnostic
+			if err := json.Unmarshal(out.Bytes(), &ds); err != nil {
+				t.Fatalf("stdout must be valid JSON: %v", err)
+			}
+			var parse, entities *diag.Diagnostic
+			byMessage := map[string]bool{}
+			for i := range ds {
+				byMessage[ds[i].Message] = true
+				switch ds[i].Check {
+				case "repos-parse":
+					parse = &ds[i]
+				case "no-entities":
+					entities = &ds[i]
+				}
+			}
+			if parse == nil {
+				t.Fatalf("no repos-parse diagnostic in %+v", ds)
+			}
+			want := "cannot parse repos file: yaml: line 2: mapping values are not allowed in this context"
+			if parse.Message != want {
+				t.Errorf("Message\n got: %s\nwant: %s", parse.Message, want)
+			}
+			if entities != nil {
+				t.Errorf("no-entities must be suppressed when repos.yaml failed to parse: "+
+					"it is a second diagnostic for one cause, and its hint (%q) names a file that already exists",
+					entities.Hint)
+			}
+			for _, w := range tc.wants {
+				if !byMessage[w] {
+					t.Errorf("suppressing no-entities must not suppress this too (R46/R43); missing:\n  %s\ngot: %+v", w, ds)
+				}
+			}
+		})
 	}
 }
 

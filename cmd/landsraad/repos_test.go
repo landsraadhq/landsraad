@@ -13,6 +13,7 @@ import (
 	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/config"
 	"github.com/landsraadhq/landsraad/internal/diag"
+	"github.com/landsraadhq/landsraad/internal/discover"
 	"github.com/landsraadhq/landsraad/internal/fetch"
 	"github.com/landsraadhq/landsraad/internal/schema"
 )
@@ -348,7 +349,7 @@ func TestParseRepoZeroFoundSoloExactMessage(t *testing.T) {
 	fsys := fstest.MapFS{"teams.yaml": {Data: []byte("x")}}
 	v := schemaValidatorForTest(t)
 	var c diag.Collector
-	p := parseRepo("monorepo", fsys, []string{"services/*"}, true, v, &c)
+	p := parseRepo("monorepo", fsys, []string{"services/*"}, true, true, v, &c)
 	if p.entities != nil || p.found != 0 {
 		t.Fatalf("parseRepo = %+v, want no entities and nothing found", p)
 	}
@@ -379,7 +380,7 @@ func TestParseRepoZeroFoundMultiExactMessage(t *testing.T) {
 	fsys := fstest.MapFS{"teams.yaml": {Data: []byte("x")}}
 	v := schemaValidatorForTest(t)
 	var c diag.Collector
-	p := parseRepo("monorepo", fsys, []string{"services/*"}, false, v, &c)
+	p := parseRepo("monorepo", fsys, []string{"services/*"}, false, true, v, &c)
 	if p.entities != nil || p.found != 0 {
 		t.Fatalf("parseRepo = %+v, want no entities and nothing found", p)
 	}
@@ -398,6 +399,60 @@ func TestParseRepoZeroFoundMultiExactMessage(t *testing.T) {
 	wantHint := "check this repository's `paths:` in repos.yaml"
 	if d.Hint != wantHint {
 		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, wantHint)
+	}
+}
+
+// parseRepo's third zero-found state, and the one the R46 completion added:
+// the patterns are a guess, because repos.yaml is present and did not parse,
+// so neither wording above is a fact about the user's layout and repos-parse
+// already carries the cause. Zero diagnostics from here — but note what this
+// asserts and what it does not: parseRepo returns early only because nothing
+// was found. Whatever it finds under a guessed pattern set it still reports
+// (see TestGenSuppressesOnlyNoEntitiesWhenReposYAMLFailedToParse), which is
+// the half the first R46 fix lost.
+func TestParseRepoZeroFoundPatternsUnknownAddsNoDiagnostic(t *testing.T) {
+	fsys := fstest.MapFS{"teams.yaml": {Data: []byte("x")}}
+	v := schemaValidatorForTest(t)
+	for _, solo := range []bool{true, false} {
+		var c diag.Collector
+		p := parseRepo("monorepo", fsys, []string{"services/*"}, solo, false, v, &c)
+		if p.entities != nil || p.found != 0 {
+			t.Errorf("solo=%v: parseRepo = %+v, want no entities and nothing found", solo, p)
+		}
+		if ds := c.Diagnostics(); len(ds) != 0 {
+			t.Errorf("solo=%v: parseRepo added %d diagnostics off a guessed pattern set, want 0: %+v", solo, len(ds), ds)
+		}
+	}
+}
+
+// The residual hole in R46's "ordering as a compile error", documented as
+// deliberate rather than left to be rediscovered. Giving assemble a
+// *config.Teams instead of an fs.FS stops it reading teams.yaml, so it cannot
+// run against an unread one — but *config.Teams's zero value is valid and
+// load-bearing: nil means "loadTeamsFor already reported why there is none",
+// and assemble returns all-nil rather than resolving owners against nothing.
+// So a caller CAN pass a literal nil and skip loadTeamsFor, which compiles
+// and is silent. The compiler narrows the hole; it does not close it, and the
+// arrangement that closes it — no give-up path above the loadTeamsFor call —
+// is held by behaviour, here and in TestGenReportsTeamsProblemsWhenReposYAMLFailedToParse.
+func TestAssembleWithNilTeamsReturnsAllNil(t *testing.T) {
+	entities := catalog.ParseAll("monorepo", []discover.File{{
+		Path: "services/api/service.yaml",
+		Data: []byte("apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: api\n" +
+			"  owner: team-payments\n  tier: 1\n  lifecycle: production\n"),
+	}}, &diag.Collector{})
+	if len(entities) != 1 {
+		t.Fatalf("fixture parsed %d entities, want 1 — the nil-teams branch is only reachable with a catalog", len(entities))
+	}
+
+	var c diag.Collector
+	cat, g, teams := assemble(parseResult{entities: entities, found: 1},
+		catalog.SingleSource("monorepo", fstest.MapFS{}), catalog.FullCatalog, nil, &c)
+
+	if cat != nil || g != nil || teams != nil {
+		t.Fatalf("assemble(..., nil, ...) = (%v, %v, %v), want all nil: a nil teams means "+
+			"loadTeamsFor already reported why there is none, so stage 5 must stop rather than "+
+			"resolve owners against nothing", cat, g, teams)
 	}
 }
 

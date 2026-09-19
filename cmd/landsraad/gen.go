@@ -47,9 +47,9 @@ func loadCatalog(fsys fs.FS, c *diag.Collector) (*catalog.Catalog, *config.Teams
 // and 5 against one filesystem. validate, gen and score all end here, and
 // ruling R30 keeps them there.
 func loadCatalogScoped(fsys fs.FS, scope catalog.Scope, c *diag.Collector) (*catalog.Catalog, *catalog.Graph, *config.Teams) {
-	// R46: before both give-up paths below. A schema that will not compile is
-	// a landsraad bug and an unparseable repos.yaml is the user's, and neither
-	// is a reason to hide what is wrong with teams.yaml.
+	// R46: before the one give-up path below. A schema that will not compile
+	// is a landsraad bug, and that is no reason to hide what is wrong with
+	// teams.yaml.
 	teams := loadTeamsFor(fsys, c)
 
 	v := defaultValidator(c)
@@ -61,16 +61,19 @@ func loadCatalogScoped(fsys fs.FS, scope catalog.Scope, c *diag.Collector) (*cat
 	// composition (validate, gen, score — ruling R30), so the "no entities"
 	// diagnostic below must be the one error main always produced, not the
 	// per-repository warning that exists for the multi-repository case.
+	//
+	// patternsKnown is threaded into parseRepo rather than being a second
+	// give-up path here. Returning on it — which is what the first R46 fix
+	// did — suppresses `no-entities` by abandoning the load, and takes every
+	// other diagnostic that needs a catalog with it: the schema errors on the
+	// files that WERE found, and the generators' ownership errors. validate
+	// reports those on the identical filesystem, because its own guard
+	// (validate.go's `patternsKnown` condition on one `if`) suppresses only
+	// its `no-entities` diagnostic. gen and score therefore disagreed with
+	// validate about the same directory, which is what ruling R43 exists to
+	// prevent.
 	patterns, patternsKnown := patternsFor(fsys, c)
-	if !patternsKnown {
-		// repos.yaml is present but did not parse, so patterns is a guess.
-		// parseRepo's no-entities would be a second diagnostic for the one
-		// cause repos-parse already reports (defect 4). teams.yaml's problems
-		// are already collected above, and are not a second diagnostic for
-		// that cause (ruling R46).
-		return nil, nil, nil
-	}
-	p := parseRepo(repo, fsys, patterns, true, v, c)
+	p := parseRepo(repo, fsys, patterns, true, patternsKnown, v, c)
 	return assemble(p, catalog.SingleSource(repo, fsys), scope, teams, c)
 }
 
@@ -103,7 +106,23 @@ type parseResult struct {
 // repository's paths are wrong". assemble mirrors this decision from the
 // source count it already has, so the two never disagree about whether a
 // run was solo.
-func parseRepo(name string, fsys fs.FS, patterns []string, solo bool, v *schema.Validator, c *diag.Collector) parseResult {
+//
+// patternsKnown is patternsFor's second return: false in exactly one case,
+// a repos.yaml that is present and did not parse, where patterns is a guess
+// standing in for a file nobody could read. What that guess did or did not
+// find is not a fact about the user's layout, so the zero-found diagnostic
+// below is skipped — and only that diagnostic. Everything else this function
+// reports is about files it actually found and read, and repos-parse is no
+// reason to withhold those (ruling R46).
+//
+// The multi-repository callers in repos.go pass true unconditionally, and
+// the spec's R47 is why: a repos.yaml that did not parse now yields no
+// repositories at all, so ParseAll has nothing to iterate and openRepos'
+// phase-1 loop never runs. R47's "no flag need be threaded anywhere" was a
+// claim about that path, and it still holds there; this parameter exists for
+// loadCatalogScoped, which reads the same unparseable file and then keeps
+// going against the fallback globs.
+func parseRepo(name string, fsys fs.FS, patterns []string, solo, patternsKnown bool, v *schema.Validator, c *diag.Collector) parseResult {
 	found, err := discover.Find(fsys, patterns)
 	if err != nil {
 		c.Add(diag.Diagnostic{
@@ -114,6 +133,14 @@ func parseRepo(name string, fsys fs.FS, patterns []string, solo bool, v *schema.
 		return parseResult{}
 	}
 	if len(found) == 0 {
+		if !patternsKnown {
+			// repos.yaml is present but did not parse, so patterns is a
+			// guess: either diagnostic below would be a second diagnostic
+			// for the one cause repos-parse already carries, hinting at a
+			// file that is sitting right there. Nothing was found, so there
+			// is nothing else to report from here either.
+			return parseResult{}
+		}
 		if solo {
 			// The single-repository message: one repository, one
 			// diagnostic, and the diagnostic that gates the build carries
@@ -160,10 +187,19 @@ func parseRepo(name string, fsys fs.FS, patterns []string, solo bool, v *schema.
 // teams.yaml is a different file from repos.yaml and from the embedded
 // schema, and a failure to read either of those is no reason to withhold a
 // fact about this one. R42 established that for the empty-catalog return;
-// ruling R46 makes it hold for all of them. assemble takes the result rather
-// than the filesystem, so it cannot run before this (ordering as a compile
-// error) — which is what the two give-up paths in loadCatalogScoped used to
-// do.
+// ruling R46 makes it hold for all of them.
+//
+// assemble takes the result rather than the filesystem, so it can no longer
+// read teams.yaml itself and therefore cannot run against an unread one.
+// That is weaker than ordering-as-a-compile-error, and the difference
+// matters: *config.Teams's zero value is valid and load-bearing — assemble
+// reads a nil teams as "already reported" and returns all-nil — so
+// assemble(p, src, scope, nil, c) compiles and skips this function entirely
+// (TestAssembleWithNilTeamsReturnsAllNil pins that behaviour). The type stops
+// a caller passing a filesystem; it does not stop a caller passing a literal
+// nil. Which is why no give-up path in a composition may return above the
+// call to this function, and why that is held by behaviour tests rather than
+// by the compiler.
 func loadTeamsFor(cfg fs.FS, c *diag.Collector) *config.Teams {
 	data, err := fs.ReadFile(cfg, "teams.yaml")
 	if err != nil {

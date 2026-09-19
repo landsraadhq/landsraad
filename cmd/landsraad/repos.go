@@ -218,7 +218,12 @@ func (w *workspace) ParseAll(v *schema.Validator, c *diag.Collector) parseResult
 		if !ok {
 			continue
 		}
-		p := parseRepo(name, fsys, w.patterns[name], solo, v, c)
+		// patternsKnown: true. R47 makes it sound rather than lucky — a
+		// repos.yaml that did not parse yields no repositories, so this loop
+		// does not run at all on that path and w.patterns holds only patterns
+		// a file that parsed asked for (or, for an entry naming none,
+		// defaults openRepos announced).
+		p := parseRepo(name, fsys, w.patterns[name], solo, true, v, c)
 		out.entities = append(out.entities, p.entities...)
 		out.found += p.found
 	}
@@ -332,12 +337,15 @@ func openRepos(ctx context.Context, o reposOptions, c *diag.Collector) *workspac
 			// in the workspace, so that cross-repository references resolve
 			// against the merged catalog rather than against one repository
 			// at a time. Parsing twice is cheap; fetching twice is not.
-			// solo is irrelevant here: scratch is thrown away below, so
-			// whichever "no entities" diagnostic parseRepo would have added
-			// to it never surfaces. ParseAll makes the real, kept decision
-			// once every repository is in the workspace.
+			// solo and patternsKnown are both irrelevant here: scratch is
+			// thrown away below, so whichever "no entities" diagnostic
+			// parseRepo would have added to it never surfaces. ParseAll
+			// makes the real, kept decision once every repository is in the
+			// workspace. patternsKnown is nonetheless true rather than
+			// false, because true is what it is: under R47 this loop is
+			// unreachable for a repos.yaml that did not parse.
 			var scratch diag.Collector
-			parsed := parseRepo(name, fsys, patterns, false, v, &scratch).entities
+			parsed := parseRepo(name, fsys, patterns, false, true, v, &scratch).entities
 
 			// expand lists every directory these entities name — spec.docs,
 			// and the directories holding spec.runbook and spec.alerts —
