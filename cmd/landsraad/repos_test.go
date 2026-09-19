@@ -406,7 +406,7 @@ func TestParseRepoZeroFoundMultiExactMessage(t *testing.T) {
 // assemble must add nothing more — not even a thinner echo of it.
 func TestAssembleZeroEntitiesSoloAddsNoDiagnostic(t *testing.T) {
 	var c diag.Collector
-	cat, g, teams := assemble(parseResult{}, catalog.SingleSource("monorepo", fstest.MapFS{}), catalog.FullCatalog, teamsOnly(), &c)
+	cat, g, teams := assemble(parseResult{}, catalog.SingleSource("monorepo", fstest.MapFS{}), catalog.FullCatalog, loadTeamsFor(teamsOnly(), &c), &c)
 	if cat != nil || g != nil || teams != nil {
 		t.Fatalf("assemble = (%v, %v, %v), want all nil", cat, g, teams)
 	}
@@ -421,7 +421,7 @@ func TestAssembleZeroEntitiesSoloAddsNoDiagnostic(t *testing.T) {
 func TestAssembleZeroEntitiesMultiExactMessage(t *testing.T) {
 	src := catalog.Sources{"repo-a": fstest.MapFS{}, "repo-b": fstest.MapFS{}}
 	var c diag.Collector
-	cat, g, teams := assemble(parseResult{}, src, catalog.FullCatalog, teamsOnly(), &c)
+	cat, g, teams := assemble(parseResult{}, src, catalog.FullCatalog, loadTeamsFor(teamsOnly(), &c), &c)
 	if cat != nil || g != nil || teams != nil {
 		t.Fatalf("assemble = (%v, %v, %v), want all nil", cat, g, teams)
 	}
@@ -467,7 +467,7 @@ func TestWorkspaceParseAllThenAssembleMultiRepoZeroMatchKeepsBothDiagnostics(t *
 	if len(p.entities) != 0 || p.found != 0 {
 		t.Fatalf("ParseAll = %+v, want no entities and nothing found", p)
 	}
-	cat, g, teams := assemble(p, w.Sources(), catalog.FullCatalog, teamsOnly(), &c)
+	cat, g, teams := assemble(p, w.Sources(), catalog.FullCatalog, loadTeamsFor(teamsOnly(), &c), &c)
 	if cat != nil || g != nil || teams != nil {
 		t.Fatalf("assemble = (%v, %v, %v), want all nil", cat, g, teams)
 	}
@@ -549,7 +549,7 @@ func TestAssembleDoesNotSayNothingWasFoundWhenFilesFailedToParse(t *testing.T) {
 	src := catalog.Sources{"repo-a": fstest.MapFS{}, "repo-b": fstest.MapFS{}}
 	var c diag.Collector
 
-	cat, g, teams := assemble(parseResult{found: 2}, src, catalog.FullCatalog, teamsOnly(), &c)
+	cat, g, teams := assemble(parseResult{found: 2}, src, catalog.FullCatalog, loadTeamsFor(teamsOnly(), &c), &c)
 
 	if cat != nil || g != nil || teams != nil {
 		t.Fatalf("assemble = (%v, %v, %v), want all nil for an empty catalog", cat, g, teams)

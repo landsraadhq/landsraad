@@ -152,6 +152,37 @@ func TestGenOnZeroMatchRepositoryEmitsExactlyOneDiagnostic(t *testing.T) {
 	}
 }
 
+// Ruling R46: teams.yaml is a different file from repos.yaml, so a
+// repos-parse error must not hide missing-teams. service.yaml sits INSIDE
+// the fallback globs deliberately, so no-entities is never in play and the
+// only thing under test is whether teams.yaml was read at all.
+func TestGenReportsTeamsProblemsWhenReposYAMLFailedToParse(t *testing.T) {
+	fsys := fstest.MapFS{
+		"repos.yaml":                {Data: []byte("kind: Service\n  bad: indent\n")},
+		"services/api/service.yaml": genFS()["services/api/service.yaml"],
+	}
+	var out, errOut bytes.Buffer
+
+	code := Gen(fsys, t.TempDir(), &out, &errOut, diagText(), false)
+
+	if code != exitValidation {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitValidation, errOut.String())
+	}
+	// Gen's error branch writes diagnostics to stdout (f.Write(out, ...)) and
+	// reserves stderr for the "refusing to generate..." summary — the same
+	// split TestGenOnZeroMatchRepositoryEmitsExactlyOneDiagnostic pins for the
+	// sibling zero-match case.
+	got := out.String()
+	for _, want := range []string{
+		"cannot parse repos file: yaml: line 2: mapping values are not allowed in this context",
+		"teams.yaml not found at the repository root, so no owner can be resolved",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stdout must report both files' problems in one run (R46); missing:\n  %s\ngot:\n%s", want, got)
+		}
+	}
+}
+
 // diagCollectorForTest hands out a collector whose diagnostics the test does
 // not care about: artifacts() reports through it, and these cases assert on
 // exit codes and file content instead.

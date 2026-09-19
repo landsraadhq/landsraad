@@ -47,6 +47,11 @@ func loadCatalog(fsys fs.FS, c *diag.Collector) (*catalog.Catalog, *config.Teams
 // and 5 against one filesystem. validate, gen and score all end here, and
 // ruling R30 keeps them there.
 func loadCatalogScoped(fsys fs.FS, scope catalog.Scope, c *diag.Collector) (*catalog.Catalog, *catalog.Graph, *config.Teams) {
+	// R46: before both give-up paths below. A schema that will not compile is
+	// a landsraad bug and an unparseable repos.yaml is the user's, and neither
+	// is a reason to hide what is wrong with teams.yaml.
+	teams := loadTeamsFor(fsys, c)
+
 	v := defaultValidator(c)
 	if v == nil {
 		return nil, nil, nil
@@ -60,14 +65,13 @@ func loadCatalogScoped(fsys fs.FS, scope catalog.Scope, c *diag.Collector) (*cat
 	if !patternsKnown {
 		// repos.yaml is present but did not parse, so patterns is a guess.
 		// parseRepo's no-entities would be a second diagnostic for the one
-		// cause repos-parse already reports, and nothing can be generated from
-		// a repository whose configuration could not be read anyway. Same
-		// "give up, the diagnostics already carry the reason" exit as the nil
-		// validator above (defect 4).
+		// cause repos-parse already reports (defect 4). teams.yaml's problems
+		// are already collected above, and are not a second diagnostic for
+		// that cause (ruling R46).
 		return nil, nil, nil
 	}
 	p := parseRepo(repo, fsys, patterns, true, v, c)
-	return assemble(p, catalog.SingleSource(repo, fsys), scope, fsys, c)
+	return assemble(p, catalog.SingleSource(repo, fsys), scope, teams, c)
 }
 
 // parseResult is stage 3's output: the entities, and how many catalog files
@@ -150,17 +154,19 @@ func parseRepo(name string, fsys fs.FS, patterns []string, solo bool, v *schema.
 	return parseResult{entities: catalog.ParseAll(name, files, c), found: len(found)}
 }
 
-// assemble runs stages 4 and 5 over every repository's entities at once, and
-// loads the configuration that lives in the repository the command is
-// standing in (ruling R34).
-func assemble(p parseResult, src catalog.Sources, scope catalog.Scope, cfg fs.FS, c *diag.Collector) (*catalog.Catalog, *catalog.Graph, *config.Teams) {
-	// teams.yaml first, so its own mistakes are reported whether or not any
-	// entity parsed. The empty-catalog return below used to come before this
-	// read, so since Plan 4 a run where every service.yaml failed to parse
-	// also hid every teams.yaml problem, and the user met them one run later
-	// (ruling R42).
-	var teams *config.Teams
-	if data, err := fs.ReadFile(cfg, "teams.yaml"); err != nil {
+// loadTeamsFor reads teams.yaml and reports its own mistakes.
+//
+// Called before every give-up path in the load composition, because
+// teams.yaml is a different file from repos.yaml and from the embedded
+// schema, and a failure to read either of those is no reason to withhold a
+// fact about this one. R42 established that for the empty-catalog return;
+// ruling R46 makes it hold for all of them. assemble takes the result rather
+// than the filesystem, so it cannot run before this (ordering as a compile
+// error) — which is what the two give-up paths in loadCatalogScoped used to
+// do.
+func loadTeamsFor(cfg fs.FS, c *diag.Collector) *config.Teams {
+	data, err := fs.ReadFile(cfg, "teams.yaml")
+	if err != nil {
 		c.Add(diag.Diagnostic{
 			Severity: diag.SevError, File: "teams.yaml", Line: 1,
 			// validate's id and message for the same absent file (ruling R43).
@@ -170,10 +176,17 @@ func assemble(p parseResult, src catalog.Sources, scope catalog.Scope, cfg fs.FS
 			Message: "teams.yaml not found at the repository root, so no owner can be resolved",
 			Hint:    "run `landsraad init` to create one",
 		})
-	} else {
-		teams = config.LoadTeams("teams.yaml", data, c)
+		return nil
 	}
+	return config.LoadTeams("teams.yaml", data, c)
+}
 
+// assemble runs stages 4 and 5 over every repository's entities at once,
+// against the configuration the command is standing in (ruling R34). teams is
+// loadTeamsFor's result, taken as a value rather than read here, so no caller
+// can reach stage 4 without teams.yaml's own diagnostics already collected
+// (ruling R46).
+func assemble(p parseResult, src catalog.Sources, scope catalog.Scope, teams *config.Teams, c *diag.Collector) (*catalog.Catalog, *catalog.Graph, *config.Teams) {
 	if len(p.entities) == 0 {
 		// len(src) > 1 mirrors parseRepo's solo flag exactly, from the same
 		// source of truth every caller already has (SingleSource for a

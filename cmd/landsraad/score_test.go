@@ -200,6 +200,28 @@ func TestScoreOnZeroMatchRepositoryEmitsExactlyOneDiagnostic(t *testing.T) {
 	}
 }
 
+// Ruling R46 for score, which reaches the same loadCatalog as gen. Score
+// writes diagnostics to stdout on the error path (opts.Format.Write(out, ...)
+// in Score, same as Gen's f.Write(out, ...)) and reserves stderr for the
+// "refusing to score..." summary, the same split
+// TestScoreOnZeroMatchRepositoryEmitsExactlyOneDiagnostic pins above.
+func TestScoreReportsTeamsProblemsWhenReposYAMLFailedToParse(t *testing.T) {
+	fsys := fstest.MapFS{
+		"repos.yaml":                {Data: []byte("kind: Service\n  bad: indent\n")},
+		"services/api/service.yaml": genFS()["services/api/service.yaml"],
+	}
+	var out, errOut bytes.Buffer
+
+	_, code := Score(fsys, &out, &errOut, scoreOpts())
+
+	if code == exitOK {
+		t.Fatalf("a malformed repos.yaml must not exit clean, got %d", code)
+	}
+	if want := "teams.yaml not found at the repository root, so no owner can be resolved"; !strings.Contains(out.String(), want) {
+		t.Errorf("score must report teams.yaml problems alongside repos-parse (R46); missing %q:\n%s", want, out.String())
+	}
+}
+
 // An error raised during scoring — not only during loadCatalog — must also
 // gate the exit code. Two producers reporting the same (entity, check) at the
 // same instant is scorecard.Ingest's checks-tie error (spec §6: "a tie is an

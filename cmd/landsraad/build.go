@@ -69,6 +69,7 @@ func Build(root fs.FS, w *workspace, errOut io.Writer, opts BuildOptions) ([]emi
 	}
 
 	v := defaultValidator(&c)
+	teams := loadTeamsFor(root, &c) // R46: above the give-up path below
 	if v == nil {
 		reportDiagnostics(errOut, c.Diagnostics(), len(w.Sources()) > 1)
 		return nil, exitValidation
@@ -76,7 +77,7 @@ func Build(root fs.FS, w *workspace, errOut io.Writer, opts BuildOptions) ([]emi
 
 	// FullCatalog, not LocalOnly: build claims to render the whole catalog,
 	// so a dangling reference is a hard failure (spec §7.1).
-	cat, g, teams := assemble(w.ParseAll(v, &c), w.Sources(), catalog.FullCatalog, root, &c)
+	cat, g, teams := assemble(w.ParseAll(v, &c), w.Sources(), catalog.FullCatalog, teams, &c)
 	if cat == nil || c.HasErrors() {
 		reportDiagnostics(errOut, c.Diagnostics(), len(w.Sources()) > 1)
 		fmt.Fprintf(errOut, "refusing to build a portal from a catalog with errors; it would publish the broken state as if it were the truth\n")
