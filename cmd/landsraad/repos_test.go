@@ -589,3 +589,50 @@ func TestLoadReposFileReturnsNoReposWhenParseFailed(t *testing.T) {
 		t.Fatalf("the cause must still be reported; no repos-parse in %+v", c.Diagnostics())
 	}
 }
+
+// Ruling R47's coverage at the seam build and serve actually share. Neither
+// command can be driven in-process for this scenario: both gate on a
+// malformed repos.yaml with os.Exit(exitValidation) from inside their RunE
+// closure, which would kill the test binary rather than let it observe the
+// result. openRepos is the highest seam that is both in-process reachable
+// and common to the two commands this fix changes the output of -- it is
+// where loadReposFile's return value turns into a workspace, and where
+// TestOpenReposEntryWithNoPathsAnnouncesDefaultPatterns above already
+// exercises the sibling degraded mode the same way.
+func TestOpenReposReturnsNoSourcesWhenReposYAMLFailedToParse(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "repos.yaml", "kind: Service\n  bad: indent\n")
+
+	var c diag.Collector
+	w := openRepos(context.Background(), reposOptions{
+		Root: dir, RootFS: os.DirFS(dir),
+		Lookup: func(string) (string, bool) { return "", false },
+		ErrOut: io.Discard,
+	}, &c)
+
+	if got := w.Sources().Names(); len(got) != 0 {
+		t.Fatalf("Sources().Names() = %v, want none: a repos.yaml that did not parse configures no repositories", got)
+	}
+
+	var sawParse, sawDefault bool
+	var parseMessage string
+	for _, d := range c.Diagnostics() {
+		switch d.Check {
+		case "repos-parse":
+			sawParse = true
+			parseMessage = d.Message
+		case "default-patterns":
+			sawDefault = true
+		}
+	}
+	if !sawParse {
+		t.Fatalf("no repos-parse diagnostic in %+v", c.Diagnostics())
+	}
+	want := "cannot parse repos file: yaml: line 2: mapping values are not allowed in this context"
+	if parseMessage != want {
+		t.Errorf("Message\n got: %s\nwant: %s", parseMessage, want)
+	}
+	if sawDefault {
+		t.Errorf("default-patterns must not be announced for a file that did not parse: %+v", c.Diagnostics())
+	}
+}
