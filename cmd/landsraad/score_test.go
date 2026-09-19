@@ -222,6 +222,42 @@ func TestScoreReportsTeamsProblemsWhenReposYAMLFailedToParse(t *testing.T) {
 	}
 }
 
+// Ruling R49 for score, the sibling of
+// TestGenReportsOwnersSkippedWhenTheDefaultPatternsMatchNothing: score reaches
+// the same assemble, whose empty-catalog branch returned above
+// teams.ValidateOwners. Both commands are pinned because R43 is a claim about
+// validate, gen and score agreeing on one directory, and a fix to the shared
+// seam is not the same as evidence that both callers now agree.
+func TestScoreReportsOwnersSkippedWhenTheDefaultPatternsMatchNothing(t *testing.T) {
+	fsys := fstest.MapFS{
+		"repos.yaml": {Data: []byte("kind: Service\n  bad: indent\n")},
+		"teams.yaml": {Data: []byte("teams:\n  - name: platform\n   slack: \"#x\"\n")},
+		// ApiServer/, not services/*: outside every config.DefaultPatterns()
+		// glob, so the fallback finds nothing and the catalog is empty.
+		"ApiServer/service.yaml": {Data: []byte("apiVersion: landsraad/v1\nkind: Service\nmetadata:\n" +
+			"  name: api\n  owner: platform\n  tier: 1\n  lifecycle: production\nspec:\n  path: ApiServer\n")},
+	}
+	var out, errOut bytes.Buffer
+
+	_, code := Score(fsys, &out, &errOut, scoreOpts())
+
+	if code != exitValidation {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitValidation, errOut.String())
+	}
+	want := "error: repos.yaml:2 [repos-parse]\n" +
+		"  cannot parse repos file: yaml: line 2: mapping values are not allowed in this context\n" +
+		"  hint: repos.yaml is a list under `repos:`, each entry with url and paths\n" +
+		"info: teams.yaml:1 [owners-skipped]\n" +
+		"  owner validation skipped: teams.yaml did not parse\n" +
+		"  hint: no owner in this repository has been checked; fix the parse error in teams.yaml and rerun\n" +
+		"error: teams.yaml:1 [teams-parse]\n" +
+		"  cannot parse teams file: yaml: line 1: did not find expected '-' indicator\n" +
+		"  hint: teams.yaml is a list under `teams:` with name, members, slack and pagerduty\n"
+	if out.String() != want {
+		t.Errorf("stdout\n got:\n%s\nwant:\n%s", out.String(), want)
+	}
+}
+
 // An error raised during scoring — not only during loadCatalog — must also
 // gate the exit code. Two producers reporting the same (entity, check) at the
 // same instant is scorecard.Ingest's checks-tie error (spec §6: "a tie is an

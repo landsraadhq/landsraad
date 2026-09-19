@@ -280,6 +280,52 @@ func TestGenSuppressesOnlyNoEntitiesWhenReposYAMLFailedToParse(t *testing.T) {
 	}
 }
 
+// Ruling R49, the gap R46 left. R46 hoisted the teams.yaml READ above
+// loadCatalogScoped's give-up paths, but assemble returns at its
+// empty-catalog branch (gen.go:248) above teams.ValidateOwners, and
+// ValidateOwners is what turns an unparseable teams.yaml into
+// owners-skipped. So a teams.yaml diagnostic was still suppressed by a
+// repos.yaml failure — the one thing R46 forbids.
+//
+// It hides behind the fallback globs. With service.yaml under services/*,
+// parseRepo finds and parses it despite the unknown patterns, the catalog is
+// non-empty, and ValidateOwners runs — which is why
+// TestGenReportsTeamsProblemsWhenReposYAMLFailedToParse passed throughout.
+// Only a repository whose entities match no default glob reaches the empty
+// branch, and that is the monorepo layout repos.yaml exists to support:
+// found against arryved/arryved, whose modules are top-level directories.
+// There validate reported owners-skipped and gen and score did not, which is
+// the disagreement ruling R43 forbids.
+func TestGenReportsOwnersSkippedWhenTheDefaultPatternsMatchNothing(t *testing.T) {
+	fsys := fstest.MapFS{
+		"repos.yaml": {Data: []byte("kind: Service\n  bad: indent\n")},
+		"teams.yaml": {Data: []byte("teams:\n  - name: platform\n   slack: \"#x\"\n")},
+		// ApiServer/, not services/*: no entry of config.DefaultPatterns()
+		// matches it, so the fallback finds nothing and the catalog is empty.
+		"ApiServer/service.yaml": {Data: []byte("apiVersion: landsraad/v1\nkind: Service\nmetadata:\n" +
+			"  name: api\n  owner: platform\n  tier: 1\n  lifecycle: production\nspec:\n  path: ApiServer\n")},
+	}
+	var out, errOut bytes.Buffer
+
+	code := Gen(fsys, t.TempDir(), &out, &errOut, diagText(), false)
+
+	if code != exitValidation {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitValidation, errOut.String())
+	}
+	want := "error: repos.yaml:2 [repos-parse]\n" +
+		"  cannot parse repos file: yaml: line 2: mapping values are not allowed in this context\n" +
+		"  hint: repos.yaml is a list under `repos:`, each entry with url and paths\n" +
+		"info: teams.yaml:1 [owners-skipped]\n" +
+		"  owner validation skipped: teams.yaml did not parse\n" +
+		"  hint: no owner in this repository has been checked; fix the parse error in teams.yaml and rerun\n" +
+		"error: teams.yaml:1 [teams-parse]\n" +
+		"  cannot parse teams file: yaml: line 1: did not find expected '-' indicator\n" +
+		"  hint: teams.yaml is a list under `teams:` with name, members, slack and pagerduty\n"
+	if out.String() != want {
+		t.Errorf("stdout\n got:\n%s\nwant:\n%s", out.String(), want)
+	}
+}
+
 // diagCollectorForTest hands out a collector whose diagnostics the test does
 // not care about: artifacts() reports through it, and these cases assert on
 // exit codes and file content instead.

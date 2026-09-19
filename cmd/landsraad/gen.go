@@ -245,6 +245,17 @@ func assemble(p parseResult, src catalog.Sources, scope catalog.Scope, teams *co
 				Hint:    "add a repos.yaml listing the paths your services live under",
 			})
 		}
+		// teams.yaml is a different file, and an empty catalog is no reason
+		// to withhold its diagnostics (ruling R49). R46 hoisted the READ
+		// above this function's callers; the emitter is here, and returning
+		// above it let a repos.yaml failure suppress owners-skipped — which
+		// validate reports on the same directory, so gen and score must too
+		// (ruling R43). An empty catalog is the only way to reach this line,
+		// so the call is a no-op whenever teams.yaml parsed: ValidateOwners
+		// ranges over no entities and reports nothing.
+		if teams != nil {
+			teams.ValidateOwners(catalog.NewCatalog(nil, c), c)
+		}
 		return nil, nil, nil
 	}
 	cat := catalog.NewCatalog(p.entities, c)
