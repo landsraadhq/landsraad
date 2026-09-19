@@ -49,7 +49,8 @@ the fallback globs carrying a bad `tier` and an undefined field:
 `owners-skipped` belongs in this second table, not the first: it comes from
 `Teams.ValidateOwners` (`internal/config/teams.go:151`), which `assemble`
 calls with the catalog in hand. Reading `teams.yaml` earlier cannot restore
-it, and the fix that does is in R46 below.
+it, and the fix that does is in R49 below — not R46, which an earlier draft of
+this spec claimed and which running the tool disproved.
 
 The reasoning error is worth naming, because it is the same error in both
 directions: `repos-parse` and `missing-teams` are not two diagnostics for one
@@ -101,6 +102,12 @@ Part 1 restores what `loadTeamsFor` itself reports — `missing-teams`,
 `schema` diagnostics on the files that were found, or the generators' checks,
 because all of those need the catalog `parseRepo` and `assemble` build, and
 the `!patternsKnown` return is above both.
+
+Part 2 restores the `schema` diagnostics and the generators' checks, because
+those need only a catalog with entities in it. It still does not restore
+`owners-skipped`, which needs `assemble` to reach its last line even when the
+catalog came back empty. That is R49, and it was found by running the tool,
+not by reading it.
 
 **Part 2: suppress the diagnostic, not the load.** `!patternsKnown` stops
 being a give-up path at all. It becomes a parameter on `parseRepo`, gating
@@ -215,6 +222,47 @@ the same document says there is deliberately no registry type, and
 deleted abstraction's postmortem in its comment. D11 is a decision *record*,
 and CLAUDE.md's reading order sends contributors to the decision table first,
 so as written it invites re-adding precisely what this project removed.
+
+### R49: hoisting the read is not hoisting the report
+
+R46 moved the `teams.yaml` **read** above `loadCatalogScoped`'s give-up paths
+and stopped there. `owners-skipped` is emitted by `Teams.ValidateOwners`
+(`internal/config/teams.go:146`), which `assemble` calls at `gen.go:257` —
+below its own empty-catalog return at `gen.go:248`. So an unparseable
+`repos.yaml` still suppressed an unparseable `teams.yaml`'s note, which is the
+one thing R46 forbids, and `validate` reported it while `gen` and `score` did
+not, which is the disagreement R43 forbids.
+
+R46's own verification missed this, and so did the spec: the trace followed
+the read to `assemble`'s parameter and never followed the parameter to its
+use. The lesson is narrower than "trace further" — a fix framed as *making a
+value available* is not evidence about *the code that consumes it*.
+
+**The defect hides behind the fallback globs.** When `repos.yaml` does not
+parse, `patternsKnown` is false, but `parseRepo` only gives up early when it
+also finds nothing. A `service.yaml` under `services/*` is found by
+`config.DefaultPatterns()` anyway, so the catalog is non-empty, `assemble`
+runs to completion and `ValidateOwners` fires. Every existing R46 test puts
+its fixture there deliberately — `TestGenReportsTeamsProblemsWhenReposYAMLFailedToParse`
+says so in its comment — so none of them could see this.
+
+Only a repository whose entities match no default glob reaches the empty
+branch. That is the monorepo layout `repos.yaml` exists to support, and it is
+how this was found: against `arryved/arryved`, whose modules are top-level
+directories, `validate` reported `owners-skipped` and `gen` and `score` did
+not. A defect reachable only by the layout the feature was built for is worth
+more than its info-level severity suggests.
+
+**`assemble` reports `teams.yaml`'s problems before every return, not only the
+last one.** The empty-catalog branch calls `ValidateOwners` against an empty
+catalog. That is a no-op whenever `teams.yaml` parsed — `ValidateOwners` ranges
+over no entities — and emits `owners-skipped` when it did not, which is the
+whole point. `catalog.NewCatalog(nil, c)` is safe and silent: it sorts an empty
+slice and its collision loop does not run.
+
+Exit codes are unchanged in every case. The severity is `info`. What changes is
+that the three commands now agree about one directory, which is the property
+R43 exists to protect and the reason this branch exists at all.
 
 ## Hygiene: no decision needed
 
