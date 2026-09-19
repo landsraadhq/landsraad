@@ -478,6 +478,48 @@ func TestValidateSuppressesNoEntitiesWhenReposYAMLFailedToParse(t *testing.T) {
 	}
 }
 
+// Ruling R49's third leg. R43 is a claim about validate, gen and score
+// agreeing on one directory, and R49 was diagnosed from validate reporting
+// owners-skipped where gen and score did not — so validate is the reference
+// the other two were corrected against, and until this test it was the only
+// leg nothing pinned. checkOwners calls ValidateOwners unconditionally, which
+// is why validate was right by construction; an early return added there for
+// an empty catalog would reopen the disagreement in the opposite direction
+// with the rest of the suite green.
+//
+// The fixture is the true trigger, not the one R49's first draft named: no
+// repos.yaml at all, and the only service.yaml is unparseable. The catalog is
+// empty because everything found failed to parse, which is ruling R42's own
+// defect note N5. The gen and score siblings use the repos.yaml variant; both
+// shapes reach the same empty-catalog branch.
+func TestValidateReportsOwnersSkippedWhenEveryServiceYAMLFailedToParse(t *testing.T) {
+	repo := fstest.MapFS{
+		"teams.yaml":                {Data: []byte("teams:\n  - name: platform\n   slack: \"#x\"\n")},
+		"services/api/service.yaml": {Data: []byte("apiVersion: landsraad/v1\nkind: Service\n  bad: indent\n")},
+	}
+	var out, errOut bytes.Buffer
+
+	code := Validate(repo, &out, &errOut, diagText(), false)
+
+	if code != exitValidation {
+		t.Fatalf("exit code = %d, want %d; stderr:\n%s", code, exitValidation, errOut.String())
+	}
+	want := "info: repos.yaml:1 [default-patterns]\n" +
+		"  no repos.yaml found; using default paths (., services/*, workers/*, libs/*, topics/*)\n" +
+		"  hint: add repos.yaml if your services live elsewhere\n" +
+		"error: services/api/service.yaml:3 [yaml-parse]\n" +
+		"  cannot parse YAML: yaml: line 3: mapping values are not allowed in this context\n" +
+		"info: teams.yaml:1 [owners-skipped]\n" +
+		"  owner validation skipped: teams.yaml did not parse\n" +
+		"  hint: no owner in this repository has been checked; fix the parse error in teams.yaml and rerun\n" +
+		"error: teams.yaml:1 [teams-parse]\n" +
+		"  cannot parse teams file: yaml: line 1: did not find expected '-' indicator\n" +
+		"  hint: teams.yaml is a list under `teams:` with name, members, slack and pagerduty\n"
+	if out.String() != want {
+		t.Errorf("stdout\n got:\n%s\nwant:\n%s", out.String(), want)
+	}
+}
+
 // The schema/parse pairing: schema.Validate deliberately returns false with
 // ZERO diagnostics when the bytes are not YAML at all (that is
 // catalog.ParseFile's diagnostic to make). This is only safe if Validate's

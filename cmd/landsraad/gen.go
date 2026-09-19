@@ -44,8 +44,13 @@ func loadCatalog(fsys fs.FS, c *diag.Collector) (*catalog.Catalog, *config.Teams
 }
 
 // loadCatalogScoped is the single-repository composition: stages 1, 3, 4
-// and 5 against one filesystem. validate, gen and score all end here, and
-// ruling R30 keeps them there.
+// and 5 against one filesystem. gen and score end here. validate does NOT —
+// it runs the same stages as its own flat composition and reads teams.yaml
+// separately in checkOwners, so a fix here reaches two of the three commands
+// and ruling R43 is what keeps the third in agreement, by hand. Rulings R46
+// and R49 are both what that costs. Ruling R30 is a different claim — that
+// all three stay local, hermetic and offline — and does not put them in one
+// composition.
 func loadCatalogScoped(fsys fs.FS, scope catalog.Scope, c *diag.Collector) (*catalog.Catalog, *catalog.Graph, *config.Teams) {
 	// R46: before the one give-up path below. A schema that will not compile
 	// is a landsraad bug, and that is no reason to hide what is wrong with
@@ -186,8 +191,10 @@ func parseRepo(name string, fsys fs.FS, patterns []string, solo, patternsKnown b
 // Called before every give-up path in the load composition, because
 // teams.yaml is a different file from repos.yaml and from the embedded
 // schema, and a failure to read either of those is no reason to withhold a
-// fact about this one. R42 established that for the empty-catalog return;
-// ruling R46 makes it hold for all of them.
+// fact about this one. R42 established that for the empty-catalog return,
+// R46 makes it hold for all of them, and R49 is what finally made it true:
+// reading teams.yaml early is not the same as reporting what the read found,
+// and assemble returned above the report until then.
 //
 // assemble takes the result rather than the filesystem, so it can no longer
 // read teams.yaml itself and therefore cannot run against an unread one.

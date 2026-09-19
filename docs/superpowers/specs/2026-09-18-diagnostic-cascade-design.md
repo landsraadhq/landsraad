@@ -238,23 +238,51 @@ not, which is the disagreement R43 forbids.
 
 R46's own verification missed this, and so did the spec: the trace followed
 the read to `assemble`'s parameter and never followed the parameter to its
-use. The lesson is narrower than "trace further" — a fix framed as *making a
-value available* is not evidence about *the code that consumes it*.
+use. A fix framed as *making a value available* is not evidence about *the
+code that consumes it*.
 
-**The defect hides behind the fallback globs.** When `repos.yaml` does not
-parse, `patternsKnown` is false, but `parseRepo` only gives up early when it
-also finds nothing. A `service.yaml` under `services/*` is found by
-`config.DefaultPatterns()` anyway, so the catalog is non-empty, `assemble`
-runs to completion and `ValidateOwners` fires. Every existing R46 test puts
-its fixture there deliberately — `TestGenReportsTeamsProblemsWhenReposYAMLFailedToParse`
-says so in its comment — so none of them could see this.
+**This ruling's first draft got its own diagnosis wrong, and the correction
+is the more useful half.** That draft said the defect hid behind the fallback
+globs — reachable only by a repository whose entities match no default glob,
+which is the monorepo layout `repos.yaml` exists to support. That is how it
+was *found*, against `arryved/arryved`, whose modules are top-level
+directories. It is not what triggers it.
 
-Only a repository whose entities match no default glob reaches the empty
-branch. That is the monorepo layout `repos.yaml` exists to support, and it is
-how this was found: against `arryved/arryved`, whose modules are top-level
-directories, `validate` reported `owners-skipped` and `gen` and `score` did
-not. A defect reachable only by the layout the feature was built for is worth
-more than its info-level severity suggests.
+The branch is `len(p.entities) == 0`. It does not ask why the catalog is
+empty, and `gen.go`'s own comment three lines above already says as much:
+"when every file that was found failed to parse, the parse errors have
+already said why the catalog is empty (ruling R42)." So the trigger is **any
+empty catalog**, which includes the most ordinary first-run state there is:
+one malformed `service.yaml` and one malformed `teams.yaml`, with no
+`repos.yaml` anywhere in the picture. Verified against pre-fix `gen`, a
+`service.yaml` under `services/*` and no `repos.yaml` at all: `owners-skipped`
+absent.
+
+**That makes this R42's defect, not R46's.** R42's own note N5 reads "a run
+where every `service.yaml` fails to parse drops every `teams.yaml`
+diagnostic," and its ruling says `teams.yaml` is read "**and its diagnostics
+are reported**, whether or not any entity parsed." The scenario in N5 is the
+one above. R42's ruling has been unmet since it was made: the fix that
+answered it satisfied the property's *mechanism* — read the file — rather
+than the property itself, and nothing checked the difference. R46 did not
+introduce this; R46 failed to notice it. The comment at `gen.go`'s
+`loadTeamsFor` call claiming "R42 established that for the empty-catalog
+return" became true only with this ruling.
+
+**Why no existing test caught it — also not what the first draft said.** It
+was not fixture placement: `gen_test.go`'s `svc/*` case and
+`validate_test.go`'s `TestValidateSuppressesNoEntitiesWhenReposYAMLFailedToParse`
+both sit deliberately outside every default glob and say so in their
+comments. Two things hid it. Their `teams.yaml` parses, so `owners-skipped`
+could not fire whatever the fixture. And they assert the presence or absence
+of *named* checks, so a diagnostic that should have been added and was not is
+structurally invisible to them.
+
+The transferable rule is the one R49's tests adopt: **a cascade test asserts
+the complete output** (`out.String() != want`), because a subset assertion
+cannot detect a missing diagnostic. All three of this ruling's tests do, and
+`validate` gets one too — R43 is a three-way claim, and until now the
+reference leg was the only one nothing pinned.
 
 **`assemble` reports `teams.yaml`'s problems before every return, not only the
 last one.** The empty-catalog branch calls `ValidateOwners` against an empty
@@ -269,7 +297,10 @@ R43 exists to protect and the reason this branch exists at all.
 
 ## Hygiene: no decision needed
 
-- `internal/render/scorecard.go:16` — `var scorecardTiers = []int{1, 2, 3}` is a
+- `internal/render/scorecard.go` (`scorecardTiers`, at `:16` before this
+  branch changed it and `:24` after — the drift R48 warns about, in a bullet
+  describing a fix that moves the line it cites) — `var scorecardTiers =
+  []int{1, 2, 3}` was a
   package-level mutable slice. `internal/catalog/entity.go:30-48` documents the
   exact cost of that shape and uses `[...]Kind{}` with a copying accessor
   instead, as do `config.defaultPatterns` and `config.hostKinds`. This is the
