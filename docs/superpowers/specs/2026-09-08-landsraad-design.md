@@ -87,7 +87,7 @@ Recorded because the *why* is the part that gets lost.
 | D8 | Everything starts in `internal/` | `internal → pkg` is additive; `pkg → internal` is breaking. Catalog types get promoted when someone actually asks to import them. |
 | D9 | Dune naming on user-facing surfaces only | Project, binary and deployed components carry Dune names; Go packages are literal (`catalog`, `scorecard`, `render`). Themed package names tax every future contributor with a glossary. |
 | D10 | Named `landsraad`, not `sietch` | `sietch` was the first choice and failed an availability check on 2026-09-08: `danprince/sietch` is an existing **Go Markdown static site generator** — same language, same niche — alongside a 141-star storage project, three Go modules, and sietch.dev/.io/.sh/.org all registered. `landsraad` has zero Go modules and no namesake above one star, and is semantically closer: the assembly of the Great Houses is a federated register of who owns what. `apiVersion` needs no domain (k8s uses `apps/v1`), so no domain sits on the critical path. |
-| D11 | Composition over a monolithic pipeline | File access goes through `io/fs.FS`, output formats through a `Formatter` registry, and each pipeline stage is a typed pure function that two commands compose differently. See §3.1. |
+| D11 | Composition over a monolithic pipeline | File access goes through `io/fs.FS`, output formats through a `diag.Formatter` interface and a map literal, and each pipeline stage is a typed pure function that two commands compose differently. See §3.1. |
 
 ### 3.1 Composition principles
 
@@ -273,7 +273,7 @@ stops there, and earlier drafts of this spec overstated it:
   Backstage's kinds, so a converter must synthesise the value wherever it is
   absent.
 - Backstage's `API` kind requires a non-empty `spec.definition`. landsraad has
-  no field for it and `additionalProperties: false` forbids adding one, so
+  no field for it and `unevaluatedProperties: false` forbids adding one, so
   `kind: API` entities cannot be converted at all today.
 - Backstage refs are `[<kind>:][<namespace>/]<name>`. Rewriting
   `topic:payments.events` into `resource:default/payments.events` requires
@@ -403,7 +403,7 @@ Stages are pure functions where practical, each independently testable.
 
 | Command | Stages | Network | Run by |
 |---|---|---|---|
-| `landsraad validate` | 1, 3, 4, 5* | none | every service repo's PR CI |
+| `landsraad validate` | 1, 3, 4, 5*, 6* | none | every service repo's PR CI |
 | `landsraad build` | 1–8 | yes | platform repo, on merge to main |
 
 Stage 6 (INGEST) is **not** part of `validate`: resolving entities, applying

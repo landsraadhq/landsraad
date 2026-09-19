@@ -13,7 +13,7 @@ import (
 // tiers — the YAML is a map and a team may configure any subset. Spec §6's
 // matrix uses 1-3 throughout and the JSON Schema constrains metadata.tier to
 // them, so those are the columns, named once here.
-var scorecardTiers = []int{1, 2, 3}
+var scorecardTiers = [...]int{1, 2, 3}
 
 // CheckRow is one row of the standards matrix.
 type CheckRow struct {
@@ -72,7 +72,7 @@ func scorecardPage(web fs.FS, in Input, c *diag.Collector) (emit.File, bool) {
 
 	view := ScorecardPage{
 		Page:              newPage(in, "scorecard/index.html", "Scorecard", "scorecard"),
-		Tiers:             scorecardTiers,
+		Tiers:             scorecardTiers[:],
 		HasHistory:        in.History != nil,
 		HistoryUnreadable: in.HistoryUnreadable,
 	}
