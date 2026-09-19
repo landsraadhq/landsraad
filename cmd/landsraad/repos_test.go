@@ -558,3 +558,34 @@ func TestAssembleDoesNotSayNothingWasFoundWhenFilesFailedToParse(t *testing.T) {
 		t.Errorf("assemble added %+v; the parse errors that emptied the catalog have already said why", ds)
 	}
 }
+
+// Ruling R47: len(r.Repos) == 0 is true both for a file that parsed and named
+// nothing and for a file that did not parse. Repos.Loaded() carries the
+// distinction, and patternsFor already uses it. Announcing default-patterns
+// for a parse failure is two diagnostics for one cause, sorted ahead of its
+// own cause, with a hint naming a file that exists — and a message that is
+// false, since the file names one repository.
+func TestLoadReposFileReturnsNoReposWhenParseFailed(t *testing.T) {
+	fsys := fstest.MapFS{
+		"repos.yaml": {Data: []byte("kind: Service\n  bad: indent\n")},
+	}
+	var c diag.Collector
+
+	got := loadReposFile(fsys, &c)
+
+	if len(got) != 0 {
+		t.Fatalf("loadReposFile = %+v, want no repositories: a file that did not parse configures nothing", got)
+	}
+	var parse bool
+	for _, d := range c.Diagnostics() {
+		switch d.Check {
+		case "repos-parse":
+			parse = true
+		case "default-patterns":
+			t.Errorf("default-patterns must not be announced for a file that did not parse; got message %q", d.Message)
+		}
+	}
+	if !parse {
+		t.Fatalf("the cause must still be reported; no repos-parse in %+v", c.Diagnostics())
+	}
+}

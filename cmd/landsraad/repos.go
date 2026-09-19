@@ -637,6 +637,15 @@ func loadReposFile(rootFS fs.FS, c *diag.Collector) []config.Repo {
 		return []config.Repo{{Local: true, Paths: config.DefaultPatterns(), Line: 1}}
 	}
 	r := config.LoadRepos("repos.yaml", data, c)
+	if !r.Loaded() {
+		// The file exists and did not parse. repos-parse already carries the
+		// cause, and defaulting here would present a guess as configuration —
+		// the same rule patternsFor applies to default-patterns (ruling R47).
+		// Returning no repositories is also what makes the multi-repository
+		// path structurally unable to reach parseRepo's solo no-entities off
+		// a guessed pattern set: there is nothing for ParseAll to iterate.
+		return nil
+	}
 	if len(r.Repos) == 0 {
 		// Same degraded mode as an absent file — repos.yaml exists but names
 		// no repositories at all — and it deserves the same announcement:
