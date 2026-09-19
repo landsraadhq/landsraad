@@ -403,7 +403,7 @@ Stages are pure functions where practical, each independently testable.
 
 | Command | Stages | Network | Run by |
 |---|---|---|---|
-| `landsraad validate` | 1, 3, 4, 5*, 6* | none | every service repo's PR CI |
+| `landsraad validate` | 1, 3, 4, 5*, 6† | none | every service repo's PR CI |
 | `landsraad build` | 1–8 | yes | platform repo, on merge to main |
 
 Stage 6 (INGEST) is **not** part of `validate`: resolving entities, applying
@@ -421,6 +421,10 @@ platform build days later.
 Cross-repo references resolve at merge time only. A service repo's CI therefore
 needs no tokens and no network, and cannot be broken by an unrelated team's
 repo. Under `build`, dangling refs and dependency cycles are hard failures.
+
+`†` — only stage 6's *structural* half runs: the shape of every
+`.landsraad/checks/*.yaml` is checked, which is hermetic. Precedence and
+ageing need the merged catalog and a clock, so they wait for `build`.
 
 ---
 
