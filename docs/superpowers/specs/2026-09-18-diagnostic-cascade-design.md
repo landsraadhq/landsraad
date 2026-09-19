@@ -157,8 +157,41 @@ parse failure produces one synthesised repo, `ParseAll` computes
 is behavioural, not structural, and `Build` builds a *fresh* collector, so if
 it were ever relaxed `no-entities` would surface alone with its cause nowhere
 in the output — strictly worse than the defect `d8148f1` fixed. With no
-repositories returned there is nothing to iterate, and no flag need be threaded
-anywhere.
+repositories returned there is nothing to iterate, so no flag need be threaded
+through the multi-repository path — the callers in `repos.go` pass a constant
+`true`. R46's single-repository path is the one that needs the parameter,
+because it reads the same unparseable file and then keeps going against the
+fallback globs.
+
+**What R47 makes reachable, and the cost it has to pay.** No repositories
+returned is a state `Build` had never been handed: `len(w.Sources()) == 0`
+with `len(w.Failures()) == 0`. The all-repositories-failed branch at
+`build.go:65` requires a failure, and `assemble`'s "no `service.yaml` in any
+configured repository" requires `len(src) > 1`, so `Build` fell through to the
+`cat == nil` refusal and printed *refusing to build a portal from a catalog
+with errors; it would publish the broken state as if it were the truth* — with
+no diagnostic above it, exit 2, about a catalog nobody had looked at. That is
+the same causeless refusal the comment beside `build.go:55` already rules
+unacceptable for the all-fetch-failures case, and the same misdirection: exit
+2 means "your YAML is wrong", and it is, but not in the file that message
+sends you to.
+
+`Build` therefore refuses on `len(w.Sources()) == 0` with its own message,
+naming `repos.yaml` and saying where the cause is reported. A dedicated
+branch, not a widening of the one above it, because the two need different
+words and different exit codes — a fetch failure is `exitUsage`, and
+`repos.yaml` is `exitValidation` (R36, and the code `newBuildCmd`'s own gate
+exits for that same file). And placed *below* `loadTeamsFor`, because
+`teams.yaml`'s problems are facts about a different file and R46 forbids a
+give-up path withholding them; the branch above is exempt only because it
+fires before anything has been read.
+
+Both CLI paths keep this unreachable from a terminal — `newBuildCmd` and
+`newServeCmd` both exit on `c.HasErrors()` after `openRepos` — which is
+behavioural gating, exactly the arrangement this ruling criticises above. So
+the property is pinned where it can be seen: `Build` called directly with such
+a workspace, which is also the only place it can be, since the seam test's
+collector is `openRepos`' and not `Build`'s.
 
 ### R48: a claim's mechanism is part of the claim
 

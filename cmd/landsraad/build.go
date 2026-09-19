@@ -69,9 +69,38 @@ func Build(root fs.FS, w *workspace, errOut io.Writer, opts BuildOptions) ([]emi
 	}
 
 	v := defaultValidator(&c)
-	teams := loadTeamsFor(root, &c) // R46: above the give-up path below
+	teams := loadTeamsFor(root, &c) // R46: above the give-up paths below
 	if v == nil {
 		reportDiagnostics(errOut, c.Diagnostics(), len(w.Sources()) > 1)
+		return nil, exitValidation
+	}
+
+	// No repositories at all, and none of them failed either — which ruling
+	// R47 made reachable: a repos.yaml that did not parse now configures
+	// nothing. `repos-parse` carries the cause, but it was raised into
+	// openRepos' collector and this function keeps a fresh one, so nothing
+	// below can see it. Neither of the other two "nothing to build" branches
+	// fires: the one above requires a failure, and assemble's requires
+	// len(src) > 1. Build therefore reached the cat == nil refusal and printed
+	// "refusing to build a portal from a catalog with errors" as the ONLY line
+	// on a repository whose catalog nobody had looked at — the same causeless
+	// refusal the comment above already rules unacceptable for the sibling
+	// all-fetch-failures case, and the same misdirection: exit 2 means "your
+	// YAML is wrong", and here it is, but not in the file that message sends
+	// you to.
+	//
+	// A dedicated branch rather than widening the one above, because the two
+	// situations need different words and different exit codes: that one is a
+	// network failure at exitUsage, this one is repos.yaml at exitValidation
+	// (ruling R36, and the code newBuildCmd's own gate exits for the same
+	// file). And BELOW loadTeamsFor rather than beside its sibling, because
+	// teams.yaml's problems are a fact about a different file and R46 says no
+	// give-up path may withhold them — the branch above is only exempt
+	// because it fires before anything has been read.
+	if len(w.Sources()) == 0 {
+		reportDiagnostics(errOut, c.Diagnostics(), false)
+		fmt.Fprintf(errOut,
+			"no repository is configured, so there is nothing to build; check repos.yaml — a file that did not parse configures none, and openRepos reports that as repos-parse\n")
 		return nil, exitValidation
 	}
 

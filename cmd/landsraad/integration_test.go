@@ -635,6 +635,105 @@ func TestRebuildPrunesADeletedEntity(t *testing.T) {
 	}
 }
 
+// R47 made a refusal with no cause above it reachable, and this is the only
+// shape that can see it. Build keeps a FRESH collector, so `repos-parse` —
+// raised into openRepos' collector — is invisible inside it: with no
+// repositories configured, Sources() and Failures() are both empty, the
+// all-repositories-failed branch cannot fire (it required a failure), and
+// assemble's "no service.yaml in any configured repository" cannot either
+// (it requires len(src) > 1). Build fell through to the cat == nil branch
+// and printed "refusing to build a portal from a catalog with errors" with
+// zero diagnostics above it — the exact failure mode the comment beside that
+// branch already rules unacceptable for the sibling all-fetch-failures case.
+//
+// TestOpenReposReturnsNoSourcesWhenReposYAMLFailedToParse covers the seam and
+// is not superseded by this: the collector it inspects is openRepos', not the
+// one Build uses, so it structurally cannot see this property. Both CLI paths
+// (build.go's and serve.go's `c.HasErrors()` gates) keep this unreachable
+// from a terminal today, which is behavioural rather than structural gating —
+// precisely the complaint the spec levels at the pre-R47 code.
+func TestBuildRefusesWithACauseWhenNoRepositoryIsConfigured(t *testing.T) {
+	const refusal = "no repository is configured, so there is nothing to build; check repos.yaml — " +
+		"a file that did not parse configures none, and openRepos reports that as repos-parse\n"
+
+	cases := []struct {
+		name string
+		// teams says whether the platform repository has a teams.yaml. With
+		// one, the refusal was literally the only line Build printed — the
+		// causeless state. Without one, missing-teams was printed above it,
+		// which is R46 working, and must keep working: the new branch sits
+		// BELOW loadTeamsFor for exactly that reason.
+		teams bool
+		want  string
+	}{
+		{name: "causeless refusal", teams: true, want: refusal},
+		{
+			name:  "teams.yaml problems are still reported (R46)",
+			teams: false,
+			want: "error: teams.yaml:1 [missing-teams]\n" +
+				"  teams.yaml not found at the repository root, so no owner can be resolved\n" +
+				"  hint: run `landsraad init` to create one\n" +
+				refusal,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "repos.yaml", "kind: Service\n  bad: indent\n")
+			if tc.teams {
+				writeFile(t, dir, "teams.yaml", "teams:\n  - name: team-a\n")
+			}
+
+			var c diag.Collector
+			w := openRepos(context.Background(), reposOptions{
+				Root: dir, RootFS: os.DirFS(dir),
+				Cache:  fetch.NopCache{},
+				Lookup: func(string) (string, bool) { return "", false },
+				ErrOut: io.Discard,
+			}, &c)
+			if got := w.Sources().Names(); len(got) != 0 {
+				t.Fatalf("Sources().Names() = %q (len %d), want none: this test's premise is R47's no-repositories result", got, len(got))
+			}
+			if got := w.Failures(); len(got) != 0 {
+				t.Fatalf("Failures() = %+v, want none: a parse failure is not a fetch failure", got)
+			}
+
+			var errOut bytes.Buffer
+			files, code := Build(os.DirFS(dir), w, &errOut, BuildOptions{
+				Now: testNow, Version: "test", LastEdit: noLastEdit(),
+			})
+
+			// exitValidation, unchanged: repos.yaml is a file the user wrote,
+			// which is exit 2 everywhere else in this tool (ruling R36), and
+			// it is what the causeless branch returned too. Only the message
+			// changes. exitUsage would be wrong here for the same reason it is
+			// right for the all-fetch-failures branch above it — there, nobody's
+			// YAML was wrong.
+			if code != exitValidation {
+				t.Fatalf("exit = %d, want %d; stderr:\n%s", code, exitValidation, errOut.String())
+			}
+			if files != nil {
+				t.Errorf("Build returned %d files while refusing to build", len(files))
+			}
+			if errOut.String() != tc.want {
+				t.Errorf("stderr\n got: %s\nwant: %s", errOut.String(), tc.want)
+			}
+			// Pinned separately from the exact match above, because these are
+			// the properties rather than the wording. no-entities must never
+			// appear: it would be a second diagnostic for repos-parse's one
+			// cause with that cause nowhere in the output, which the spec calls
+			// strictly worse than the defect d8148f1 fixed. And the generic
+			// refusal must not appear: it sends the reader to look at a catalog
+			// that is fine.
+			for _, unwanted := range []string{"no-entities", "refusing to build a portal from a catalog with errors"} {
+				if strings.Contains(errOut.String(), unwanted) {
+					t.Errorf("stderr must not contain %q:\n%s", unwanted, errOut.String())
+				}
+			}
+		})
+	}
+}
+
 // The whole feature, end to end: two repositories, one on disk and one over
 // a host API, merged into one catalog with a reference crossing between
 // them.
