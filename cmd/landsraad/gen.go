@@ -56,7 +56,17 @@ func loadCatalogScoped(fsys fs.FS, scope catalog.Scope, c *diag.Collector) (*cat
 	// composition (validate, gen, score — ruling R30), so the "no entities"
 	// diagnostic below must be the one error main always produced, not the
 	// per-repository warning that exists for the multi-repository case.
-	p := parseRepo(repo, fsys, patternsFor(fsys, c), true, v, c)
+	patterns, patternsKnown := patternsFor(fsys, c)
+	if !patternsKnown {
+		// repos.yaml is present but did not parse, so patterns is a guess.
+		// parseRepo's no-entities would be a second diagnostic for the one
+		// cause repos-parse already reports, and nothing can be generated from
+		// a repository whose configuration could not be read anyway. Same
+		// "give up, the diagnostics already carry the reason" exit as the nil
+		// validator above (defect 4).
+		return nil, nil, nil
+	}
+	p := parseRepo(repo, fsys, patterns, true, v, c)
 	return assemble(p, catalog.SingleSource(repo, fsys), scope, fsys, c)
 }
 

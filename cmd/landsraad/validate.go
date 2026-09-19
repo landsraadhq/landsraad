@@ -45,7 +45,7 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter, satellite boo
 	}
 
 	// 1. discover — which files are we looking at
-	patterns := patternsFor(fsys, &c)
+	patterns, patternsKnown := patternsFor(fsys, &c)
 	paths, err := discover.Find(fsys, patterns)
 	if err != nil {
 		// Unreachable for a pattern repos.yaml wrote: validateRepos rejects
@@ -61,7 +61,11 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter, satellite boo
 	// Matching nothing at all is the single most likely way a first run goes
 	// wrong: a team whose code lives under apps/* would otherwise get a green
 	// check forever on a repo the tool never looked at.
-	if err == nil && len(paths) == 0 {
+	//
+	// Unless the patterns are a guess: when repos.yaml failed to parse, what
+	// the fallback globs matched says nothing about the user's layout, and
+	// repos-parse already carries the cause (defect 4).
+	if err == nil && len(paths) == 0 && patternsKnown {
 		c.Add(diag.Diagnostic{
 			Severity: diag.SevError,
 			File:     "repos.yaml",
@@ -211,14 +215,22 @@ func localRepoName(fsys fs.FS) string {
 
 // patternsFor reads repos.yaml if present, falling back to the conventional
 // layout. A repo without repos.yaml still works out of the box.
-func patternsFor(fsys fs.FS, c *diag.Collector) []string {
+//
+// The second return says whether the patterns are known to be what the user
+// asked for. It is false in exactly one case: repos.yaml is present but failed
+// to parse, so the returned defaults are a guess standing in for a file nobody
+// could read. A caller must not then report what that guess did or did not
+// find — no-entities off a guessed pattern set is the second diagnostic for
+// the one cause already reported as repos-parse, which is the same rule the
+// r.Loaded() guard below applies to default-patterns (defect 4).
+func patternsFor(fsys fs.FS, c *diag.Collector) ([]string, bool) {
 	data, err := fs.ReadFile(fsys, "repos.yaml")
 	if err != nil {
 		// Not an error — but not silent either. Spec §12: degraded mode must
 		// be visible in the artifact, not only in a log. Compare checkOwners,
 		// which errors loudly for a missing teams.yaml.
 		c.Add(defaultPatternsNote("no repos.yaml found"))
-		return config.DefaultPatterns()
+		return config.DefaultPatterns(), true
 	}
 	r := config.LoadRepos("repos.yaml", data, c)
 	patterns, why := r.LocalPatterns()
@@ -243,7 +255,7 @@ func patternsFor(fsys fs.FS, c *diag.Collector) []string {
 			})
 		}
 	}
-	return patterns
+	return patterns, r.Loaded()
 }
 
 // defaultPatternsNote is the one place the conventional-layout fallback is

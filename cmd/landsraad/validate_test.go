@@ -201,7 +201,12 @@ func TestJSONOutputIsParseableOnFailure(t *testing.T) {
 // exact wording so a phrasing regression fails a test, not just a review.
 func TestPatternsForAnnouncesDefaultPatternsExactMessage(t *testing.T) {
 	var c diag.Collector
-	got := patternsFor(fstest.MapFS{}, &c)
+	got, known := patternsFor(fstest.MapFS{}, &c)
+	// An absent repos.yaml is a deliberate, announced fallback, not a guess:
+	// no-entities must still fire against these patterns (defect 4).
+	if !known {
+		t.Error("an absent repos.yaml must still yield known patterns")
+	}
 	if len(got) != len(config.DefaultPatterns()) {
 		t.Fatalf("patternsFor with no repos.yaml = %v, want DefaultPatterns %v", got, config.DefaultPatterns())
 	}
@@ -233,9 +238,15 @@ func TestPatternsForReportsMalformedReposYAML(t *testing.T) {
 		"repos.yaml": {Data: []byte("kind: Service\n  bad: indent\n")},
 	}
 	var c diag.Collector
-	got := patternsFor(fsys, &c)
+	got, known := patternsFor(fsys, &c)
 	if !c.HasErrors() {
 		t.Fatal("malformed repos.yaml must be an error, not a silent fallback to defaults")
+	}
+	// The patterns are a guess standing in for a file nobody could read, and
+	// saying so is what stops callers reporting what the guess matched
+	// (defect 4).
+	if known {
+		t.Error("patternsFor must report patterns as not known when repos.yaml failed to parse")
 	}
 	d := c.Diagnostics()[0]
 	if d.Check != "repos-parse" {
@@ -415,6 +426,58 @@ func TestValidateMalformedReposYAMLIsNotSilent(t *testing.T) {
 	}
 }
 
+// Regression (defect 4 — no-entities cascading off a parse error): when
+// repos.yaml itself failed to parse, patternsFor falls back to
+// DefaultPatterns. Whatever that fallback then finds or fails to find is a
+// consequence of the parse error, so reporting no-entities as well is exactly
+// the "two diagnostics for one cause" that patternsFor already suppresses
+// default-patterns to avoid — and no-entities' hint tells the reader to add a
+// repos.yaml that is sitting right there.
+//
+// TestValidateMalformedReposYAMLIsNotSilent above cannot catch this: its
+// service.yaml sits under services/*, which the fallback happens to match.
+func TestValidateSuppressesNoEntitiesWhenReposYAMLFailedToParse(t *testing.T) {
+	repo := fstest.MapFS{
+		"repos.yaml": {Data: []byte("kind: Service\n  bad: indent\n")},
+		"teams.yaml": {Data: []byte("teams:\n  - name: team-a\n")},
+		// Deliberately under no DefaultPatterns glob, so the fallback finds
+		// nothing — precisely when the spurious no-entities appeared.
+		"svc/api/service.yaml": {Data: []byte(
+			"apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: api\n" +
+				"  owner: team-a\n  tier: 1\n  lifecycle: production\n")},
+	}
+	var out, errOut bytes.Buffer
+	code := Validate(repo, &out, &errOut, diag.JSON{}, false)
+	if code != exitValidation {
+		t.Fatalf("exit code = %d, want %d", code, exitValidation)
+	}
+	var ds []diag.Diagnostic
+	if err := json.Unmarshal(out.Bytes(), &ds); err != nil {
+		t.Fatalf("stdout must be valid JSON: %v", err)
+	}
+	var parse, entities *diag.Diagnostic
+	for i := range ds {
+		switch ds[i].Check {
+		case "repos-parse":
+			parse = &ds[i]
+		case "no-entities":
+			entities = &ds[i]
+		}
+	}
+	if parse == nil {
+		t.Fatalf("no repos-parse diagnostic in %+v", ds)
+	}
+	want := "cannot parse repos file: yaml: line 2: mapping values are not allowed in this context"
+	if parse.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", parse.Message, want)
+	}
+	if entities != nil {
+		t.Errorf("no-entities must be suppressed when repos.yaml failed to parse: "+
+			"it is a second diagnostic for one cause, and its hint (%q) names a file that already exists",
+			entities.Hint)
+	}
+}
+
 // The schema/parse pairing: schema.Validate deliberately returns false with
 // ZERO diagnostics when the bytes are not YAML at all (that is
 // catalog.ParseFile's diagnostic to make). This is only safe if Validate's
@@ -476,7 +539,12 @@ func TestPatternsForAnnouncesDefaultsWhenReposYAMLListsNoPaths(t *testing.T) {
 		"repos.yaml": {Data: []byte("repos:\n  - url: https://x/y\n    paths: []\n")},
 	}
 	var c diag.Collector
-	got := patternsFor(fsys, &c)
+	got, known := patternsFor(fsys, &c)
+	// Present and parsed, just empty: the file was read, so what these
+	// patterns match is still worth reporting (defect 4).
+	if !known {
+		t.Error("a parsed repos.yaml listing no paths must still yield known patterns")
+	}
 	if len(got) != len(config.DefaultPatterns()) {
 		t.Fatalf("patternsFor = %v, want DefaultPatterns %v", got, config.DefaultPatterns())
 	}
@@ -521,7 +589,10 @@ func TestPatternsForWarnsWhenNoEntryIsMarkedLocal(t *testing.T) {
 				"  - url: https://github.com/org/edge\n    paths: [.]\n")},
 	}
 	var c diag.Collector
-	got := patternsFor(fsys, &c)
+	got, known := patternsFor(fsys, &c)
+	if !known {
+		t.Error("a parsed repos.yaml must yield known patterns")
+	}
 	want := []string{"services/*"}
 	if len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("patternsFor = %v, want %v", got, want)

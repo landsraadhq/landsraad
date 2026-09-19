@@ -61,9 +61,10 @@ func buildWorkspace(t *testing.T, fsys fs.FS) *workspace {
 	t.Helper()
 	var c diag.Collector
 	name := localRepoName(fsys)
+	patterns, _ := patternsFor(fsys, &c)
 	return &workspace{
 		sources:  catalog.Sources{name: fsys},
-		patterns: map[string][]string{name: patternsFor(fsys, &c)},
+		patterns: map[string][]string{name: patterns},
 		local:    name,
 	}
 }
