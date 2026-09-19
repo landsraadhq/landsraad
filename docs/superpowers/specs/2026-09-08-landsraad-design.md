@@ -268,9 +268,10 @@ stops there, and earlier drafts of this spec overstated it:
 
 - landsraad puts `owner`, `tier` and `lifecycle` in **`metadata`**; Backstage
   requires `owner` and `lifecycle` in **`spec`**. The placement is the opposite.
-- Backstage requires `spec.type` on Component and Resource. landsraad has no
-  such field, and its seven kinds map many-to-one onto Backstage's kinds, so a
-  converter must synthesise the value.
+- Backstage requires `spec.type` on Component and Resource. landsraad has the
+  field (D13) but does not require it, and its eight kinds map many-to-one onto
+  Backstage's kinds, so a converter must synthesise the value wherever it is
+  absent.
 - Backstage's `API` kind requires a non-empty `spec.definition`. landsraad has
   no field for it and `additionalProperties: false` forbids adding one, so
   `kind: API` entities cannot be converted at all today.
