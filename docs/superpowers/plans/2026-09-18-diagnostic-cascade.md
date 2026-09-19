@@ -389,15 +389,17 @@ In `internal/render/scorecard.go:16`:
 var scorecardTiers = [...]int{1, 2, 3}
 ```
 
-`internal/catalog/entity.go:30-48` documents why: tests in a package share a process, so one test mutating an exported-or-not package-level slice without a `t.Cleanup` poisons every test after it and the failure surfaces somewhere else entirely. A fixed-size array cannot be reassigned element-wise through a shared backing store.
+`internal/catalog/entity.go:30-48` documents why: tests in a package share a process, so one test mutating an exported-or-not package-level slice without a `t.Cleanup` poisons every test after it and the failure surfaces somewhere else entirely.
 
-Two read sites, and they differ. `internal/render/scorecard.go:109` ranges over the value, which works on an array unchanged. `internal/render/scorecard.go:75` assigns it to a `Tiers []int` field (declared at `internal/render/model.go:126` and `internal/render/scorecard.go:54`), so that site becomes:
+**Corrected after the fact.** This step originally justified the array with "a fixed-size array cannot be reassigned element-wise through a shared backing store", which is false twice over: `scorecardTiers[0] = 9` compiles on an array, and `scorecardTiers[:]` *is* a shared backing store. The array alone buys only that the whole value cannot be swapped for one of a different length. What `entity.go` actually does is a fixed array **plus a copying accessor**, and its comment says so — this was the one table that got half the lesson, and the half it got is not the half that does the work.
+
+Two read sites, and they differ. `internal/render/scorecard.go:109` ranges over the value, which copies an array and so needs nothing. `internal/render/scorecard.go:75` assigns it to a `Tiers []int` field (declared at `internal/render/model.go:126` and `internal/render/scorecard.go:54`), and that is the site that hands the backing store out, so it copies — the same thing `catalog.AllKinds()` does:
 
 ```go
-		Tiers:             scorecardTiers[:],
+		Tiers:             append([]int(nil), scorecardTiers[:]...),
 ```
 
-Do not widen the field to an array or revert the var to a slice — the point is that the package-level value cannot be mutated through a shared backing store, and `[:]` at the one assignment keeps the field's type untouched.
+Do not widen the field to an array or revert the var to a slice. A named accessor in `AllKinds()`'s shape is the other option and is not taken: there is exactly one site needing a slice, in the same file as the var, so a function would be ceremony rather than a seam.
 
 - [ ] **Step 4: Verify and commit**
 

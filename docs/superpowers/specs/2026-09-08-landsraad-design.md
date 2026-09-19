@@ -406,7 +406,8 @@ Stages are pure functions where practical, each independently testable.
 | `landsraad validate` | 1, 3, 4, 5*, 6† | none | every service repo's PR CI |
 | `landsraad build` | 1–8 | yes | platform repo, on merge to main |
 
-Stage 6 (INGEST) is **not** part of `validate`: resolving entities, applying
+Stage 6 (INGEST) is only **partly** part of `validate`, which is what the
+table's `6†` says. Its *semantic* half is not: resolving entities, applying
 precedence and ageing results need the merged catalog and a clock, and
 `validate` is hermetic and offline so it can run in every service repo's PR CI
 with no tokens.

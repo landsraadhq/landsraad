@@ -636,8 +636,17 @@ func repoDefaultPatternsNote(name string, line int) diag.Diagnostic {
 	}
 }
 
-// loadReposFile reads repos.yaml, defaulting to a single local repository
-// when there is none. A checkout with no repos.yaml still builds.
+// loadReposFile reads repos.yaml and returns one of three things.
+//
+// The file is absent, or present and names no repositories: a single local
+// repository carrying the default patterns, announced as default-patterns. A
+// checkout with no repos.yaml still builds.
+//
+// The file is present and did not parse: no repositories at all (ruling R47).
+// Not one synthesised local entry, because repos-parse already carries the
+// cause and defaulting would present a guess as configuration.
+//
+// Otherwise: what the file says.
 func loadReposFile(rootFS fs.FS, c *diag.Collector) []config.Repo {
 	data, err := fs.ReadFile(rootFS, "repos.yaml")
 	if err != nil {

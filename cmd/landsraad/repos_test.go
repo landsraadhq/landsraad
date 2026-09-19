@@ -665,8 +665,12 @@ func TestOpenReposReturnsNoSourcesWhenReposYAMLFailedToParse(t *testing.T) {
 		ErrOut: io.Discard,
 	}, &c)
 
+	// %q and the length, not %v: the value this guard actually catches when it
+	// is reverted is []string{""} — one synthesised repository whose Identity()
+	// is empty — and %v renders that as `[]`, so the failure read
+	// "Sources().Names() = [], want none" and contradicted itself.
 	if got := w.Sources().Names(); len(got) != 0 {
-		t.Fatalf("Sources().Names() = %v, want none: a repos.yaml that did not parse configures no repositories", got)
+		t.Fatalf("Sources().Names() = %q (len %d), want none: a repos.yaml that did not parse configures no repositories", got, len(got))
 	}
 
 	var sawParse, sawDefault bool

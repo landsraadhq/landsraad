@@ -223,7 +223,13 @@ so as written it invites re-adding precisely what this project removed.
   exact cost of that shape and uses `[...]Kind{}` with a copying accessor
   instead, as do `config.defaultPatterns` and `config.hostKinds`. This is the
   one table that did not get the lesson. Unexported, so the blast radius is one
-  package; the fix is one character.
+  package. **"The fix is one character" was wrong**: `[...]int` alone stops the
+  whole value being swapped for a different-length one and nothing else —
+  `scorecardTiers[0] = 9` compiles, and the `[:]` that the one slice-typed read
+  site needs hands out the array's own backing store. The copying accessor is
+  the half that does the work, so that read site copies
+  (`append([]int(nil), scorecardTiers[:]...)`), the way `catalog.AllKinds()`
+  does. A named accessor is not added: one call site, same file.
 - CLAUDE.md's rule 2 forbids package-level mutable state and names `sync.Once`
   and `init()` as its mechanisms. Five `//go:embed` vars are package-level
   mutable state that the rule's prose forbids and its regex cannot see, and

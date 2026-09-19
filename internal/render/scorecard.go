@@ -13,6 +13,14 @@ import (
 // tiers — the YAML is a map and a team may configure any subset. Spec §6's
 // matrix uses 1-3 throughout and the JSON Schema constrains metadata.tier to
 // them, so those are the columns, named once here.
+//
+// An array rather than a slice for the reason catalog.allKinds documents:
+// tests in a package share a process, so one test mutating a package-level
+// slice without a t.Cleanup poisons every test after it and the failure
+// surfaces somewhere else entirely. The array is half of that; the other half
+// is that every read handing the value out copies it, because `[...]int` stops
+// neither `scorecardTiers[0] = 9` nor a `[:]` slice reaching the same backing
+// store. See the assignment in scorecardPage.
 var scorecardTiers = [...]int{1, 2, 3}
 
 // CheckRow is one row of the standards matrix.
@@ -71,8 +79,15 @@ func scorecardPage(web fs.FS, in Input, c *diag.Collector) (emit.File, bool) {
 	}
 
 	view := ScorecardPage{
-		Page:              newPage(in, "scorecard/index.html", "Scorecard", "scorecard"),
-		Tiers:             scorecardTiers[:],
+		Page: newPage(in, "scorecard/index.html", "Scorecard", "scorecard"),
+		// A copy, not scorecardTiers[:]. The slice a [:] hands out shares the
+		// package array's backing store, so a holder of view.Tiers can write
+		// straight through to what this package believes the columns are —
+		// which is the reachability the array shape exists to remove
+		// (catalog.AllKinds() copies for the same reason, and says so). One
+		// copy at the one site that needs a slice; the range at the bottom of
+		// this function reads the array by value and needs nothing.
+		Tiers:             append([]int(nil), scorecardTiers[:]...),
 		HasHistory:        in.History != nil,
 		HistoryUnreadable: in.HistoryUnreadable,
 	}
