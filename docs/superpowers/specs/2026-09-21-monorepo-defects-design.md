@@ -1,6 +1,6 @@
 # Monorepo defects — design
 
-Branch: `fix/codeowners-duplicate-path-r50`.
+Branch: `fix/monorepo-defects-r50-r54`.
 
 ## What this is
 
@@ -155,9 +155,21 @@ right order. R50 is about **identical** paths, where last-match-wins is not an
 override anybody expressed.
 
 **`validate` still exits 0 on this catalog, and that gap is left open
-deliberately.** The check lives in `CODEOWNERS()`, which only `gen` and `build`
-call, so the PR gate still reports "no problems found" for a catalog `gen` will
-refuse. That is the same shape as R54 and is not fixed here: `validate` has its
+deliberately — but it is wider than this section first said.** The check lives
+in `CODEOWNERS()`, and an earlier draft claimed "which only `gen` and `build`
+call". `build` does not call it: `generate.CODEOWNERS` has exactly one
+non-test caller, `cmd/landsraad/gen.go`, inside `artifacts()`, whose only
+caller is `gen` itself, and `cmd/landsraad/build.go` names neither.
+
+So a team whose CI runs `validate` on pull requests and `build` on main — the
+shape this product is designed around — never sees `codeowners-duplicate-path`
+at all. Their portal renders happily while the CODEOWNERS file in the
+repository silently voids a team's review rights. The diagnostic fires only
+when somebody runs `gen` or `gen --check`.
+
+That does not change the decision to defer the validate-side twin, but it was
+a decision taken against a false picture of how many commands are blind, and
+the corrected picture belongs next to it. That is the same shape as R54 and is not fixed here: `validate` has its
 own `unknown-owner` check mirroring the generator's `codeowners-unknown-owner`,
 so the precedent for a validate-side twin exists, and R43 ("one condition, one
 check id") is the ruling that would govern it. It is a separate change with its
@@ -432,6 +444,93 @@ only the catalog `validate` builds three lines below that call. "Structure
 only" was the mechanism, and the property was that `validate` stays offline —
 the same mechanism-for-property substitution R49 is about.
 
+## What the composition audit found
+
+Run before merge, as `CLAUDE.md` requires. It produced one behavioural defect,
+one false claim in a comment, and a set of accuracy failures. All are fixed on
+this branch except the two at the end, which need a decision.
+
+**R53 created a third way for an exemption to waive nothing, and
+`exemptions()` knew two.** Its own doc comment enumerated "expired, or naming
+a check that does not exist" and called such an exemption "worse than no
+exemption at all: the author believes they are covered". An exemption naming a
+check the entity's kind excludes is exactly that, and `exemptions()` had both
+`e.Kind` and `std` in hand without asking. Worse, the expired branch still
+fired: the tool told a team to renew a waiver for a check it had, three lines
+earlier, declared can never apply to that kind. This is the population R53 was
+written for — narrowing a check with `appliesTo` and leaving the old exemption
+blocks in place is the natural migration order. Fixed with a distinct
+`exemption-not-applicable`, ordered before the expiry check; a distinct id
+because R43 is one condition one id, and "the kind excludes this" has a
+different fix from "this id is misspelt".
+
+**This is the second time R53 satisfied a property where it was noticed and
+not where it was also true.** First `Fails` against the denominator, now
+`exemptions` against both. The shape is worth naming: `StatusNotApplicable`
+is consulted in three places that must agree, and the type checker enforces
+none of them.
+
+**R52's "the fallback should be unreachable" was false.** A YAML alias
+(`dependsOn: *shared`) is an `AliasNode`, `seqItemLines` required a
+`SequenceNode`, and the decoder resolves the alias — so `Spec.DependsOn` was
+populated while its lines were not, and the diagnostic fell back to `NameLine`
+for exactly the files that use an anchor. Harmless in effect, but the comment's
+stated purpose was that the fallback "cannot quietly become load-bearing", and
+it was. Fixed by following the alias, which yields a better citation than the
+fallback; the comment now says "no parsed entity is *known* to reach it", with
+the word doing real work.
+
+**`DocsIndexNames` was exported ceremony and is deleted.** Its only callers
+were two tests, one of which existed solely to assert the copy-on-read property
+of the function justifying it. `internal/catalog` is the most-imported package
+in the tree, so every exported symbol there is a promise — and this one
+promised "the spellings are enumerable", which is how a second answer to
+"which file is the index" gets reintroduced one ruling after R51 eliminated it.
+
+**The `appliesTo` kind enum is now guarded against drift.**
+`standards.schema.json` is a third copy of a list Go owns, and
+`internal/schema` already had `TestSchemaKindsMatchGoKinds` for its copy. The
+spec named this cost and left it unenforced when the enforcement was four
+lines. Without it, adding a kind ships a landsraad that accepts it everywhere
+in a catalog and rejects it in `standards.yaml`, with the same wording a
+genuine typo produces — so the user cannot tell which it is.
+
+**Smaller accuracy failures, all fixed:** two comments counting "six values,
+not two" in a status vocabulary that now has seven — one of them falsified by
+the very hunk that added the rule beneath it; eleven doc comments in
+`internal/render` still asserting the index is `docs/index.md`, one of which
+sent readers grepping for an "index.md special case" that no longer exists in
+the function it names; `not-applicable` overflowing the CLI's 13-character
+status column and appearing in the list a reader scans for things to fix, which
+is the one list it is by definition not in; and `Entity.RefLines`, an exported
+mutable map on a pointer type handed to three packages, in a codebase that
+copies `allKinds` and `docsIndexNames` to avoid precisely that — now
+unexported behind its existing accessor.
+
+### Deferred, and needing a decision
+
+**The portal describes the standard in one place and `appliesTo` is not in
+it.** `internal/render/scorecard.go` builds each row from `Checks()`,
+`IsExternal` and `Severity`, and nothing under `internal/render` calls
+`AppliesTo`. So `/scorecard/` tells every reader that `image-scanned` is
+`required` at tier 1, unqualified, while `/entity/api/payments/` renders the
+same check as one row reading `image-scanned | not-applicable | required`. Two
+pages of one portal disagreeing about one check, and one row contradicting
+itself — the failure R51 exists to eliminate, reintroduced one ruling later.
+The matrix is the published description of the standard and `appliesTo` is now
+part of that standard, so the fix is to render it there rather than to blank
+the severity cell. That is real design work on the published artifact and it
+gets its own ruling.
+
+**`appliesTo` ships with no user-facing documentation.** It appears in the
+schema, the loader, the tests and this spec, and nowhere a user reads.
+`README.md` does not document `standards.yaml`'s fields at all, and
+`standards.default.yaml` — the file `landsraad init` writes into a user's
+repository — carries no comments. A capability nobody can find has shipped the
+cost of a one-way-door schema addition without the benefit. A `README.md` line
+is uncontroversial; commenting `standards.default.yaml` changes bytes landing
+in a user's repository, which is a one-way door in its own right.
+
 ## Hygiene: no decision needed
 
 - `internal/generate/codeowners.go`'s doc comment reasons about last-match-wins
@@ -459,8 +558,8 @@ consecutive runs, identical md5 — and is left alone. See the correction above.
 1. **R50** — the highest-priority defect, and the only one whose fix is fully
    specified and settled. Ships alone.
 2. **R52** — contained, mechanical, no user-visible contract changes.
-3. **R51** — four coordinated sites; needs `fetch`'s planner in the same change
-   or it trades a wrong answer for a landsraad-bug diagnostic.
+3. **R51** — three coordinated sites, all under `internal/`, sharing one
+   resolver in `internal/catalog`.
 4. **R54** — small, and reuses an existing scope distinction.
 5. **R53** — `/autonomy-check` first. Schema change to a user's file.
 
