@@ -236,15 +236,19 @@ comment was written.
 **The ruling.** `malformed-ref` and `dangling-ref` cite the line of the
 offending list item. Mechanically:
 
-- `parse.go` gains a sequence-aware sibling to `fieldLine` returning the
-  1-indexed line of each item under a key path. `fieldLine` (`:157`) already
-  walks mappings and returns 0 for a path that does not exist; the new one
-  walks to the same node, requires a `yaml.SequenceNode`, and reads
-  `Content[i].Line`.
+- `parse.go` gains a sequence-aware sibling to `fieldLine`, returning the
+  1-indexed line of each item under a key path. The mapping walk `fieldLine`
+  already performs is extracted to a shared `nodeAt` so both use one traversal;
+  the new `seqItemLines` requires a `yaml.SequenceNode` and reads
+  `Content[i].Line`. These are named structurally and not by line number,
+  because this ruling's own change moves them — which is what R48 is about.
 - `Entity` carries those lines the same way it carries `NameLine` — attached at
   parse time, `yaml:"-"`, for exactly the two fields `resolveRefs` walks:
-  `dependsOn` and `providesApis` (`graph.go:58-59`). No other field holds a
-  reference.
+  `dependsOn` and `providesApis`. No other field holds a reference.
+- Those two field names become the exported constants `FieldDependsOn` and
+  `FieldProvidesApis`, because one string is now doing three jobs: the key
+  `RefLines` records under, the label `resolveRefs` prints, and the YAML key
+  the parser walks to. Three uses of a bare literal is how one of them drifts.
 - `resolveRefs` already has the item's index — it is the loop variable over
   `raws` — so it asks for the line by field and index.
 
