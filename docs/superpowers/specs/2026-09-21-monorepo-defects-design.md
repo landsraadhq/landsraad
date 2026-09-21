@@ -24,18 +24,32 @@ it: the hardcoded filename is visible in the source.
 
 ## Correction to the report as received
 
-**The report scopes the docs-index defect to one file. It is four.** It cites
-`internal/scorecard/hermetic.go:225` and stops. `index.md` is also hardcoded at
-`internal/render/docs.go:168` (the link-rewrite special case) and `:338` (the
-ruling R18 hoist onto the entity page), and `internal/fetch/fs.go:115,265`
-reasons about `docs/index.md` when deciding what a listing has told it.
+**The report scopes the docs-index defect to one file. It is three, in two
+packages.** It cites `internal/scorecard/hermetic.go:225` and stops. `index.md`
+is also hardcoded at `internal/render/docs.go:168` (the link-rewrite special
+case) and `:338` (the ruling R18 hoist onto the entity page).
 
 Fixing only the scorecard would leave a Hugo repository passing `docs-fresh`
 while the portal still refuses to hoist its `_index.md` onto the entity page.
 That is the scorecard and the renderer disagreeing about what a docs index is,
 which is strictly worse than today's state — today they are both wrong in the
-same direction, and the failure is at least honest. R51 is written against all
-four sites for that reason.
+same direction, and the failure is at least honest.
+
+**This section first said four sites, and named `internal/fetch` as the
+fourth. That was wrong, and it is corrected here rather than quietly
+narrowed.** The two `index.md` occurrences in `internal/fetch/fs.go` are
+illustrative prose inside doc comments, not logic. The content planner is
+`cmd/landsraad/repos.go`, and it does not name index files at all: it
+`fs.WalkDir`s `spec.docs` and adds every `*.md` it finds, then `addDir`s the
+directory. `_index.md` has therefore always been fetched for a remote
+repository, and the claim that fixing the scorecard alone would produce a
+landsraad-bug diagnostic about remote repositories was false.
+
+The error is worth keeping because of how it was made. The `fetch` claim came
+from `grep`ping for `index.md` and reading the hit count, not the hits — the
+same shortcut the report's own author owned up to when they "confirmed" the
+CODEOWNERS defect off a stale file. A citation is a claim about code, and a
+grep hit is not yet one.
 
 **One thing the report got right that is worth keeping.** It flagged
 `sort.Slice`'s instability in `codeowners.go` as a suspected source of
@@ -181,27 +195,24 @@ sole blocker, and it masked a genuine 391-day-stale finding behind a false
 
 **The spec never named this file.** `docs/superpowers/specs/2026-09-08-landsraad-design.md`
 words §5.3 as a docs index existing and being recent; `index.md` is convention
-that hardened into four hardcoded literals, not a ruling anybody made.
+that hardened into three hardcoded literals, not a ruling anybody made.
 
 **The ruling.** A docs index is `index.md` **or** `_index.md`, and when both
 exist `index.md` wins — deterministic, and it leaves every repository that
 passes today passing with the same file. That definition lives in exactly one
-place and is consumed by all four sites:
+place and is consumed by all three sites:
 
 | site | today | after |
 |---|---|---|
 | `internal/scorecard/hermetic.go:225` | `Stat` of a literal | asks the shared resolver |
 | `internal/render/docs.go:338` | `rel == "index.md"` selects the R18 hoist | the resolver selects it |
 | `internal/render/docs.go:168` | `src == l.docsDir+"/index.md"` rewrites links to it | the resolved name |
-| `internal/fetch/fs.go` content planner | plans `docs/index.md` | plans both candidates |
 
-**`fetch` is in the table for a reason, and it is the reason this is not a
-one-line change.** If the planner does not ask the host for `_index.md`, a
-*remote* repository's `_index.md` comes back `ErrNotFetched`, and
-`scorecard.Unreadable` correctly reports that as "this is a landsraad bug, not
-a problem with your catalog". Fixing the scorecard alone would turn a wrong
-answer about local repositories into a landsraad-bug diagnostic about remote
-ones.
+**One definition, in `internal/catalog`.** `DocsIndex(fsys, docsDir)` answers
+"which file is this entity's documentation index" once, and both the scorecard
+and the renderer ask it. Two answers is exactly how a service comes to pass
+`docs-fresh` while the portal refuses to hoist the very file that passed it,
+and this ruling exists because there were already two.
 
 **The diagnostic wording changes.** "has no index.md" becomes a sentence that
 names both spellings, because a message naming one file is what sent 18
