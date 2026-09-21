@@ -135,6 +135,41 @@ type Entity struct {
 	SourceRepo string `yaml:"-"`
 	SourcePath string `yaml:"-"`
 	NameLine   int    `yaml:"-"`
+
+	// RefLines holds the 1-indexed line of each item of the reference fields,
+	// keyed by FieldDependsOn and FieldProvidesApis. Provenance like the three
+	// above: not present in the file, attached at parse time, and absent for
+	// an entity built without ParseFile.
+	RefLines map[string][]int `yaml:"-"`
+}
+
+// FieldDependsOn and FieldProvidesApis name the two spec fields that carry
+// references. One constant each, because the same string is the key RefLines
+// records lines under, the label resolveRefs prints in its diagnostics, and
+// the YAML key the parser walks to — three uses that must not drift.
+const (
+	FieldDependsOn    = "dependsOn"
+	FieldProvidesApis = "providesApis"
+)
+
+// RefLine returns the 1-indexed line of the i-th item of a reference field.
+//
+// It falls back to NameLine, and that is a documented degradation rather than
+// a silent one. An entity built without ParseFile carries no RefLines, and a
+// zero would render through internal/diag as "service.yaml:0" — a location
+// that does not exist, in a program whose product is the quality of its
+// diagnostics. NameLine names the right file and the right entity, merely not
+// the right line, which is precisely the behaviour this method exists to
+// replace, so the floor here is the old behaviour and not corruption. A
+// reference that decoded into Spec.DependsOn came from a sequence node that
+// exists, so for a parsed entity the fallback should be unreachable; it is
+// here so that a gap in provenance cannot turn a diagnostic into a panic.
+func (e *Entity) RefLine(field string, i int) int {
+	lines := e.RefLines[field]
+	if i < 0 || i >= len(lines) || lines[i] == 0 {
+		return e.NameLine
+	}
+	return lines[i]
 }
 
 // Ref returns this entity's canonical reference, e.g. "service:ledger-api".

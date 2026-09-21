@@ -55,8 +55,8 @@ func (c *Catalog) Resolve(scope Scope, col *diag.Collector) *Graph {
 	}
 	for _, e := range c.entities {
 		from := e.Ref()
-		c.resolveRefs(g, e, from, e.Spec.DependsOn, "dependsOn", scope, col)
-		c.resolveRefs(g, e, from, e.Spec.ProvidesApis, "providesApis", scope, col)
+		c.resolveRefs(g, e, from, e.Spec.DependsOn, FieldDependsOn, scope, col)
+		c.resolveRefs(g, e, from, e.Spec.ProvidesApis, FieldProvidesApis, scope, col)
 	}
 	for k := range g.edges {
 		sortRefs(g.edges[k])
@@ -74,14 +74,14 @@ func (c *Catalog) Resolve(scope Scope, col *diag.Collector) *Graph {
 // today and would have become a hard failure the day a later release started
 // resolving it — breaking repos that had been green for months.
 func (c *Catalog) resolveRefs(g *Graph, e *Entity, from Ref, raws []string, field string, scope Scope, col *diag.Collector) {
-	for _, raw := range raws {
+	for i, raw := range raws {
 		to, err := ParseRef(raw)
 		if err != nil {
 			col.Add(diag.Diagnostic{
 				Severity: diag.SevError,
 				Repo:     e.SourceRepo,
 				File:     e.SourcePath,
-				Line:     e.NameLine,
+				Line:     e.RefLine(field, i),
 				Entity:   e.Metadata.Name,
 				Check:    "malformed-ref",
 				Message:  fmt.Sprintf("%s: %v", field, err),
@@ -95,7 +95,7 @@ func (c *Catalog) resolveRefs(g *Graph, e *Entity, from Ref, raws []string, fiel
 					Severity: diag.SevError,
 					Repo:     e.SourceRepo,
 					File:     e.SourcePath,
-					Line:     e.NameLine,
+					Line:     e.RefLine(field, i),
 					Entity:   e.Metadata.Name,
 					Check:    "dangling-ref",
 					Message: fmt.Sprintf("%s %s %s, which is not in the catalog",

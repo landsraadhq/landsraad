@@ -104,6 +104,10 @@ func ParseFile(repo, path string, data []byte, c *diag.Collector) (*Entity, bool
 	if e.NameLine == 0 {
 		e.NameLine = 1
 	}
+	e.RefLines = map[string][]int{
+		FieldDependsOn:    seqItemLines(&root, "spec", FieldDependsOn),
+		FieldProvidesApis: seqItemLines(&root, "spec", FieldProvidesApis),
+	}
 	return &e, true
 }
 
@@ -152,16 +156,16 @@ func isEmptyDocument(doc *yaml.Node) bool {
 	return len(doc.Content) == 1 && n.Kind == yaml.ScalarNode && n.Tag == "!!null"
 }
 
-// fieldLine walks a document node down the given key path and returns the
-// 1-indexed line of that key's value, or 0 when the path does not exist.
-func fieldLine(root *yaml.Node, path ...string) int {
+// nodeAt walks a document node down the given key path and returns the node
+// holding that key's value, or nil when the path does not exist.
+func nodeAt(root *yaml.Node, path ...string) *yaml.Node {
 	node := root
 	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
 		node = node.Content[0]
 	}
 	for _, key := range path {
 		if node.Kind != yaml.MappingNode {
-			return 0
+			return nil
 		}
 		found := false
 		// Mapping content alternates key, value, key, value.
@@ -173,8 +177,37 @@ func fieldLine(root *yaml.Node, path ...string) int {
 			}
 		}
 		if !found {
-			return 0
+			return nil
 		}
 	}
+	return node
+}
+
+// fieldLine walks a document node down the given key path and returns the
+// 1-indexed line of that key's value, or 0 when the path does not exist.
+func fieldLine(root *yaml.Node, path ...string) int {
+	node := nodeAt(root, path...)
+	if node == nil {
+		return 0
+	}
 	return node.Line
+}
+
+// seqItemLines returns the 1-indexed line of each item of the sequence at the
+// given key path, or nil when that path is absent or is not a sequence.
+//
+// Ruling R52: the index into the returned slice matches the index into the
+// decoded []string, because both are built from the same sequence node in the
+// same order. That correspondence is what lets a diagnostic about the i-th
+// reference cite the line the i-th reference is written on.
+func seqItemLines(root *yaml.Node, path ...string) []int {
+	node := nodeAt(root, path...)
+	if node == nil || node.Kind != yaml.SequenceNode {
+		return nil
+	}
+	lines := make([]int, len(node.Content))
+	for i, item := range node.Content {
+		lines[i] = item.Line
+	}
+	return lines
 }

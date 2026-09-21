@@ -6,6 +6,11 @@ import (
 	"github.com/landsraadhq/landsraad/internal/diag"
 )
 
+// entDeps builds an entity by hand, so it carries no RefLines and every
+// reference diagnostic about it falls back to NameLine (ruling R52). The
+// tests below that assert Line == 4 are therefore pinning that fallback, not
+// the per-reference line — TestResolveCitesTheLineOfAMalformedRef and its
+// dangling sibling go through ParseFile and pin the real behaviour.
 func entDeps(name string, kind Kind, deps ...string) *Entity {
 	e := ent("monorepo", "services/"+name+"/service.yaml", name, kind, 4)
 	e.Spec.DependsOn = deps
@@ -213,5 +218,98 @@ func TestDependentsReturnsReverseEdges(t *testing.T) {
 	}
 	if got[0].String() != "service:a" || got[1].String() != "service:b" {
 		t.Errorf("Dependents must be sorted, got %v", got)
+	}
+}
+
+// Ruling R52. A reference list is where the mistake is, so it is where the
+// diagnostic must point. resolveRefs passed e.NameLine for both malformed-ref
+// and dangling-ref, so a bad reference on line 13 reported as line 4 — and a
+// monorepo entity carrying 20+ references produced a screenful of errors all
+// naming one line.
+//
+// Entity's own doc comment already promised otherwise: the provenance fields
+// exist "so a collision or a dangling reference can name both sides with a
+// file and a line". For a collision NameLine is exactly right. For a dangling
+// reference it never was.
+//
+// This goes through ParseFile because entities built by hand carry no YAML
+// node and so have no per-reference lines to cite.
+const refsYAML = `apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: a
+  owner: team-payments
+  tier: 1
+  lifecycle: production
+spec:
+  language: go
+  path: services/a
+  dependsOn:
+    - service:real
+    - noprefix
+    - service:alsoreal
+`
+
+func TestResolveCitesTheLineOfAMalformedRef(t *testing.T) {
+	var c diag.Collector
+	e, ok := ParseFile("monorepo", "services/a/service.yaml", []byte(refsYAML), &c)
+	if !ok {
+		t.Fatalf("fixture must parse, diagnostics: %+v", c.Diagnostics())
+	}
+	cat := NewCatalog([]*Entity{e}, &c)
+	cat.Resolve(LocalOnly, &c)
+
+	diags := c.Diagnostics()
+	if len(diags) != 1 {
+		t.Fatalf("want exactly 1 diagnostic, got %d: %+v", len(diags), diags)
+	}
+	got := diags[0]
+	if got.Check != "malformed-ref" {
+		t.Errorf("Check = %q, want %q", got.Check, "malformed-ref")
+	}
+	// "- noprefix" is the 13th line of refsYAML. NameLine is 4.
+	if got.Line != 13 {
+		t.Errorf("Line = %d, want 13 — the line the bad reference is written on", got.Line)
+	}
+}
+
+// Ruling R52, the second call site. providesApis goes through the same
+// resolveRefs as dependsOn, so it gets the same line and the same test —
+// a fix applied to one reference field and not the other is the drift the
+// shared FieldDependsOn/FieldProvidesApis constants exist to prevent.
+const providesYAML = `apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: a
+  owner: team-payments
+  tier: 1
+  lifecycle: production
+spec:
+  language: go
+  path: services/a
+  providesApis:
+    - api:nowhere
+`
+
+func TestResolveCitesTheLineOfADanglingRef(t *testing.T) {
+	var c diag.Collector
+	e, ok := ParseFile("monorepo", "services/a/service.yaml", []byte(providesYAML), &c)
+	if !ok {
+		t.Fatalf("fixture must parse, diagnostics: %+v", c.Diagnostics())
+	}
+	cat := NewCatalog([]*Entity{e}, &c)
+	cat.Resolve(FullCatalog, &c)
+
+	diags := c.Diagnostics()
+	if len(diags) != 1 {
+		t.Fatalf("want exactly 1 diagnostic, got %d: %+v", len(diags), diags)
+	}
+	got := diags[0]
+	if got.Check != "dangling-ref" {
+		t.Errorf("Check = %q, want %q", got.Check, "dangling-ref")
+	}
+	// "- api:nowhere" is the 12th line of providesYAML. NameLine is 4.
+	if got.Line != 12 {
+		t.Errorf("Line = %d, want 12 — the line the dangling reference is written on", got.Line)
 	}
 }
