@@ -312,12 +312,50 @@ check that ran no verdict" already exists. It stays **visible** on the portal,
 rendered as not applicable, so a short check list is explained rather than
 mysterious.
 
-**This is a one-way door and is not being taken unilaterally.** `standards.yaml`
+**This is a one-way door, and it was not taken unilaterally.** `standards.yaml`
 lives in the user's repository and is validated by the embedded
 `config.StandardsSchema`. Adding a property is additive, but the vocabulary of
-kinds becomes load-bearing the day anyone writes one, and `Severity`'s
-signature is a public-ish seam three call sites depend on. `/autonomy-check`
-before implementing, and not in the same change as R50.
+kinds becomes load-bearing the day anyone writes one. Ratified after an
+`/autonomy-check`, in its own change, separate from R50.
+
+`Severity`'s signature is untouched. An earlier draft assumed the kind would
+have to be threaded through it; it does not. `AppliesTo` is a second question
+asked of the same `Standards`, which leaves three call sites alone and keeps
+"what is this check worth" and "is this check meaningful here" as two
+propositions rather than one overloaded one.
+
+**A typo in `appliesTo` is a load error, not a check that quietly evaluates
+against nothing.** The kind list is an enum in `standards.schema.json`, so
+`appliesTo: [Srvice]` fails at load with the schema's own wording. The failure
+it prevents is `standards-unknown-check`'s, reached from the other side: a
+scorecard reporting on fewer checks than the team believes. The cost is that
+the kind vocabulary is now enumerated in a third JSON schema —
+`service.schema.json` already spells it twice — and nothing makes those three
+agree. A kind added to `catalog.AllKinds` without touching them is a silent
+gap in all three.
+
+**The denominator and the gate must agree, and for one commit they did not.**
+`Score` excluded not-applicable from `Applicable` while `EntityScore.Fails` —
+what `--fail-on` consults — did not, so an API entity scored 100% and the build
+still failed it on `image-scanned`. The two lines appeared in one run's output,
+one under the other. `Fails` already excludes `StatusExempt` for exactly this
+reason under R4; not-applicable is the same claim about a kind rather than a
+date, and the first implementation applied R4's precedent to one of the two
+places that had to change. That is the R46/R49 shape again — a property
+satisfied in the place it was noticed and not in the place it was also true.
+It was found by running the binary, which is the method this repository keeps
+having to relearn.
+
+**What this ruling does NOT do: the default standards are unchanged.**
+`standards.default.yaml` still asks every kind for `image-scanned`,
+`runbook-present` and `otel-present`. Shipping the capability and changing the
+default are two decisions, and the second moves the score of every repository
+that has not written its own `standards.yaml` — including in the direction of
+looking better without anything having improved, which is the one incentive
+spec §6 says this product must never create. A team can adopt `appliesTo`
+today in their own file, and `landsraad init` writes the default out for them
+to edit. Deciding which checks are deployable-only in the shipped default is
+its own change, with its own ruling.
 
 ### R54: ambiguity is decidable locally; absence is not
 
