@@ -54,12 +54,14 @@ type DocPage struct {
 type entityDocs struct {
 	Files []emit.File
 	Nav   []DocLink
-	// Index is docs/index.md, inlined on the entity page (ruling R18).
+	// Index is the documentation index — docs/index.md or docs/_index.md, as
+	// catalog.DocsIndex resolves it — inlined on the entity page (rulings R18,
+	// R51).
 	Index template.HTML
 	// Docs describes the sub-pages this entity emitted, one entry per page
 	// actually written.
 	Docs []RenderedDoc
-	// IndexDoc is docs/index.md's search entry, kept out of Docs because the
+	// IndexDoc is the documentation index's search entry, kept out of Docs because the
 	// page it describes is the ENTITY page, which docsFor does not emit.
 	// entityPages records it only after that page renders, for the same reason
 	// Docs and Nav are only appended to after renderPage succeeds.
@@ -113,19 +115,19 @@ func rewriteMarkdownLinks(dest string) string {
 // docLinker rewrites the relative Markdown links inside one document by
 // mapping between the repository's source tree and the site's URL tree.
 //
-// The two trees are not mirrors of each other: docs/index.md is hoisted
+// The two trees are not mirrors of each other: the documentation index is hoisted
 // onto the entity page itself (ruling R18), one directory above every
 // other document under spec.docs. A context-free .md -> .html suffix swap
 // gets any link crossing that hoist wrong, in both directions — verified
-// by printing the actual rendered HTML: docs/index.md's own link to
+// by printing the actual rendered HTML: the index's own link to
 // docs/runbook.md came out as "runbook.html" (a dead link; the real page
 // is one level down, at "docs/runbook.html"), and a nested doc's link back
-// to docs/index.md came out as "../index.html" (a dead link; index.md has
+// to the index came out as "../index.html" (a dead link; the index has
 // no page of its own to point at).
 //
 // The fix resolves a link's destination against the *source* directory of
 // the document containing it, maps that source path to its URL (with the
-// index.md special case), and computes the relative path from the
+// indexSrc special case), and computes the relative path from the
 // containing document's own URL to the target's — the only URL-tree fact
 // that source-relative Markdown links cannot already encode.
 //
@@ -274,7 +276,7 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 	// relURL is where the page is EMITTED, relative to the entity directory,
 	// and is the point every rewritten link is computed from. searchURL is the
 	// URL the search index should point at. They differ for exactly one
-	// document: ruling R18 hoists docs/index.md onto the entity page, whose
+	// document: ruling R18 hoists the documentation index onto the entity page, whose
 	// canonical URL is the directory itself — CatalogRow.URL is EntityURL(ref),
 	// with no "index.html" — so recording it at entityDir+"index.html" spelled
 	// one page two ways and put two rows in the index for every documented

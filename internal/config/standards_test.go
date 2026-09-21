@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
@@ -198,6 +199,23 @@ func TestAppliesToIsEveryKindWhenAbsent(t *testing.T) {
 	for _, k := range catalog.AllKinds() {
 		if !s.AppliesTo("owner-set", k) {
 			t.Errorf("AppliesTo(owner-set, %s) = false, want true — absent appliesTo means every kind", k)
+		}
+	}
+}
+
+// standards.schema.json enumerates the kinds appliesTo accepts, which is a
+// third copy of a list Go owns — service.schema.json already holds two.
+// internal/schema has TestSchemaKindsMatchGoKinds for its copy; this is the
+// same guard for this one.
+//
+// Without it, adding a kind to catalog.allKinds ships a landsraad that accepts
+// the kind everywhere in a catalog and rejects it in standards.yaml, with the
+// same wording a genuine typo produces — so the user cannot tell which it is.
+func TestStandardsSchemaKindsMatchGoKinds(t *testing.T) {
+	raw := string(StandardsSchema)
+	for _, k := range catalog.AllKinds() {
+		if !strings.Contains(raw, `"`+string(k)+`"`) {
+			t.Errorf("kind %q exists in Go but not in standards.schema.json", k)
 		}
 	}
 }

@@ -18,10 +18,14 @@ import (
 
 // Status is the outcome of one check for one entity.
 //
-// Six values, not two, because the difference between them is what makes a
+// Seven values, not two, because the difference between them is what makes a
 // scorecard trustworthy. "Not reported" and "stale" are specifically not
 // failures of the service — they are failures of the evidence — and rendering
 // them as fail would send owners hunting for a problem in the wrong place.
+//
+// "Not applicable" is a third category rather than a fourth flavour of the
+// second: not a fact about the service and not a fact about the evidence, but
+// about whether the question was ever meaningful for this kind (ruling R53).
 type Status string
 
 const (

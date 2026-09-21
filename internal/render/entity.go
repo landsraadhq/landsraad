@@ -67,7 +67,8 @@ type EntityView struct {
 	// Diagram is Mermaid source, empty when the entity has no edges. The
 	// "Depends on" lists above are the navigation; this only shows shape.
 	Diagram string
-	// Index is docs/index.md, rendered inline (ruling R18).
+	// Index is the documentation index — docs/index.md or docs/_index.md
+	// (rulings R18, R51) — rendered inline.
 	Index template.HTML
 	// DocNav lists the sub-pages, relative to this entity's own page.
 	DocNav []DocLink
@@ -209,7 +210,7 @@ func entityPages(web fs.FS, in Input, c *diag.Collector) ([]emit.File, []Rendere
 		view.RunbookUnreadable = ed.RunbookUnreadable
 		if f, ok := renderPage(t, EntityPath(e.Ref()), view, c); ok {
 			out = append(out, f)
-			// The hoisted docs/index.md describes THIS page, so its search
+			// The hoisted documentation index describes THIS page, so its search
 			// entry is recorded only now — an index entry for a page nothing
 			// emitted is a dead search result, the same defect the doc-nav
 			// links carried.

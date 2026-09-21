@@ -45,8 +45,9 @@ td .desc { display: block; color: var(--muted); font-size: 12px; }
 
 .kind { font-size: 12px; padding: .1rem .35rem; border: 1px solid var(--line); border-radius: 3px; }
 
-/* Status vocabulary. Six values, not two: "not reported" and "stale" are
-   failures of the evidence, not of the service (spec §9). */
+/* Status vocabulary. Seven values, not two: "not reported" and "stale" are
+   failures of the evidence, not of the service (spec §9), and "not applicable"
+   is about whether the check was ever meaningful for the kind (ruling R53). */
 .status-pass { color: var(--good); }
 .status-fail { color: var(--bad); }
 .status-error { color: var(--bad); }

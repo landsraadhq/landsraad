@@ -17,19 +17,11 @@ import (
 //
 // Unexported, and an array rather than an exported slice, for the reason
 // allKinds is: an exported slice is package-level state any importer can
-// rewrite.
+// rewrite. Deliberately NOT exposed through an accessor either — DocsIndex is
+// the only thing that should answer "which file is the index", and a second
+// exported way to enumerate the names is how the second answer R51 exists to
+// eliminate gets reintroduced.
 var docsIndexNames = [...]string{"index.md", "_index.md"}
-
-// DocsIndexNames returns the accepted documentation index file names in
-// precedence order. The slice is fresh on each call, so a caller cannot reach
-// back and change what the package believes.
-func DocsIndexNames() []string {
-	out := make([]string, 0, len(docsIndexNames))
-	for _, n := range docsIndexNames {
-		out = append(out, n)
-	}
-	return out
-}
 
 // DocsIndex finds an entity's documentation index under docsDir and returns
 // its repository-relative path.

@@ -24,7 +24,7 @@ func TestDocsIndexPrefersIndexMdOverUnderscore(t *testing.T) {
 }
 
 func TestDocsIndexFindsEitherSpellingAlone(t *testing.T) {
-	for _, name := range DocsIndexNames() {
+	for _, name := range []string{"index.md", "_index.md"} {
 		only := fstest.MapFS{"docs/" + name: {Data: []byte("# x\n")}}
 		got, ok := DocsIndex(only, "docs")
 		if !ok || got != "docs/"+name {
@@ -40,16 +40,5 @@ func TestDocsIndexFindsEitherSpellingAlone(t *testing.T) {
 func TestDocsIndexIsAbsentForAnEmptyDocsDir(t *testing.T) {
 	if _, ok := DocsIndex(fstest.MapFS{"docs/index.md": {Data: []byte("x")}}, ""); ok {
 		t.Error("an empty docsDir has no index, whatever the filesystem holds")
-	}
-}
-
-// DocsIndexNames hands out a copy, for the reason AllKinds does: an exported
-// slice is package state any importer can rewrite, and a test mutating it
-// without a t.Cleanup poisons every test that runs after it.
-func TestDocsIndexNamesCannotBeMutatedByACaller(t *testing.T) {
-	got := DocsIndexNames()
-	got[0] = "nonsense.md"
-	if DocsIndexNames()[0] != "index.md" {
-		t.Error("a caller rewrote the package's own list of index names")
 	}
 }

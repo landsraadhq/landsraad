@@ -44,7 +44,7 @@ type SearchEntry struct {
 func searchIndex(rows []CatalogRow, docs []RenderedDoc) (emit.File, error) {
 	entries := make([]SearchEntry, 0, len(rows)+len(docs))
 	// at maps a URL to the entry already describing it. One URL is one page,
-	// so it is one row: ruling R18 hoists docs/index.md onto the entity page,
+	// so it is one row: ruling R18 hoists the documentation index onto the entity page,
 	// which means that document and that entity ARE the same page, and the
 	// index must not claim otherwise.
 	at := make(map[string]int, len(rows)+len(docs))
@@ -71,7 +71,7 @@ func searchIndex(rows []CatalogRow, docs []RenderedDoc) (emit.File, error) {
 			// entity itself was unfindable by the words in its own
 			// documentation, because the entity row carried no text at all.
 			// The entity's own Title, Kind and Owner win: the label a reader
-			// recognises is "ledger-api, Service", not the H1 of its index.md.
+			// recognises is "ledger-api, Service", not the H1 of its docs index.
 			entries[i].Text = d.Text
 			entries[i].Headings = append(entries[i].Headings, headings...)
 			continue

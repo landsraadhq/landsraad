@@ -224,10 +224,17 @@ func writeScoreText(w io.Writer, sc *scorecard.Scorecard) {
 		fmt.Fprintf(w, "\n%s  tier %d  %s  %.0f%% (%d/%d)\n",
 			e.Ref, e.Tier, e.Owner, e.Score()*100, e.Passed, e.Applicable)
 		for _, r := range e.Results {
-			if r.Status.Passed() {
+			// This list is what a reader scans for things to fix, so it holds
+			// only results that are one of them. A pass is not, and neither
+			// is a check the entity's kind excludes (ruling R53) — that one
+			// stays visible on the portal, which is a surface with a
+			// different job.
+			if r.Status.Passed() || r.Status == scorecard.StatusNotApplicable {
 				continue
 			}
-			fmt.Fprintf(w, "  %-16s %-13s %s\n", r.Check, r.Status, r.Detail)
+			// 14, because "not-applicable" is 14 characters and a status that
+			// touches its neighbour is the column silently failing.
+			fmt.Fprintf(w, "  %-16s %-14s %s\n", r.Check, r.Status, r.Detail)
 		}
 	}
 	fmt.Fprintf(w, "\nby team:\n")
