@@ -39,12 +39,30 @@ func Banner(source string) string {
 // lexical order gives that. It also makes the output stable between runs: a
 // generated file that reorders itself makes `gen --check` fail at random.
 //
+// That reasoning covers *nested* paths, where a later line overriding an
+// earlier one is the point. Two entities resolving to the **same** path is a
+// different case and ruling R50 covers it: last-match-wins there is an
+// override nobody expressed, so owners that render identically are deduped
+// and owners that differ are an error rather than a silently voided team.
+//
 // Owners come from the team's members (spec §11 routes owner through
 // teams.yaml). config.Team carries no host team handle, so members it is; a
 // handle already written with a leading @ is left alone.
 func CODEOWNERS(cat *catalog.Catalog, teams *config.Teams, c *diag.Collector) emit.File {
 	type entry struct{ path, owners string }
 	var entries []entry
+
+	// Ruling R50. CODEOWNERS is keyed on path, but the catalog's uniqueness
+	// invariant is (kind, name) and nothing constrains spec.path to be unique.
+	// The projection from entities to paths is therefore not injective, and
+	// git's last-match-wins makes every line but the last one a no-op — so two
+	// differently-owned entities on one path silently strip the first team of
+	// the review rights this file exists to grant.
+	type claim struct {
+		owners string
+		by     *catalog.Entity
+	}
+	claimed := make(map[string]claim)
 
 	for _, e := range cat.Entities() {
 		// An entity that describes something outside this repository omits
@@ -86,7 +104,40 @@ func CODEOWNERS(cat *catalog.Catalog, teams *config.Teams, c *diag.Collector) em
 			})
 			continue
 		}
-		entries = append(entries, entry{path: ownedPath(e), owners: strings.Join(owners, " ")})
+		p := ownedPath(e)
+		joined := strings.Join(owners, " ")
+		if prev, exists := claimed[p]; exists {
+			if prev.owners == joined {
+				// A byte-for-byte repeat of a line already emitted. git
+				// resolves it to the same owner either way, so there is
+				// nothing to report and nothing lost by emitting it once.
+				// Keying on the rendered owners rather than the team name is
+				// deliberate: two teams with identical members produce the
+				// same file, and the file is what git reads.
+				continue
+			}
+			// Mirrors duplicate-name (internal/catalog/merge.go): anchor on the
+			// second entity encountered, name the first's location in the
+			// message, and let the first keep the line. The diagnostic is what
+			// stops the build.
+			c.Add(diag.Diagnostic{
+				Severity: diag.SevError,
+				Repo:     e.SourceRepo,
+				File:     e.SourcePath,
+				Line:     e.NameLine,
+				Entity:   e.Metadata.Name,
+				Check:    "codeowners-duplicate-path",
+				Message: fmt.Sprintf(
+					"%s is claimed by both %s (%s, %s line %d) and %s (%s), whose teams differ, "+
+						"so CODEOWNERS would silently give one of them no review rights",
+					e.Spec.Path, prev.by.Ref(), prev.by.Metadata.Owner, prev.by.Location(),
+					prev.by.NameLine, e.Ref(), e.Metadata.Owner),
+				Hint: "CODEOWNERS is last-match-wins; give them distinct spec.path values, or one owner",
+			})
+			continue
+		}
+		claimed[p] = claim{owners: joined, by: e}
+		entries = append(entries, entry{path: p, owners: joined})
 	}
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].path < entries[j].path })
