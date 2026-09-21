@@ -48,6 +48,10 @@ type LinkRewriter func(dest string) string
 // alternative is three traversals that can disagree about what the document
 // contains.
 func Render(m goldmark.Markdown, source []byte, rewrite LinkRewriter) (Doc, error) {
+	// Before the parser sees it: a front-matter block is not Markdown, and
+	// goldmark renders it as body text. Every caller goes through here, so
+	// docs pages, runbooks and the hoisted index are stripped alike.
+	source = stripFrontMatter(source)
 	reader := text.NewReader(source)
 	root := m.Parser().Parse(reader)
 
