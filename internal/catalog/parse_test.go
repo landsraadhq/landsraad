@@ -218,3 +218,45 @@ func TestParseFileAcceptsDocumentMarkers(t *testing.T) {
 		})
 	}
 }
+
+// Ruling R52's comment claims the NameLine fallback "should be unreachable"
+// for a parsed entity. A YAML alias reaches it: seqItemLines requires a
+// SequenceNode, an alias is an AliasNode, and the decoder resolves the alias
+// so Spec.DependsOn is populated while its lines are not.
+//
+// The degradation was harmless — it fell back to the pre-R52 line — but the
+// comment's whole purpose is that the fallback "cannot quietly become
+// load-bearing", and it was load-bearing here. Following the alias is four
+// lines and removes the exception rather than documenting it.
+const aliasedRefsYAML = `apiVersion: landsraad/v1
+kind: Service
+metadata:
+  name: a
+  owner: team-payments
+  tier: 1
+  lifecycle: production
+spec:
+  language: go
+  path: services/a
+  providesApis: &shared
+    - api:one
+  dependsOn: *shared
+`
+
+func TestParseFileFollowsAYAMLAliasForReferenceLines(t *testing.T) {
+	var c diag.Collector
+	e, ok := ParseFile("monorepo", "services/a/service.yaml", []byte(aliasedRefsYAML), &c)
+	if !ok {
+		t.Fatalf("fixture must parse: %+v", c.Diagnostics())
+	}
+	// "- api:one" is line 12; both fields resolve to that same sequence.
+	if got := e.refLines[FieldProvidesApis]; len(got) != 1 || got[0] != 12 {
+		t.Errorf("providesApis lines = %v, want [12]", got)
+	}
+	if got := e.refLines[FieldDependsOn]; len(got) != 1 || got[0] != 12 {
+		t.Errorf("dependsOn lines = %v, want [12] — an alias is still a sequence", got)
+	}
+	if got := e.RefLine(FieldDependsOn, 0); got != 12 {
+		t.Errorf("RefLine(dependsOn, 0) = %d, want 12, not the NameLine fallback", got)
+	}
+}

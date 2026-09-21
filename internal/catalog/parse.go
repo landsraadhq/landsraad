@@ -104,7 +104,7 @@ func ParseFile(repo, path string, data []byte, c *diag.Collector) (*Entity, bool
 	if e.NameLine == 0 {
 		e.NameLine = 1
 	}
-	e.RefLines = map[string][]int{
+	e.refLines = map[string][]int{
 		FieldDependsOn:    seqItemLines(&root, "spec", FieldDependsOn),
 		FieldProvidesApis: seqItemLines(&root, "spec", FieldProvidesApis),
 	}
@@ -202,6 +202,15 @@ func fieldLine(root *yaml.Node, path ...string) int {
 // reference cite the line the i-th reference is written on.
 func seqItemLines(root *yaml.Node, path ...string) []int {
 	node := nodeAt(root, path...)
+	// A field written as a YAML alias — `dependsOn: *shared` — is an
+	// AliasNode pointing at the anchored sequence. The decoder resolves it,
+	// so Spec.DependsOn is populated either way; without following it here
+	// the lines would not be, and this ruling's diagnostic would fall back to
+	// NameLine for precisely the files that use an anchor. An anchor target
+	// is a real node and never another alias, so one hop is the whole of it.
+	if node != nil && node.Kind == yaml.AliasNode {
+		node = node.Alias
+	}
 	if node == nil || node.Kind != yaml.SequenceNode {
 		return nil
 	}
