@@ -235,9 +235,15 @@ func externalResult(id string, ref catalog.Ref, reported map[catalog.Ref]map[str
 // Spec §12: exemptions exist so nobody has to lie. Without them the only lever
 // for a tier-1 nightly backfill with no runbook is to misstate its tier, which
 // corrupts the dataset the whole product rests on. That makes an exemption
-// that silently does nothing — expired, or naming a check that does not
-// exist — worse than no exemption at all: the author believes they are
-// covered.
+// that silently does nothing — expired, naming a check that does not exist,
+// or naming one this entity's kind excludes — worse than no exemption at all:
+// the author believes they are covered.
+//
+// The third case is ruling R53's, and this enumeration listed two until it
+// existed. It is the one a team meets on the migration path R53 creates:
+// narrowing a check with appliesTo and leaving the old exemption blocks in
+// place is the natural order to do it in, and the blocks are inert from that
+// moment.
 func exemptions(e *catalog.Entity, std *config.Standards, now time.Time, c *diag.Collector) map[string]string {
 	known := map[string]bool{}
 	for _, id := range std.Checks() {
@@ -257,6 +263,27 @@ func exemptions(e *catalog.Entity, std *config.Standards, now time.Time, c *diag
 				Message: fmt.Sprintf("exemption on %s names check %q, which is not in standards.yaml, so it waives nothing",
 					e.Ref(), x.Check),
 				Hint: "check the spelling against the checks listed in standards.yaml",
+			})
+			continue
+		}
+		if !std.AppliesTo(x.Check, e.Kind) {
+			// Checked before expiry, so an expired exemption on an excluded
+			// check reports this rather than telling the team to renew a
+			// waiver for something that can never apply.
+			//
+			// A distinct id because R43 is one condition, one check id: "the
+			// kind excludes this check" is a different condition from "this
+			// id is misspelt", and it has a different fix.
+			c.Add(diag.Diagnostic{
+				Severity: diag.SevWarn,
+				Repo:     e.SourceRepo,
+				File:     e.SourcePath,
+				Line:     e.NameLine,
+				Entity:   e.Metadata.Name,
+				Check:    "exemption-not-applicable",
+				Message: fmt.Sprintf("exemption on %s names check %q, which does not apply to kind %s, so it waives nothing",
+					e.Ref(), x.Check, e.Kind),
+				Hint: "remove the exemption; appliesTo in standards.yaml already excludes this kind",
 			})
 			continue
 		}

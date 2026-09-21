@@ -471,3 +471,72 @@ func TestFailsIgnoresACheckThatCannotApplyToTheKind(t *testing.T) {
 		t.Errorf("want no gating failures, got %d: %+v", len(fails), fails)
 	}
 }
+
+// apiEntity is an API at tier 1 — the kind R53 exists for, and the kind
+// image-scanned cannot apply to.
+func apiEntity() *catalog.Entity {
+	e := &catalog.Entity{APIVersion: catalog.APIVersion, Kind: catalog.KindAPI}
+	e.Metadata.Name = "payments"
+	e.Metadata.Owner = "team-payments"
+	e.Metadata.Tier = 1
+	e.SourcePath = "apis/payments/service.yaml"
+	e.NameLine = 4
+	return e
+}
+
+// R53 created a third way for an exemption to waive nothing, and exemptions()
+// knew only two. Its own doc comment enumerates "expired, or naming a check
+// that does not exist" and says such an exemption is "worse than no exemption
+// at all: the author believes they are covered". An exemption on a check the
+// entity's kind excludes is exactly that third case.
+//
+// It matters on the migration path this ruling creates: a team narrowing a
+// check with appliesTo will naturally leave the old exemption blocks in place,
+// and nothing told them the blocks are now inert.
+func TestExemptionOnACheckTheKindExcludesIsReported(t *testing.T) {
+	e := apiEntity()
+	e.Spec.Exemptions = []catalog.Exemption{
+		{Check: "image-scanned", Until: "2099-01-01", Reason: "scanner rollout"},
+	}
+	var c diag.Collector
+
+	Score(catalogOf(t, e), stdOf(t, scanAppliesToDeployables), nil, env(nil), &c)
+
+	diags := c.Diagnostics()
+	if len(diags) != 1 {
+		t.Fatalf("want exactly 1 diagnostic, got %d: %+v", len(diags), diags)
+	}
+	d := diags[0]
+	if d.Check != "exemption-not-applicable" {
+		t.Errorf("Check = %q, want %q", d.Check, "exemption-not-applicable")
+	}
+	if d.Severity != diag.SevWarn {
+		t.Errorf("Severity = %v, want warn", d.Severity)
+	}
+	want := `exemption on api:payments names check "image-scanned", which does not apply to kind API, so it waives nothing`
+	if d.Message != want {
+		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+	}
+	wantHint := "remove the exemption; appliesTo in standards.yaml already excludes this kind"
+	if d.Hint != wantHint {
+		t.Errorf("Hint\n got: %s\nwant: %s", d.Hint, wantHint)
+	}
+}
+
+// And the nag it replaces: an EXPIRED exemption on a check the kind excludes
+// must not tell the team to renew a waiver for a check that can never apply.
+func TestAnExpiredExemptionIsNotReportedWhenTheKindExcludesTheCheck(t *testing.T) {
+	e := apiEntity()
+	e.Spec.Exemptions = []catalog.Exemption{
+		{Check: "image-scanned", Until: "2020-01-01", Reason: "scanner rollout"},
+	}
+	var c diag.Collector
+
+	Score(catalogOf(t, e), stdOf(t, scanAppliesToDeployables), nil, env(nil), &c)
+
+	for _, d := range c.Diagnostics() {
+		if d.Check == "exemption-expired" {
+			t.Errorf("renewing a waiver for a check that cannot apply is not advice: %+v", d)
+		}
+	}
+}
