@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	pathpkg "path"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -222,11 +221,12 @@ func docsFresh(e *catalog.Entity, env Env) Result {
 		return missingSourceResult(e, id)
 	}
 
-	index := pathpkg.Join(e.Spec.Docs, "index.md")
-	if _, err := fs.Stat(fsys, index); err != nil {
+	if _, ok := catalog.DocsIndex(fsys, e.Spec.Docs); !ok {
 		// Docs with no index page is a directory, not documentation.
+		// Both spellings are named: a message naming one file is what sent
+		// 18 services' owners looking for the wrong thing (ruling R51).
 		return Result{Check: id, Status: StatusFail,
-			Detail: fmt.Sprintf("%s has no index.md", e.Spec.Docs)}
+			Detail: fmt.Sprintf("%s has no index.md or _index.md", e.Spec.Docs)}
 	}
 
 	if env.LastEdit == nil {

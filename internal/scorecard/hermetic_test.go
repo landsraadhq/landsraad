@@ -309,7 +309,9 @@ func TestDocsFreshRequiresAnIndex(t *testing.T) {
 	if got.Status != StatusFail {
 		t.Errorf("Status = %q, want fail", got.Status)
 	}
-	if got.Detail != "services/api/docs has no index.md" {
+	// Ruling R51: the message names both spellings. One that named only
+	// index.md is what sent 18 services' owners looking for the wrong file.
+	if got.Detail != "services/api/docs has no index.md or _index.md" {
 		t.Errorf("Detail = %q", got.Detail)
 	}
 }
@@ -499,5 +501,28 @@ func TestUnlistedFilesReadAsALandsraadBugNotAMissingFile(t *testing.T) {
 		"this is a landsraad bug, not a problem with your catalog"
 	if got.Detail != want {
 		t.Errorf("Detail = %q, want %q", got.Detail, want)
+	}
+}
+
+// Ruling R51. docsFresh joined a literal "index.md" and returned fail on the
+// Stat before env.LastEdit was ever reached, so the freshness machinery below
+// it never ran for a Hugo docs tree. In the monorepo that found this, 1 file
+// is named index.md and 53 are named _index.md: all 18 documented services
+// reported "has no index.md", and one of them was genuinely 391 days stale
+// behind that false answer.
+func TestDocsFreshAcceptsAHugoUnderscoreIndex(t *testing.T) {
+	e := svc("api")
+	e.Spec.Docs = "services/api/docs"
+	files := fstest.MapFS{"services/api/docs/_index.md": {Data: []byte("# Docs\n\nreal content\n")}}
+
+	base := env(files)
+	recent := base
+	recent.LastEdit = func(string, string) (time.Time, bool) {
+		return base.Now.AddDate(0, 0, -10), true
+	}
+
+	got := docsFreshFor(t, e, recent)
+	if got.Status != StatusPass {
+		t.Errorf("Status = %q (%s), want pass — _index.md is a documentation index", got.Status, got.Detail)
 	}
 }

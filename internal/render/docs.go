@@ -138,6 +138,12 @@ type docLinker struct {
 	docsDir   string
 	runbook   string
 	entityDir string
+	// indexSrc is the repository path of this entity's documentation index,
+	// as catalog.DocsIndex resolved it, or "" when there is none. Ruling R51:
+	// carried rather than recomputed from docsDir, because "which file is the
+	// index" must be answered once per entity — index.md and _index.md are
+	// both accepted and a repository may hold either.
+	indexSrc string
 	// srcDir is the source-repository directory of the document currently
 	// being rendered; a relative destination is resolved against it.
 	srcDir string
@@ -165,7 +171,7 @@ func (l docLinker) rewrite(dest string) string {
 // at, when docsFor renders that path at all.
 func (l docLinker) sourceToURL(src string) (string, bool) {
 	if l.docsDir != "" {
-		if src == l.docsDir+"/index.md" {
+		if l.indexSrc != "" && src == l.indexSrc {
 			// Ruling R18: hoisted onto the entity page, not docs/index.html.
 			return l.entityDir + "index.html", true
 		}
@@ -273,6 +279,10 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 	// with no "index.html" — so recording it at entityDir+"index.html" spelled
 	// one page two ways and put two rows in the index for every documented
 	// entity, one labelled "Service" and one not.
+	// Resolved once per entity, below, and captured here because the closure
+	// needs it: every render call happens after the assignment.
+	var indexSrc string
+
 	render := func(repoPath, relURL, searchURL string) (md.Doc, RenderedDoc, bool) {
 		data, err := fs.ReadFile(fsys, repoPath)
 		if err != nil {
@@ -280,7 +290,7 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 			return md.Doc{}, RenderedDoc{}, false
 		}
 		linker := docLinker{
-			docsDir: e.Spec.Docs, runbook: e.Spec.Runbook,
+			docsDir: e.Spec.Docs, runbook: e.Spec.Runbook, indexSrc: indexSrc,
 			entityDir: entityDir, srcDir: path.Dir(repoPath), selfURL: entityDir + relURL,
 		}
 		doc, err := md.Render(m, data, linker.rewrite)
@@ -324,6 +334,11 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 		}
 		sort.Strings(mdPaths)
 	}
+	// Ruling R51: index.md or _index.md, index.md winning when a repository
+	// holds both. The same call the scorecard's docs-fresh makes, so the
+	// portal cannot hoist a file the scorecard says is absent, or refuse to
+	// hoist one it says is present.
+	indexSrc, _ = catalog.DocsIndex(fsys, e.Spec.Docs)
 
 	// runbookRendered tracks whether spec.runbook's page was actually
 	// emitted, from either loop below — never recomputed from e.Spec.Runbook
@@ -335,7 +350,7 @@ func docsFor(in Input, e *catalog.Entity, t *template.Template, m goldmark.Markd
 		if err != nil {
 			continue
 		}
-		if rel == "index.md" {
+		if repoPath == indexSrc {
 			// Inlined on the entity page, and NOT also a sub-page: one
 			// document, one URL (ruling R18). The search entry therefore
 			// carries the entity's own URL, and entityPages decides whether it

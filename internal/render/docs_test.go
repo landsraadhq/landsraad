@@ -862,3 +862,51 @@ func TestDocsForReadsTheEntitysOwnRepository(t *testing.T) {
 		})
 	}
 }
+
+// Ruling R51. The R18 hoist recognised only "index.md", so a Hugo docs tree —
+// which spells it _index.md — rendered its overview as an ordinary sub-page
+// and left the entity page with no overview at all. The scorecard said the
+// same entity had no documentation, from a separate hardcoded literal.
+//
+// Both now ask catalog.DocsIndex, so they cannot answer differently.
+func underscoreDocumented(t *testing.T) Input {
+	t.Helper()
+	e := ent("api", catalog.KindService, "team-payments", 1)
+	e.Spec.Docs = "services/api/docs"
+	files := fstest.MapFS{
+		"services/api/docs/_index.md": {Data: []byte(
+			"# API\n\nThe Hugo overview.\n")},
+		"services/api/docs/ops/scaling.md": {Data: []byte(
+			"# Scaling\n\nSee [the index](../_index.md).\n")},
+	}
+	return input(t, files, e)
+}
+
+func TestUnderscoreIndexIsInlinedOnTheEntityPage(t *testing.T) {
+	var c diag.Collector
+	files := siteMap(Site(underscoreDocumented(t), &c))
+
+	page := string(files["entity/service/api/index.html"])
+	if !strings.Contains(page, "The Hugo overview.") {
+		t.Errorf("docs/_index.md must render inline on the entity page:\n%s", page)
+	}
+	// Hoisted, not also a sub-page — one document, one URL (ruling R18).
+	if _, ok := files["entity/service/api/docs/_index.html"]; ok {
+		t.Error("_index.md must not also become a sub-page")
+	}
+}
+
+// The link half. A sibling document linking to ../_index.md must land on the
+// entity page, because that is where the hoist put it — the same rewrite
+// index.md already got.
+func TestALinkToTheUnderscoreIndexResolvesToTheEntityPage(t *testing.T) {
+	var c diag.Collector
+	files := siteMap(Site(underscoreDocumented(t), &c))
+
+	page := string(files["entity/service/api/docs/ops/scaling.html"])
+	// The same href the index.md case asserts above: from docs/ops/, the
+	// entity page is ../../index.html.
+	if !strings.Contains(page, `href="../../index.html"`) {
+		t.Errorf("a link to _index.md must resolve to the entity page, not a docs sub-page:\n%s", page)
+	}
+}
