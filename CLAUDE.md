@@ -17,7 +17,7 @@ platform team.
 | Carryall follow-ups — design, rulings R36–R45 | `docs/superpowers/specs/2026-09-11-carryall-followups-design.md` |
 | Carryall follow-ups — behaviour, 13 tasks | `docs/superpowers/plans/2026-09-11-carryall-followups-behaviour.md` |
 | Carryall follow-ups — hygiene, 14 tasks | `docs/superpowers/plans/2026-09-11-carryall-followups-hygiene.md` |
-| Monorepo defects — design, rulings R50–R54 | `docs/superpowers/specs/2026-09-21-monorepo-defects-design.md` |
+| Monorepo defects — design, rulings R50–R55 | `docs/superpowers/specs/2026-09-21-monorepo-defects-design.md` |
 | Composition principles in depth | `/composition` |
 
 Plan 1 delivered scope A, the catalog core (`validate`). Plan 2 delivered B and

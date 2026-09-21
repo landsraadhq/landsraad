@@ -444,6 +444,71 @@ only the catalog `validate` builds three lines below that call. "Structure
 only" was the mechanism, and the property was that `validate` stays offline —
 the same mechanism-for-property substitution R49 is about.
 
+### R55: front matter is not Markdown, and R51 put it on the busiest page
+
+landsraad never stripped YAML or TOML front matter. A docs tree written for a
+static site generator carries a metadata block the generator consumes and
+Markdown does not, and goldmark renders it as body text. There is no
+front-matter handling anywhere under `internal/render/md` — `extension.GFM`
+and `extension.Footnote` are the whole extension set for this purpose. In the
+monorepo that prompted R51, 203 of 203 files under the docs tree carry a
+block.
+
+**This is not R51's defect, and R51 is what makes it matter.** While
+`_index.md` was not recognised as an index, the damage sat on secondary
+documentation pages. R51 hoists the index onto the entity page, so the block
+lands at the top of the most-read page landsraad produces. Verified against a
+binary built from this spec's own merge commit, on a Hugo-shaped `_index.md`:
+
+```
+Documentation title: "Resort Service" description: "Details about the resort
+service" lead: "" date: 2024-04-03T09:00:00+00:00 draft: false weight: 10020
+The real overview prose starts here.
+```
+
+R51 as shipped therefore traded "no overview" for "front-matter dump", for
+exactly the repositories it was written to serve. That is a regression in the
+thing users look at, and it was found by a second pass from the session that
+reported the original five defects — not by this one, and not by the
+composition audit, both of which had the merge commit in hand.
+
+**The ruling.** `md.Render` strips a leading front-matter block before the
+parser sees the source. Every caller goes through `Render`, so documentation
+pages, runbooks and the hoisted index are stripped alike — the same
+one-definition reasoning as R51's own `catalog.DocsIndex`.
+
+**The values are discarded, not used.** Feeding `title` into the page title
+would suit a Hugo tree, whose `_index.md` often has no H1 at all because the
+title lives in the block, so a stripped page falls back to the filename. But
+that changes the title of every documented page and the row each contributes
+to `search-index.json`. That is a visible change to the published artifact and
+a separate decision from stopping the leak; this ruling does the second only.
+
+**The delimiter rule, and the direction it errs in.** `---` alone on the first
+line is also a valid thematic break, and `---` on the *second* line is a setext
+H1 underline. So the opening delimiter must be the whole of line one, and a
+closing delimiter (`---` or `...` for YAML, `+++` for TOML) must actually
+appear. An unterminated `---` is a rule and is left alone.
+
+That asymmetry is deliberate. Failing to strip a block renders ugly and is
+obvious in the output; over-stripping silently eats a document's first
+section, and the reader has no way to tell it is missing. Both directions are
+pinned by tests.
+
+## Correction: `_index.html` was never orphaned
+
+An earlier account of R51's renderer half — in the message reporting it, not
+in this document — said the un-hoisted `_index.md` was "published as an
+orphaned `docs/_index.html`". It was not. The entity page links it from the
+Documentation list all along; verified against a pre-R51 binary, whose output
+carries `href="docs/_index.html"`. It was reachable and mislabelled, listed as
+a document named `_index`.
+
+The half that was right is the half that mattered: no overview is hoisted onto
+the entity page. Recorded because the error has a pattern behind it — it is
+the third time on this branch that a claim was made from the shape of a grep
+result rather than from what the hits said.
+
 ## What the composition audit found
 
 Run before merge, as `CLAUDE.md` requires. It produced one behavioural defect,
