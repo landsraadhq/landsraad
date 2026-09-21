@@ -352,6 +352,37 @@ existing one is applied to a second call site.
 In a monorepo the whole catalog is local, which is where this pays: the case
 the reporter hit is one `validate` had every fact needed to catch.
 
+**The severity is `warn`, and `validate` keeps exiting 0.** The first draft of
+this ruling never said, which made the door question invisible. `score` already
+errors and already refuses the artifact, so nothing incorrect ships either way;
+what an error here would add is turning a green PR gate red for a condition
+that was green yesterday and that was already being caught downstream. A
+warning can be escalated to an error in a later release. An error cannot be
+walked back without having broken people for nothing. Take the door that stays
+open.
+
+R43 is not violated by the two severities differing. Its claim is one
+condition, one check id, and both commands now emit `checks-ambiguous-name`
+with the same wording from one constructor —
+`scorecard.AmbiguousNameDiagnostic` — precisely so they cannot drift apart
+describing one file. The severity is the caller's.
+
+**A bare name matching exactly one entity gets nothing from `validate`**, even
+though `score` warns `checks-bare-name` and says to write the full ref. That
+advice is scope-dependent in the direction this ruling forbids: the name
+resolves to `service:api` locally, and a second repository adding
+`worker:api` makes the suggested ref the wrong one. Ambiguity is sound locally
+because it only grows; a resolution is not, because another repository can
+undo it.
+
+**The comment that justified the old boundary was wrong and is corrected.**
+`validateCheckResults` said resolving entities "need the merged catalog and a
+clock, which would make validate neither hermetic nor offline". Precedence and
+ageing need a clock; resolving a bare name needs neither a clock nor a socket,
+only the catalog `validate` builds three lines below that call. "Structure
+only" was the mechanism, and the property was that `validate` stays offline —
+the same mechanism-for-property substitution R49 is about.
+
 ## Hygiene: no decision needed
 
 - `internal/generate/codeowners.go`'s doc comment reasons about last-match-wins
