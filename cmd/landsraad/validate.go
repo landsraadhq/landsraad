@@ -94,7 +94,7 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter, satellite boo
 	for _, file := range files {
 		validator.Validate(repo, file.Path, file.Data, &c)
 	}
-	validateCheckResults(fsys, repo, &c)
+	checkRefs := validateCheckResults(fsys, repo, &c)
 
 	// 3. parse and merge — pure, no IO
 	cat := catalog.NewCatalog(catalog.ParseAll(repo, files, &c), &c)
@@ -114,6 +114,7 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter, satellite boo
 		checkOwners(fsys, cat, &c)
 	}
 	catalog.CheckFiles(catalog.SingleSource(repo, fsys), cat, &c)
+	reportAmbiguousCheckEntities(repo, checkRefs, cat, &c)
 
 	// 6. report
 	// out carries ONLY the selected format's payload, so `--format json` stays
@@ -137,21 +138,29 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter, satellite boo
 // build, not by the PR that introduced it." Plan 2 shipped the schema, so the
 // PR catches it now.
 //
-// Structure only. Resolving entities, applying precedence and ageing results
-// need the merged catalog and a clock, which would make validate neither
-// hermetic nor offline — and being both is what lets it run in every service
-// repo's PR CI with no tokens and no network.
+// Structure only. Applying precedence and ageing results need a clock, which
+// would make validate neither hermetic nor offline — and being both is what
+// lets it run in every service repo's PR CI with no tokens and no network.
+//
+// This comment used to put "resolving entities" in that list too, and ruling
+// R54 corrects it. Resolving a bare name needs the merged catalog, which
+// validate builds a few lines below this call; it needs no clock and no
+// socket. "Structure only" was the mechanism, not the property, and the
+// property is that validate stays offline. So the entity fields are collected
+// here, while the bytes are in hand, and resolved once the catalog exists —
+// reading is IO and belongs at the edge, resolving is pure and belongs after
+// stage 3.
 //
 // repo is this repository's name, for provenance on any schema diagnostic —
 // the same reason the caller now threads it through the service.yaml
 // validation loop above, rather than hardcoding "".
-func validateCheckResults(fsys fs.FS, repo string, c *diag.Collector) {
+func validateCheckResults(fsys fs.FS, repo string, c *diag.Collector) []checkEntityRef {
 	entries, err := fs.ReadDir(fsys, scorecard.ChecksDir)
 	if errors.Is(err, fs.ErrNotExist) {
 		// No directory is not a problem: most repositories report no external
 		// results. Only this answer means that; a directory that exists and
 		// cannot be listed is reported below, not validated as empty.
-		return
+		return nil
 	}
 	if err != nil {
 		c.Add(diag.Diagnostic{
@@ -159,7 +168,7 @@ func validateCheckResults(fsys fs.FS, repo string, c *diag.Collector) {
 			Check:   "checks-unreadable",
 			Message: scorecard.Unreadable(scorecard.ChecksDir, err),
 		})
-		return
+		return nil
 	}
 	v, err := schema.New(scorecard.CheckResultsSchema)
 	if err != nil {
@@ -168,8 +177,9 @@ func validateCheckResults(fsys fs.FS, repo string, c *diag.Collector) {
 			Check:   "checks-schema",
 			Message: fmt.Sprintf("cannot compile the check-results schema: %v", err),
 		})
-		return
+		return nil
 	}
+	var refs []checkEntityRef
 	for _, e := range entries {
 		if e.IsDir() || !scorecard.IsCheckResultsFile(e.Name()) {
 			continue
@@ -184,7 +194,53 @@ func validateCheckResults(fsys fs.FS, repo string, c *diag.Collector) {
 			})
 			continue
 		}
-		v.Validate(repo, path, data, c)
+		if !v.Validate(repo, path, data, c) {
+			// A file that failed its schema has already been reported, and
+			// its entity fields are not trustworthy enough to resolve.
+			continue
+		}
+		for _, name := range scorecard.CheckResultEntities(data) {
+			refs = append(refs, checkEntityRef{path: path, entity: name})
+		}
+	}
+	return refs
+}
+
+// checkEntityRef is one entity field read from a results file, with the file
+// it came from, held between validateCheckResults and the catalog that can
+// resolve it.
+type checkEntityRef struct {
+	path   string
+	entity string
+}
+
+// reportAmbiguousCheckEntities resolves the bare names collected from
+// .landsraad/checks against the merged catalog (ruling R54).
+//
+// Only ambiguity is reported, and the asymmetry is the whole ruling. Absence
+// is not reported: under LocalOnly the entity may be defined in another
+// repository, which is the same reason resolveRefs gates dangling-ref behind
+// FullCatalog. Adding repositories can resolve an absence, but it can only
+// ever make an ambiguous name more ambiguous — so a name ambiguous here is
+// ambiguous everywhere, including in a satellite, and validate has every fact
+// it needs offline.
+//
+// The severity is warn where score's is error, and the message is score's
+// verbatim because both come from one constructor (ruling R43). score still
+// refuses the artifact, so nothing incorrect ships; turning a green PR gate
+// red for a condition that was green yesterday is the door that does not
+// reopen.
+func reportAmbiguousCheckEntities(repo string, refs []checkEntityRef, cat *catalog.Catalog, c *diag.Collector) {
+	for _, r := range refs {
+		if _, err := catalog.ParseRef(r.entity); err == nil {
+			// Already a full ref. Whether it resolves is score's question.
+			continue
+		}
+		matches := scorecard.BareNameMatches(r.entity, cat)
+		if len(matches) < 2 {
+			continue
+		}
+		c.Add(scorecard.AmbiguousNameDiagnostic(diag.SevWarn, repo, r.path, r.entity, matches))
 	}
 }
 

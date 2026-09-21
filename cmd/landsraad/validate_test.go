@@ -1039,3 +1039,68 @@ func TestLocalRepoNameIsTheLocalEntrysIdentity(t *testing.T) {
 		})
 	}
 }
+
+// Ruling R54. validate is structure-only by design, and stays so for whether
+// an entity exists: under LocalOnly the target may live in another repository,
+// which is why TestValidateDoesNotResolveCheckResultEntities still passes.
+//
+// Ambiguity has the opposite polarity and that asymmetry is the whole ruling.
+// Adding repositories can resolve an absence; it can only ever make an
+// ambiguous name more ambiguous. So a name that is ambiguous locally is
+// ambiguous everywhere, and validate has every fact it needs offline. It is
+// the same distinction resolveRefs already draws when it gates dangling-ref
+// behind FullCatalog.
+//
+// Severity is warn, not error. score still errors and still refuses the
+// artifact, so nothing incorrect ships; making the PR gate red for a condition
+// that was green yesterday is a door that does not reopen, and a warning can
+// be escalated later.
+func TestValidateWarnsOnALocallyAmbiguousBareName(t *testing.T) {
+	fsys := genFS()
+	fsys["services/api-worker/service.yaml"] = &fstest.MapFile{Data: []byte(
+		"apiVersion: landsraad/v1\nkind: Worker\nmetadata:\n  name: api\n  owner: team-payments\n  tier: 2\n  lifecycle: production\nspec:\n  path: services/api-worker\n")}
+	fsys[".landsraad/checks/scan.yaml"] = &fstest.MapFile{Data: []byte(
+		"apiVersion: landsraad/v1\nkind: CheckResults\nproducer: ci/x\ngeneratedAt: 2026-09-08T14:00:00Z\nresults:\n  - { entity: api, check: image-scanned, status: pass }\n")}
+
+	var out, errOut bytes.Buffer
+	code := Validate(fsys, &out, &errOut, diagText(), false)
+
+	if code != exitOK {
+		t.Fatalf("exit = %d, want %d — an ambiguous bare name is a warning, not a gate failure; stderr:\n%s",
+			code, exitOK, errOut.String())
+	}
+	want := "warn: .landsraad/checks/scan.yaml:1 [checks-ambiguous-name]\n" +
+		"  entity \"api\" is ambiguous: it could be service:api or worker:api\n" +
+		"  hint: write the full ref, for example service:api\n"
+	// Diagnostics go to out; errOut carries only the human "ok:" line.
+	if !strings.Contains(out.String(), want) {
+		t.Errorf("the ambiguity warning is missing\n want:\n%s\n got:\n%s", want, out.String())
+	}
+}
+
+// Ruling R54's boundary. A bare name matching exactly one local entity gets
+// nothing from validate, even though score warns "write it as the ref".
+//
+// That advice is scope-dependent and validate is the wrong place for it: the
+// name resolves to service:api here, but a second repository adding
+// worker:api would make the suggested ref the wrong one. Ambiguity is sound
+// locally because it only ever grows; a resolution is not, because it can be
+// undone by a repository this command cannot see.
+func TestValidateIsSilentOnAnUnambiguousBareName(t *testing.T) {
+	fsys := genFS()
+	fsys[".landsraad/checks/scan.yaml"] = &fstest.MapFile{Data: []byte(
+		"apiVersion: landsraad/v1\nkind: CheckResults\nproducer: ci/x\ngeneratedAt: 2026-09-08T14:00:00Z\nresults:\n  - { entity: api, check: image-scanned, status: pass }\n")}
+
+	var out, errOut bytes.Buffer
+	code := Validate(fsys, &out, &errOut, diagText(), false)
+
+	if code != exitOK {
+		t.Fatalf("exit = %d, want %d; out:\n%s", code, exitOK, out.String())
+	}
+	if strings.Contains(out.String(), "checks-ambiguous-name") {
+		t.Errorf("one match is not ambiguous, nothing to report:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "checks-bare-name") {
+		t.Errorf("resolving a bare name is scope-dependent advice and belongs to score:\n%s", out.String())
+	}
+}

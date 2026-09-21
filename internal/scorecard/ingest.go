@@ -299,13 +299,7 @@ func resolveEntity(repo, s string, cat *catalog.Catalog, path string, c *diag.Co
 		return ref, true
 	}
 
-	var matches []catalog.Ref
-	for _, e := range cat.Entities() {
-		if e.Metadata.Name == s {
-			matches = append(matches, e.Ref())
-		}
-	}
-	sort.Slice(matches, func(i, j int) bool { return matches[i].String() < matches[j].String() })
+	matches := BareNameMatches(s, cat)
 
 	switch len(matches) {
 	case 0:
@@ -326,13 +320,65 @@ func resolveEntity(repo, s string, cat *catalog.Catalog, path string, c *diag.Co
 		})
 		return matches[0], true
 	default:
-		c.Add(diag.Diagnostic{
-			Severity: diag.SevError, Repo: repo, File: path, Line: 1,
-			Check: "checks-ambiguous-name",
-			Message: fmt.Sprintf("entity %q is ambiguous: it could be %s or %s",
-				s, matches[0], matches[1]),
-			Hint: fmt.Sprintf("write the full ref, for example %s", matches[0]),
-		})
+		c.Add(AmbiguousNameDiagnostic(diag.SevError, repo, path, s, matches))
 		return catalog.Ref{}, false
 	}
+}
+
+// BareNameMatches returns every entity whose metadata.name is s, sorted by ref
+// so a diagnostic naming two of them reads the same between runs.
+//
+// A bare name is a deprecated alias (spec §6). Exported because validate asks
+// the same question of the local catalog under ruling R54, and two
+// implementations of "what does this bare name match" is exactly how the two
+// commands come to disagree about one file.
+func BareNameMatches(s string, cat *catalog.Catalog) []catalog.Ref {
+	var matches []catalog.Ref
+	for _, e := range cat.Entities() {
+		if e.Metadata.Name == s {
+			matches = append(matches, e.Ref())
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].String() < matches[j].String() })
+	return matches
+}
+
+// AmbiguousNameDiagnostic renders the one diagnostic both score and validate
+// report when a bare name matches more than one entity. It requires at least
+// two matches, which is what makes the name ambiguous.
+//
+// Ruling R43 is one condition, one check id: the id and the wording live here
+// so the two commands cannot drift apart describing one file. The severity is
+// the caller's, and the two differ deliberately under ruling R54 — score
+// errors and refuses the artifact, validate warns and leaves a green gate
+// green, because an exit code that was 0 yesterday is a door that does not
+// reopen once taken.
+func AmbiguousNameDiagnostic(sev diag.Severity, repo, path, s string, matches []catalog.Ref) diag.Diagnostic {
+	return diag.Diagnostic{
+		Severity: sev, Repo: repo, File: path, Line: 1,
+		Check: "checks-ambiguous-name",
+		Message: fmt.Sprintf("entity %q is ambiguous: it could be %s or %s",
+			s, matches[0], matches[1]),
+		Hint: fmt.Sprintf("write the full ref, for example %s", matches[0]),
+	}
+}
+
+// CheckResultEntities returns the entity field of every result in a
+// check-results document, in file order.
+//
+// For a caller that has already schema-validated these bytes and wants only
+// the names: validate, which under ruling R54 resolves bare names against the
+// local catalog without taking on the rest of ingestion. A document that does
+// not decode yields nothing, because the schema pass is what reports that and
+// a second diagnostic for one cause is noise.
+func CheckResultEntities(data []byte) []string {
+	var f checkResultsFile
+	if err := yaml.Unmarshal(data, &f); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(f.Results))
+	for _, r := range f.Results {
+		out = append(out, r.Entity)
+	}
+	return out
 }
