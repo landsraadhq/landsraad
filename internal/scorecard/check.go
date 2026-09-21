@@ -39,6 +39,13 @@ const (
 	StatusStale Status = "stale"
 	// StatusExempt: waived by spec.exemptions with a stated reason.
 	StatusExempt Status = "exempt"
+	// StatusNotApplicable: the check is meaningless for this entity's kind
+	// (ruling R53). Distinct from exempt, which is a waiver with an expiry
+	// somebody has to renew — a proto contract directory having no container
+	// image is not a temporary condition. Like exempt it leaves the
+	// denominator, and unlike skip it stays visible, so a short check list is
+	// explained rather than mysterious.
+	StatusNotApplicable Status = "not-applicable"
 )
 
 // Passed reports whether this status counts towards the numerator.

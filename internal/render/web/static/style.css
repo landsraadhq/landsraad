@@ -53,6 +53,7 @@ td .desc { display: block; color: var(--muted); font-size: 12px; }
 .status-stale { color: var(--warn); }
 .status-not-reported { color: var(--muted); }
 .status-exempt { color: var(--muted); }
+.status-not-applicable { color: var(--muted); }
 
 /* Admonitions, spec D2. */
 .admonition { border-left: 3px solid var(--line); padding: .1rem 1rem; margin: 1rem 0; background: #fafbfc; }

@@ -3,6 +3,7 @@ package config
 import (
 	"testing"
 
+	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/diag"
 )
 
@@ -164,5 +165,39 @@ func TestDefaultStandardsValidatesAgainstTheSchema(t *testing.T) {
 	LoadStandards("standards.yaml", DefaultStandardsYAML, &c)
 	if c.HasErrors() {
 		t.Errorf("the shipped defaults must validate: %+v", c.Diagnostics())
+	}
+}
+
+// Ruling R53. A typo in appliesTo must be a load error, not a check that
+// silently evaluates against no kind at all. That would be the same
+// "reports on fewer checks than the team believes" failure that
+// standards-unknown-check exists to prevent, arrived at from the other side.
+func TestLoadStandardsRejectsAnUnknownKindInAppliesTo(t *testing.T) {
+	var c diag.Collector
+	LoadStandards("standards.yaml", []byte(
+		"apiVersion: landsraad/v1\nkind: Standards\nspec:\n  checks:\n    owner-set: { appliesTo: [Srvice], tiers: {1: required} }\n"), &c)
+	if !c.HasErrors() {
+		t.Fatal("a misspelled kind in appliesTo must be an error")
+	}
+	d := c.Diagnostics()[0]
+	if d.Check != "standards-schema" {
+		t.Errorf("Check = %q, want %q", d.Check, "standards-schema")
+	}
+}
+
+// Ruling R53's additive guarantee, stated as its own test rather than left to
+// the other tests passing: a check with no appliesTo applies to every kind, so
+// a standards.yaml written before the ruling scores exactly as it did.
+func TestAppliesToIsEveryKindWhenAbsent(t *testing.T) {
+	var c diag.Collector
+	s := LoadStandards("standards.yaml", []byte(
+		"apiVersion: landsraad/v1\nkind: Standards\nspec:\n  checks:\n    owner-set: { tiers: {1: required} }\n"), &c)
+	if c.HasErrors() {
+		t.Fatalf("fixture must load: %+v", c.Diagnostics())
+	}
+	for _, k := range catalog.AllKinds() {
+		if !s.AppliesTo("owner-set", k) {
+			t.Errorf("AppliesTo(owner-set, %s) = false, want true — absent appliesTo means every kind", k)
+		}
 	}
 }

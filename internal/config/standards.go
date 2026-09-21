@@ -7,6 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/schema"
 )
@@ -45,6 +46,10 @@ type CheckStandard struct {
 	Source string `yaml:"source"`
 	// Params are per-check thresholds. Only docs-fresh uses one today.
 	Params map[string]int `yaml:"params"`
+	// AppliesTo names the kinds this check is meaningful for (ruling R53).
+	// Absent means every kind, which is what keeps every standards.yaml
+	// written before that ruling meaning exactly what it did.
+	AppliesTo []string `yaml:"appliesTo"`
 	// Tiers maps tier to severity. A tier with no entry is SevSkip.
 	Tiers map[int]Severity `yaml:"tiers"`
 }
@@ -100,6 +105,32 @@ func (s *Standards) Severity(check string, tier int) Severity {
 		return SevSkip
 	}
 	return sev
+}
+
+// AppliesTo reports whether check is meaningful for an entity of this kind
+// (ruling R53).
+//
+// A check with no appliesTo applies to every kind, so this is additive: a
+// standards.yaml written before the ruling scores identically after it. The
+// list is validated against the kind enum by standards.schema.json, so a typo
+// is a load error rather than a check that silently evaluates against nothing
+// — which would be the same "reports on fewer checks than the team believes"
+// failure that standards-unknown-check exists to prevent.
+//
+// An unknown check returns true, because whether it applies is not this
+// method's question: Severity already returns skip for it, and score.go's
+// standards-unknown-check says so in words.
+func (s *Standards) AppliesTo(check string, kind catalog.Kind) bool {
+	cs, ok := s.checks[check]
+	if !ok || len(cs.AppliesTo) == 0 {
+		return true
+	}
+	for _, k := range cs.AppliesTo {
+		if catalog.Kind(k) == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // Checks returns every configured check id, sorted, so the scorecard's column

@@ -380,3 +380,94 @@ func hasWarn(ds []diag.Diagnostic) bool {
 	}
 	return false
 }
+
+// Ruling R53. Severity was keyed on tier alone, so every API entity was
+// REQUIRED to pass image-scanned, runbook-present and otel-present. A proto
+// contract directory has no container image and no runtime; the monorepo run
+// that found this scored all 11 of its API entities at 11%, 1 of 9.
+//
+// Exemptions could express it and should not have to: an exemption is
+// time-bounded by design and R4's second half exists to make it stop waiving
+// when the date passes. "An API is not a deployable" never expires, and
+// encoding it as ~4 exemption blocks per entity uses that machinery against
+// its purpose.
+//
+// A check that cannot apply leaves the denominator, exactly as an in-force
+// exemption does. A score of 1/9 where two of the nine cannot apply is a lie
+// in the denominator.
+const scanAppliesToDeployables = `apiVersion: landsraad/v1
+kind: Standards
+spec:
+  checks:
+    owner-set:     { tiers: {1: required, 2: required, 3: required} }
+    image-scanned: { source: external, appliesTo: [Service, Worker],
+                     tiers: {1: required, 2: required, 3: warn} }
+`
+
+func TestScoreMarksACheckNotApplicableToTheKind(t *testing.T) {
+	api := &catalog.Entity{APIVersion: catalog.APIVersion, Kind: catalog.KindAPI}
+	api.Metadata.Name = "payments"
+	api.Metadata.Owner = "team-payments"
+	api.Metadata.Tier = 1
+	api.SourcePath = "apis/payments/service.yaml"
+	api.NameLine = 4
+	cat := catalogOf(t, api)
+	var c diag.Collector
+
+	sc := Score(cat, stdOf(t, scanAppliesToDeployables), nil, env(nil), &c)
+
+	if len(sc.Entities) != 1 {
+		t.Fatalf("got %d entity scores, want 1", len(sc.Entities))
+	}
+	es := sc.Entities[0]
+	if es.Applicable != 1 || es.Passed != 1 {
+		t.Errorf("Passed/Applicable = %d/%d, want 1/1 — a check that cannot apply must leave the denominator",
+			es.Passed, es.Applicable)
+	}
+	var got Result
+	for _, r := range es.Results {
+		if r.Check == "image-scanned" {
+			got = r
+		}
+	}
+	if got.Status != StatusNotApplicable {
+		t.Errorf("image-scanned Status = %q, want %q", got.Status, StatusNotApplicable)
+	}
+	if want := "not applicable to kind API"; got.Detail != want {
+		t.Errorf("Detail\n got: %s\nwant: %s", got.Detail, want)
+	}
+}
+
+// Ruling R53's second half, and the half the first implementation left open.
+// Score's denominator excluded a not-applicable check while Fails — the gate
+// --fail-on consults — did not, so an API entity scored 100% and the build
+// still failed on image-scanned. Fails already excludes StatusExempt for
+// exactly this reason (ruling R4); not-applicable is the same claim, made
+// about a kind instead of a date.
+//
+// Found by running the binary, not by a unit test: the score line said
+// 100% (1/1) and the line under it said "2 checks failing at or above
+// required" in the same output.
+func TestFailsIgnoresACheckThatCannotApplyToTheKind(t *testing.T) {
+	api := &catalog.Entity{APIVersion: catalog.APIVersion, Kind: catalog.KindAPI}
+	api.Metadata.Name = "payments"
+	api.Metadata.Owner = "team-payments"
+	api.Metadata.Tier = 1
+	api.SourcePath = "apis/payments/service.yaml"
+	api.NameLine = 4
+	cat := catalogOf(t, api)
+	var c diag.Collector
+	std := stdOf(t, scanAppliesToDeployables)
+
+	sc := Score(cat, std, nil, env(nil), &c)
+
+	fails := sc.Entities[0].Fails(config.SevRequired, std)
+	for _, f := range fails {
+		if f.Check == "image-scanned" {
+			t.Errorf("image-scanned cannot apply to an API and must not gate the build; got %+v", f)
+		}
+	}
+	if len(fails) != 0 {
+		t.Errorf("want no gating failures, got %d: %+v", len(fails), fails)
+	}
+}

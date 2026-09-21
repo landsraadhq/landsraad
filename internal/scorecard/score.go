@@ -37,10 +37,16 @@ func (s EntityScore) Score() float64 {
 
 // Fails returns the results that gate the build at the given severity: checks
 // whose severity is at least gate and whose status is not pass.
+//
+// Exempt does not gate (ruling R4), and neither does not-applicable (ruling
+// R53) — the same claim about a kind rather than a date. These two exclusions
+// must agree with Score's denominator above, and for one commit they did not:
+// an API entity scored 100% while the gate still failed it on image-scanned,
+// which is a scorecard and a build disagreeing about the same check.
 func (s EntityScore) Fails(gate config.Severity, std *config.Standards) []Result {
 	var out []Result
 	for _, r := range s.Results {
-		if r.Status.Passed() || r.Status == StatusExempt {
+		if r.Status.Passed() || r.Status == StatusExempt || r.Status == StatusNotApplicable {
 			continue
 		}
 		if atLeast(std.Severity(r.Check, s.Tier), gate) {
@@ -153,6 +159,13 @@ func Score(cat *catalog.Catalog, std *config.Standards, reported map[catalog.Ref
 
 			var r Result
 			switch {
+			case !std.AppliesTo(id, e.Kind):
+				// Ruling R53. Ordered before the exemption because a check
+				// that cannot apply needs no waiver — and an exemption for
+				// one would carry an expiry somebody has to keep renewing
+				// for a condition that never expires.
+				r = Result{Check: id, Status: StatusNotApplicable,
+					Detail: fmt.Sprintf("not applicable to kind %s", e.Kind)}
 			case exempt[id] != "":
 				r = Result{Check: id, Status: StatusExempt, Detail: exempt[id]}
 			case std.IsExternal(id):
@@ -182,7 +195,11 @@ func Score(cat *catalog.Catalog, std *config.Standards, reported map[catalog.Ref
 			// raises the score, which is the one incentive this product must
 			// never create.
 			// Ruling R4: exempt is removed from the denominator.
-			if r.Status == StatusExempt || rank(sev) < rank(config.SevWarn) {
+			// Ruling R53: so is a check that cannot apply to this kind. A
+			// score of 1/9 where two of the nine are meaningless for the kind
+			// is a lie in the denominator, not a low score.
+			if r.Status == StatusExempt || r.Status == StatusNotApplicable ||
+				rank(sev) < rank(config.SevWarn) {
 				continue
 			}
 			es.Applicable++
