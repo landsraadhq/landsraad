@@ -66,7 +66,18 @@ func StripFrontMatter(source []byte) []byte {
 // it is missing.
 func cutFrontMatter(source []byte, open string, closers []string) ([]byte, bool) {
 	lines := bytes.SplitAfter(source, []byte("\n"))
-	if len(lines) == 0 || lineText(lines[0]) != open {
+	// A UTF-8 BOM sits BEFORE the opening delimiter, so line one did not
+	// compare equal to it and the whole block was declined.
+	//
+	// That is not cosmetic. The unstripped block stays in the document, so
+	// BodyIsEmpty reads its YAML lines as content and a Hugo section stub
+	// stops being empty — restoring exactly the false certification ruling
+	// R56 removed. Measured: a BOM'd stub scored 100% with docs-fresh
+	// passing, against 0% for the same bytes without the BOM.
+	//
+	// Only line one is checked, which is the only place a BOM may legally
+	// appear, and cutFrontMatter is always called with the whole file.
+	if len(lines) == 0 || strings.TrimPrefix(lineText(lines[0]), "\ufeff") != open {
 		return nil, false
 	}
 	consumed := len(lines[0])
@@ -81,10 +92,16 @@ func cutFrontMatter(source []byte, open string, closers []string) ([]byte, bool)
 	return nil, false
 }
 
-// lineText is one SplitAfter line without its line ending, so a CRLF file is
-// read the same as an LF one.
+// lineText is one SplitAfter line without its line ending or any trailing
+// horizontal whitespace, so a CRLF file reads the same as an LF one and a
+// delimiter an editor padded with a space or a tab still matches.
+//
+// Trailing-space tolerance adds no over-strip risk. A padded `--- ` is still
+// only treated as an opener when a closing delimiter actually appears later
+// in the file, which is the same ambiguity a bare `---` already carries and
+// which the closing-delimiter requirement already decides.
 func lineText(l []byte) string {
-	return strings.TrimRight(string(l), "\r\n")
+	return strings.TrimRight(strings.TrimRight(string(l), "\r\n"), " \t")
 }
 
 // BodyIsEmpty reports whether a Markdown document says nothing: no content

@@ -1,6 +1,9 @@
 package mdtext
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestBodyIsEmpty(t *testing.T) {
 	for _, tc := range []struct {
@@ -45,5 +48,44 @@ func TestStripFrontMatterHandlesCRLF(t *testing.T) {
 	got := string(StripFrontMatter(src))
 	if got != "\r\nThe overview.\r\n" {
 		t.Errorf("StripFrontMatter with CRLF = %q", got)
+	}
+}
+
+// A UTF-8 BOM before the opening delimiter, and trailing horizontal
+// whitespace after it, both made lineText compare unequal to the delimiter so
+// cutFrontMatter declined the whole block.
+//
+// That is not cosmetic. An unstripped block stays in the document, so
+// BodyIsEmpty reads its YAML lines as content and a Hugo section stub stops
+// being empty — which restores exactly the false certification ruling R56
+// exists to prevent. Measured: a BOM'd stub scored 100% with docs-fresh
+// passing, against 0% for the same file without the BOM.
+func TestStripFrontMatterToleratesABOMAndTrailingSpace(t *testing.T) {
+	const bom = "\ufeff"
+	for _, tc := range []struct{ name, src string }{
+		{"bom before the opener", bom + "---\ntitle: \"API\"\n---\n\nThe overview.\n"},
+		{"trailing space on the opener", "--- \ntitle: \"API\"\n---\n\nThe overview.\n"},
+		{"trailing space on the closer", "---\ntitle: \"API\"\n--- \n\nThe overview.\n"},
+		{"tab after the opener", "---\t\ntitle: \"API\"\n---\n\nThe overview.\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(StripFrontMatter([]byte(tc.src)))
+			if strings.Contains(got, "title:") {
+				t.Errorf("front matter not stripped:\n%q", got)
+			}
+			if !strings.Contains(got, "The overview.") {
+				t.Errorf("body lost:\n%q", got)
+			}
+		})
+	}
+}
+
+// The consequence that makes the above a scoring bug rather than an ugly page.
+func TestBodyIsEmptySeesThroughABOMedStub(t *testing.T) {
+	const bom = "\ufeff"
+	stub := bom + "---\ntitle: \"API\"\nweight: 10\n---\n"
+	if !BodyIsEmpty([]byte(stub)) {
+		t.Error("a section stub with a BOM is still a section stub; reporting it as content " +
+			"restores the false certification R56 removed")
 	}
 }
