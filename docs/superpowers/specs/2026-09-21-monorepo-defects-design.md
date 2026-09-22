@@ -560,6 +560,65 @@ intent, and it changed one existing test's fixture — `TestDocsFreshAsksPerRepo
 used `# Docs\n` as a stand-in while testing something else entirely. The
 fixture was given prose rather than the rule being weakened.
 
+## The BOM defect: R55's delimiter match re-opened R56
+
+A third pass, from `8be7171`, hunted the failure mode R55 was guarded against
+and found two ways a front-matter block is **not** stripped. `lineText` trimmed
+only `"\r\n"`, so a UTF-8 BOM before the opening `---`, or trailing
+horizontal whitespace after it, made line one compare unequal to the delimiter
+and `cutFrontMatter` declined the whole block.
+
+**This was not cosmetic, and that is the point.** The unstripped block stays in
+the document, so `BodyIsEmpty` reads its YAML lines as content, a Hugo section
+stub stops being empty, and R56's content check passes it. Measured by the
+reporting session: a BOM'd stub scored 100% with `docs-fresh` passing, against
+0% for the same bytes without the BOM. One editor setting restored exactly the
+false certification R56 exists to prevent.
+
+The direction of the bug was the conservative one R55 chose deliberately — it
+failed to strip rather than over-stripping, so no prose was ever eaten. What
+R55 did not anticipate is that "fails to strip" stopped being merely ugly the
+moment R56 made emptiness load-bearing. **A conservative failure direction is
+only conservative with respect to the consumers that exist when you choose
+it.** R56 added a consumer that reads the unstripped bytes as content, and
+inverted the safety of the choice without touching the code that made it.
+
+Fixed in `lineText`: trailing spaces and tabs are trimmed alongside the line
+ending, and a BOM is tolerated before the opening delimiter — checked on line
+one only, which is the only place a BOM may legally appear.
+
+Trailing-whitespace tolerance adds no over-strip risk. A padded `--- ` is
+still only treated as an opener when a closing delimiter actually appears
+later in the file, which is the same ambiguity a bare `---` already carries
+and which the closing-delimiter requirement already decides. The over-strip
+guards were re-run and hold: a setext heading and an unterminated `---` are
+both still left alone.
+
+Two cases beyond the two reported also failed and are now covered: trailing
+whitespace on the **closing** delimiter, and a tab rather than a space.
+
+**The real tree could not have found this.** All 203 files in the reporting
+monorepo are plain LF YAML with properly closed delimiters — zero TOML, zero
+CRLF, zero `...` closers, zero BOMs. It walks the simplest path and walks it
+correctly. Every one of these cases came from probes built to attack the code,
+which is worth recording: "verified against a real repository" and "verified
+against the inputs the code claims to handle" are different claims, and this
+branch has now needed both.
+
+## Correction: R56 was a bigger fix than it was reported as
+
+The message reporting R56 said the services affected would be the ones then
+reporting stale, moving to "has no content". That understated it. Eight of the
+19 documented entities were **passing** `docs-fresh` at `8be7171` — their
+stubs happened to have been edited recently, so they cleared the 180-day bar
+on a file with zero body characters.
+
+Those eight are the real false certifications, not the stale ones: a green
+check on documentation that does not exist. `docs-fresh` across that catalog
+went 8 pass / 25 fail to 0 pass / 33 fail. The pass path was separately
+confirmed still to work — documents with real prose after CRLF, TOML and `...`
+blocks all pass — so the check is not now unconditionally strict.
+
 ## Correction: `_index.html` was never orphaned
 
 An earlier account of R51's renderer half — in the message reporting it, not
