@@ -560,6 +560,110 @@ intent, and it changed one existing test's fixture — `TestDocsFreshAsksPerRepo
 used `# Docs\n` as a stand-in while testing something else entirely. The
 fixture was given prose rather than the rule being weakened.
 
+### R57: a null result is not-reported until a control says otherwise
+
+Seven times across this work — four in this session, three in the peer
+session that ran the tool against the real catalog — a result looked like an
+answer and was an artefact of how it was obtained. Each was logged as it
+happened, and the descriptions got sharper as they went: read the hits, not
+the hit count; re-run rather than re-read; ask what produced each number. The
+rate did not change. That is evidence the descriptions were not describing the
+cause.
+
+| # | Session | Claim | What actually produced the result | Class | Read as |
+|---|---|---|---|---|---|
+| 1 | this | `internal/fetch` is a fourth R51 site | a grep for `index.md` whose two hits there are prose in doc comments; the real planner is `cmd/landsraad/repos.go` | B | a defect that did not exist |
+| 2 | this | `CODEOWNERS()` is called by `gen` and `build` | nothing: asserted, never searched. `cmd/landsraad/gen.go:33` is the only non-test caller | B | a gap smaller than it was |
+| 3 | this | `_index.html` is published orphaned | a search for the link that missed it; the entity page linked it all along | B | a defect that did not exist |
+| 4 | peer | R50 confirmed at `7f48e2b` | a `CODEOWNERS` left in the working tree; `gen` did not exist at that commit | A | clean |
+| 5 | peer | R53 changes nothing | the previous binary run against the new `standards.yaml`, which it rejected, falling back to the defaults | A | clean |
+| 6 | peer | `score`'s text on stderr is a convention, not a defect | `validate` on a catalog with no diagnostics, so its stdout was necessarily empty | A | clean |
+| 7 | this | a BOM'd stub reports `not-reported` | a scratch directory with no git history, so `LastEdit` had nothing to return | A | caught before it spread |
+
+Rows 4 and 5 are the peer session's own account and were not re-run here.
+Row 6 was, from both sides, and is recorded under the deferred items below.
+
+**The tally is two failures in one bucket.** In Class A the tool answered
+correctly and the setup changed the question: a stale file, a stale binary, an
+input with nothing to report, an environment with nothing to supply. In Class
+B nothing was measured, or a measurement was summarised rather than read, and
+the claim came from the reading. A lesson drawn from both has to be general
+enough to cover both, and every lesson written during this work was — which is
+why none of them could be turned into a step. "Ask what produced each number"
+is true of all seven and tells nobody what to run.
+
+**The split also settles the asymmetry.** The peer session observed that every
+instance was a false negative, absence read as a clean result, and offered
+that as the clue. Over all seven it is false: rows 1 and 3 invented defects.
+Over Class A it holds without exception, and it has to. A broken harness
+almost always produces *nothing happened* — empty output, no change, a
+fallback to defaults — and nothing-happened is indistinguishable from clean.
+A broken harness very rarely fabricates a specific, plausible defect. The
+asymmetry is a property of the class, not of the tally.
+
+**Row 7 is the informative one, because it is the one that did not spread.**
+Care did not catch it. Two independent measurements of the same quantity
+disagreed — `not-reported` here, `pass` in the peer's mirror, whose commits
+were backdated to the real repository's dates — and the disagreement was
+visible. Redundancy caught it.
+
+**Why Class A was breakable.** Every setup in rows 4 to 7 was inherited from
+an earlier question rather than built for the current one, because building
+one is expensive and the last one was to hand. And nothing in the loop reports
+its own provenance: a binary does not say which commit built it, a generated
+file does not say what wrote it, and a `not-reported` does not say whether
+`LastEdit` was asked and had nothing or was never asked. A stale harness and a
+fresh one are byte-identical at the moment of reading.
+
+**This project already has the rule. It was applied to users' data and not to
+our own.** The comment on `Status` in `internal/scorecard/check.go` says "not
+reported" and "stale" "are specifically not failures of the service — they are
+failures of the evidence", and spec §9 makes *not reported* "distinct from
+both pass and fail". Rows 4 to 7 are each absence rendered as pass, produced
+while building the tool whose central claim is that absence must not be
+rendered as pass. The product had the same shape: four of the eight defects
+fixed here — R50's silently voided team, R54's unreported ambiguity, R56's
+certified empty index, and the BOM defect that restored it — are absence
+rendered as pass, inside the tool.
+
+**The ruling.** Apply the project's status vocabulary to its own evidence. A
+null observation — empty output, no diagnostics, no change, exit 0 — is
+*not-reported*, not *pass*. Two checks promote it:
+
+- **(a) A positive control.** Before a null is reported, run the same command
+  in the same setup against an input known to produce a non-null. A null
+  control voids the setup, and the result with it. Because a stale artifact is
+  the recurring sub-cause of Class A: rebuild before measuring, and do not
+  read a generated file that the same command did not just generate.
+- **(b) Exhibit the absence.** A claim that something is absent, or that
+  nothing calls it, quotes the search that would have found it — and, where
+  that search is not self-evidently complete, its output on a case where the
+  thing is present.
+
+(a) would have caught rows 4 to 7 and (b) rows 1 to 3. That is retrodiction:
+the checks were written knowing the seven, and a check fitted to its evidence
+proves nothing about the next instance.
+
+**This ruling is not enforced, and cannot be.** Every rule in `CLAUDE.md`'s
+non-negotiables table is a property of source code, so a hook can read the
+edit and refuse it. A positive control is a property of an investigation, and
+there is nothing in the diff to read. The one mechanical piece nearby, a
+`landsraad version` reporting the `vcs.revision` Go already embeds, would make
+a stale binary visible without making anyone look, and its output lands in a
+user's terminal; it is deferred below as its own decision. So this ruling is
+exactly the kind of writing-down that `CLAUDE.md` says is not the same as
+following, and it says so in order to be falsifiable: **(b) is cheap enough to
+hold, and (a) will be skipped on the step that looks too simple to need it.**
+If the next instance is Class A, the prediction held, and the answer is
+machinery rather than a sharper sentence.
+
+**Related rulings.** R48 is the sibling for written claims: a conclusion that
+is true, stated with a mechanism that is not. R57 is the same care one step
+earlier, in the measurement the claim came from. R49 is an instance from
+before this work — R46's verification "followed the read to `assemble`'s
+parameter and never followed the parameter to its use" — so the pattern is
+older than the seven.
+
 ## The BOM defect: R55's delimiter match re-opened R56
 
 A third pass, from `8be7171`, hunted the failure mode R55 was guarded against
@@ -711,14 +815,99 @@ part of that standard, so the fix is to render it there rather than to blank
 the severity cell. That is real design work on the published artifact and it
 gets its own ruling.
 
-**`appliesTo` ships with no user-facing documentation.** It appears in the
-schema, the loader, the tests and this spec, and nowhere a user reads.
-`README.md` does not document `standards.yaml`'s fields at all, and
-`standards.default.yaml` — the file `landsraad init` writes into a user's
-repository — carries no comments. A capability nobody can find has shipped the
-cost of a one-way-door schema addition without the benefit. A `README.md` line
-is uncontroversial; commenting `standards.default.yaml` changes bytes landing
-in a user's repository, which is a one-way door in its own right.
+**`standards.default.yaml` carries no comments.** `appliesTo` first shipped
+with no user-facing documentation at all. `README.md`'s "Tuning the standard"
+section, added in `8be7171`, now covers the matrix, the severities,
+`appliesTo` and the rollout constraint. What remains is the file
+`landsraad init` writes into a user's repository, which still has no comments,
+so a team reading its own `standards.yaml` learns nothing about `appliesTo`
+from it. Commenting it changes bytes landing in a user's repository, a one-way
+door in its own right, so it stays a decision.
+
+**`validate` and `build` never see R50's diagnostic.** Measured on `3729ae6`
+against a copy of `testdata/monorepo-ok` with a second team added and
+`payments-worker` moved onto `ledger-api`'s path under it:
+
+```
+validate   exit 0   codeowners-duplicate-path: 0
+gen        exit 2   codeowners-duplicate-path: 1
+build      exit 0   codeowners-duplicate-path: 0
+```
+
+The `gen` row is the positive control R57 requires: same catalog, same
+binary, and the diagnostic fires, so the other two nulls are real.
+`generate.CODEOWNERS` has one non-test caller, `cmd/landsraad/gen.go:33`, and
+`build.go` references nothing in `generate`. A team that runs `validate` on
+pull requests and `build` on main has no path to R50's error at all — the
+collision ships, and the first team loses its review rights as silently as it
+did before R50. This is one decision, not two deferrals: whether a path
+collision is a property of the catalog, which `validate` should report — it
+already reads `teams.yaml`, in `checkOwners`, so both inputs are in hand — or a property
+of one generated file, which only the command writing it can know.
+
+**`score` puts its report on stderr; `validate` puts its problems on stdout.**
+Measured from both sessions, on `3729ae6`:
+
+```
+this session, testdata/monorepo-ok          stdout   stderr
+  validate                                    181       44
+  score                                         0     2094
+  score --format json                        4663      287
+
+peer session, varied input
+  validate, catalog with diagnostics          228        0
+  validate, catalog with none                   0       45
+```
+
+Structurally: `cmd/landsraad/validate.go:123` writes diagnostics to `out`;
+`cmd/landsraad/score.go:120` writes the JSON scorecard to `out`; and
+`score.go:125` writes the text scorecard to `errOut`. So
+`landsraad validate > problems.txt` captures the problems and
+`landsraad score > report.txt` captures nothing. The peer session withdrew
+this finding once, on a catalog with no diagnostics — row 6 of R57 — and
+restored it after varying the input. There is a coherent reading in which
+`score`'s exit code is the gate and `--format json` is the artifact, but
+`validate` contradicts it. Which stream carries the artifact is the decision,
+and since the answer changes what lands in users' CI logs and pipes,
+`/autonomy-check` applies.
+
+**Declaring a service less important raises its score.** Measured on
+`3729ae6`, `service:ledger-api` in `testdata/monorepo-ok` with nothing
+changed but `spec.tier`, and every check's status identical across the three
+runs:
+
+```
+tier 1   11%  (1/9)
+tier 2   11%  (1/9)
+tier 3   20%  (1/5)
+```
+
+The published defaults move `alerts-parse`, `slo-defined`, `docs-fresh` and
+`otel-present` to `info` at tier 3, and R2 (plan 2's rulings table) makes `info`
+inapplicable, so they leave the denominator. Three of the four were failing.
+There are two readings. In one this is intended: the percentage means "the
+fraction of what this tier requires", so percentages at different tiers are
+not on one scale, and the defect is that nothing keeps them apart: `score`'s
+text output lists every entity in one column, and both the portal's team table
+and its catalog total pool `Passed` and `Applicable` across tiers —
+`Scorecard.Teams` in `internal/scorecard/score.go`, and the catalog-wide sum
+in `internal/render/scorecard.go` — so one service relabelled tier 3 raises
+its team's number and the catalog's. In the other it is an incentive:
+the cheapest way to raise a score is to declare the service less critical,
+and R2's rationale — an `info` check "silently drags every score down" — was
+written about checks a team chose to demote, not about the tier moving
+`required` checks out of the number wholesale. Whether R2 is still what is
+wanted, or whether tier should weight a check rather than remove it, is the
+decision.
+
+**A binary does not say which commit built it.** The information is already
+there: Go embeds `vcs.revision` and `vcs.modified` in every binary built from
+this repository, and `go version -m` on one built during this work printed the
+HEAD it came from. Nothing in landsraad exposes it. R57 row 5 — an old binary
+run against a new `standards.yaml` — is the failure this would have made
+visible, though not checked. A `version` command, or a revision in some
+existing output, is a new surface in users' terminals, so it is its own
+decision.
 
 ## Hygiene: no decision needed
 
