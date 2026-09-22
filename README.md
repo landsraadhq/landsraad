@@ -97,6 +97,59 @@ spec:
 `tier` is required only for kinds that can page someone — `Service`, `Worker`,
 `Cron`, `API`. A library or topic doesn't need one.
 
+## Tuning the standard — `standards.yaml`
+
+Optional. Without it you are scored against the default matrix built into the
+binary, which is what most teams should start with. `landsraad init` writes
+that default into your repository so you can edit exactly what you were
+already being scored against.
+
+It is the only scoring knob: a matrix of check by tier, plus per-check
+thresholds. Checks themselves are Go functions with stable ids, so there is
+nothing to debug in YAML.
+
+```yaml
+apiVersion: landsraad/v1
+kind: Standards
+spec:
+  staleAfterDays: 14            # ingested results older than this are stale, not pass
+  checks:
+    runbook-present:
+      tiers: {1: required, 2: required, 3: warn}
+    docs-fresh:
+      params: {maxAgeDays: 180}
+      tiers: {1: warn, 2: warn, 3: info}
+    image-scanned:
+      source: external          # reported in via .landsraad/checks/*.yaml
+      appliesTo: [Service, Worker, Cron]
+      tiers: {1: required, 2: required, 3: warn}
+```
+
+`required` fails `score --fail-on required`; `warn` counts toward the score and
+gates only under `--fail-on warn`; `info` is reported and does not affect the
+score; `skip` is not run. A tier with no entry is `skip`.
+
+**`appliesTo` says which kinds a check is meaningful for.** Leave it out and
+the check applies to every kind, which is what every file written before this
+existed means. Use it for checks that cannot apply: an `API` contract
+directory has no container image and no runtime, so asking it for
+`image-scanned` or `otel-present` produces a score that is wrong in its
+denominator, not a service that is behind. A check that does not apply is
+reported as `not-applicable` and leaves the denominator, the same way an
+in-force exemption does — it is not a silent skip.
+
+Prefer it to an exemption for this. An exemption is time-bounded by design and
+warns once it lapses, which is right for "we know, we're working on it" and
+wrong for "an API is not a deployable" — that never expires. landsraad warns
+(`exemption-not-applicable`) if you leave an exemption on a check your kind
+already excludes.
+
+**Rolling it out is a hard cut.** A landsraad older than `appliesTo` rejects a
+`standards.yaml` that uses it, loudly, rather than ignoring the field and
+scoring you against a standard you did not write. So upgrade the binary
+everywhere — every CI runner and every developer — *before* the
+`standards.yaml` change lands, or older runners fail immediately.
+
 ## Wiring into CI
 
 ### GitHub Actions

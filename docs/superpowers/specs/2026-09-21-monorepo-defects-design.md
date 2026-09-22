@@ -495,6 +495,71 @@ obvious in the output; over-stripping silently eats a document's first
 section, and the reader has no way to tell it is missing. Both directions are
 pinned by tests.
 
+### R56: a document that says nothing is not documentation
+
+A second pass against the 75-entity catalog, run from the merge commit, found
+that R51 buys that repository far less than either session assumed. All 18 of
+its application `_index.md` files are front matter and nothing else — body
+characters after the block: zero, eighteen times. They are Hugo **section
+stubs**, which exist to give a section a title and a weight; the prose lives
+in a sibling `overview.md`.
+
+So the sequence there was: before, the entity page hoisted nothing because the
+index was unrecognised; after, it hoists the recognised index, which is empty.
+The overview is still blank. What changed is that the stubs left the
+documentation link list and stopped being published, 65 pages to 48.
+
+**Nothing in that is wrong.** R51 and R55 each do exactly what they say. What
+it exposes is an assumption underneath **R18**: hoisting the index assumes the
+index carries the overview prose. In Hugo's `_index.md` convention it
+frequently carries none.
+
+**The ruling has two halves, and the second is the one that matters.**
+
+**First: landsraad does not guess which other file is the overview.** Falling
+back to `overview.md`, or to `README.md`, hardcodes a second filename
+convention — which is precisely the error R51 had just finished correcting.
+One wrong guess about a filename is what this whole branch exists to fix;
+adding a second guess as the remedy is not a remedy. A team that wants prose on
+the entity page has two levers that are already landsraad's own rather than a
+generator's: put prose in the index (Hugo permits it), or write
+`metadata.description`, which is schema'd, validated and kind-independent. The
+entity template already guards `{{- if .Index}}`, so an empty index renders no
+empty block and no stray page — verified, and no change is needed there.
+
+**Second: `docs-fresh` was certifying empty documentation, and now does not.**
+It only `Stat`ed the index. A front-matter-only stub therefore counted as
+documentation, and the check went on to score the *freshness* of a file with
+nothing in it. `runbook-present` has refused exactly this shape since it was
+written — "counting it as a pass is how a scorecard comes to certify a runbook
+nobody wrote — the rot this product exists to make visible, certified by the
+product" — and the docs index now gets the same rule and the same family of
+message.
+
+This is the finding the hoist question was standing in front of. The hoist
+being empty is cosmetic; the scorecard calling an empty file documentation is
+the product lying, and for this repository it was lying about 18 services.
+
+**The same defect existed one file over, unnoticed.** `bodyIsEmpty` read every
+front-matter line as content, so a runbook that was front matter and nothing
+else passed `runbook-present`. Fixing `docs-fresh` alone would have left the
+two checks using different definitions of "says nothing" — the two-answers
+state R51 exists to eliminate, reintroduced inside one package.
+
+**`internal/mdtext` is where the shared answer lives.** Two packages need it:
+the renderer strips front matter so it is not printed as body text (R55), and
+the scorecard cannot decide whether a document says anything without stripping
+the same block first. The alternative was `internal/scorecard` importing
+`internal/render/md`, which inverts the pipeline — stage 7 reaching into stage
+8 — and drags goldmark into a stage with no use for it. No `internal/*`
+package imports `internal/render` today and this ruling does not make one the
+first. `mdtext` has no dependencies at all.
+
+**Known cost.** A heading-only index now fails where it passed, which is the
+intent, and it changed one existing test's fixture — `TestDocsFreshAsksPerRepository`
+used `# Docs\n` as a stand-in while testing something else entirely. The
+fixture was given prose rather than the rule being weakened.
+
 ## Correction: `_index.html` was never orphaned
 
 An earlier account of R51's renderer half — in the message reporting it, not
