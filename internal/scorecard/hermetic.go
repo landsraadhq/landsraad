@@ -10,6 +10,7 @@ import (
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/diag"
+	"github.com/landsraadhq/landsraad/internal/mdtext"
 	"github.com/landsraadhq/landsraad/internal/sparsefs"
 )
 
@@ -107,27 +108,11 @@ func runbookPresent(e *catalog.Entity, env Env) Result {
 		// exit-0-on-something-unexamined failure inside a single check.
 		return Result{Check: id, Status: StatusError, Detail: Unreadable(e.Spec.Runbook, err)}
 	}
-	if bodyIsEmpty(data) {
+	if mdtext.BodyIsEmpty(data) {
 		return Result{Check: id, Status: StatusFail,
 			Detail: fmt.Sprintf("%s has a heading and no content", e.Spec.Runbook)}
 	}
 	return Result{Check: id, Status: StatusPass, Detail: e.Spec.Runbook}
-}
-
-// bodyIsEmpty reports whether a Markdown document has no content beyond
-// headings, blank lines and HTML comments.
-func bodyIsEmpty(data []byte) bool {
-	for _, line := range strings.Split(string(data), "\n") {
-		t := strings.TrimSpace(line)
-		switch {
-		case t == "":
-		case strings.HasPrefix(t, "#"):
-		case strings.HasPrefix(t, "<!--"):
-		default:
-			return false
-		}
-	}
-	return true
 }
 
 // alertRules is the subset of the Prometheus rules format landsraad reads. It
@@ -221,12 +206,32 @@ func docsFresh(e *catalog.Entity, env Env) Result {
 		return missingSourceResult(e, id)
 	}
 
-	if _, ok := catalog.DocsIndex(fsys, e.Spec.Docs); !ok {
+	index, ok := catalog.DocsIndex(fsys, e.Spec.Docs)
+	if !ok {
 		// Docs with no index page is a directory, not documentation.
 		// Both spellings are named: a message naming one file is what sent
 		// 18 services' owners looking for the wrong thing (ruling R51).
 		return Result{Check: id, Status: StatusFail,
 			Detail: fmt.Sprintf("%s has no index.md or _index.md", e.Spec.Docs)}
+	}
+
+	// Ruling R56: an index that exists is not yet documentation. A Hugo
+	// section stub is front matter and nothing else — it gives the section a
+	// title and a weight, and the prose lives in a sibling document. Stat'ing
+	// the file said such a stub was documentation and then scored its
+	// freshness, which is this product certifying the rot it exists to make
+	// visible. runbook-present has refused the same shape since it was
+	// written; the two now share one definition of "says nothing".
+	data, err := fs.ReadFile(fsys, index)
+	if err != nil {
+		// Never pass for a file that could not be read — the same rule
+		// runbook-present states: that is the exit-0-on-something-unexamined
+		// failure, inside a single check.
+		return Result{Check: id, Status: StatusError, Detail: Unreadable(index, err)}
+	}
+	if mdtext.BodyIsEmpty(data) {
+		return Result{Check: id, Status: StatusFail,
+			Detail: fmt.Sprintf("%s has no content beyond its front matter and headings", index)}
 	}
 
 	if env.LastEdit == nil {

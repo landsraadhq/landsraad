@@ -7,6 +7,8 @@ import (
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
+
+	"github.com/landsraadhq/landsraad/internal/mdtext"
 )
 
 // searchTextLimit caps the body text kept per document for the search index
@@ -51,7 +53,7 @@ func Render(m goldmark.Markdown, source []byte, rewrite LinkRewriter) (Doc, erro
 	// Before the parser sees it: a front-matter block is not Markdown, and
 	// goldmark renders it as body text. Every caller goes through here, so
 	// docs pages, runbooks and the hoisted index are stripped alike.
-	source = stripFrontMatter(source)
+	source = mdtext.StripFrontMatter(source)
 	reader := text.NewReader(source)
 	root := m.Parser().Parse(reader)
 

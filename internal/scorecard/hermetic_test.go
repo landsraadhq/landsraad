@@ -385,7 +385,10 @@ func TestChecksReportAnEntityWithNoFilesystem(t *testing.T) {
 // docs-fresh asks for a last-edit date per repository. The same path in two
 // repositories is two different directories with two different histories.
 func TestDocsFreshAsksPerRepository(t *testing.T) {
-	docs := fstest.MapFS{"docs/index.md": {Data: []byte("# Docs\n")}}
+	// Real prose, not just a heading: ruling R56 makes a heading-only index a
+	// fail, and this test's subject is which repository gets asked for a
+	// last-edit date, not what counts as content.
+	docs := fstest.MapFS{"docs/index.md": {Data: []byte("# Docs\n\nThe overview.\n")}}
 	src := catalog.Sources{"fresh": docs, "ancient": docs}
 	now := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
 
@@ -524,5 +527,54 @@ func TestDocsFreshAcceptsAHugoUnderscoreIndex(t *testing.T) {
 	got := docsFreshFor(t, e, recent)
 	if got.Status != StatusPass {
 		t.Errorf("Status = %q (%s), want pass — _index.md is a documentation index", got.Status, got.Detail)
+	}
+}
+
+// Ruling R56. A Hugo section stub is front matter and nothing else — it exists
+// to give a section a title and a weight, and the prose lives in a sibling
+// document. docsFresh only Stat'd the index, so a stub counted as
+// documentation and the entity went on to be scored for freshness on a file
+// with nothing in it.
+//
+// runbook-present has refused exactly this since it was written: "A file
+// holding only a heading is what a scaffold leaves behind, and counting it as
+// a pass is how a scorecard comes to certify a runbook nobody wrote — the rot
+// this product exists to make visible, certified by the product." The docs
+// index gets the same rule.
+//
+// In the monorepo that prompted R51, all 18 application _index.md files are
+// front-matter only: zero body characters, eighteen times.
+func TestDocsFreshRejectsAFrontMatterOnlyIndex(t *testing.T) {
+	e := svc("api")
+	e.Spec.Docs = "services/api/docs"
+	stub := "---\ntitle: \"API\"\nweight: 10020\ndraft: false\n---\n"
+	en := env(fstest.MapFS{"services/api/docs/_index.md": {Data: []byte(stub)}})
+	en.LastEdit = func(string, string) (time.Time, bool) { return en.Now, true }
+
+	got := docsFreshFor(t, e, en)
+
+	if got.Status != StatusFail {
+		t.Errorf("Status = %q, want fail — a section stub is not documentation", got.Status)
+	}
+	want := "services/api/docs/_index.md has no content beyond its front matter and headings"
+	if got.Detail != want {
+		t.Errorf("Detail\n got: %s\nwant: %s", got.Detail, want)
+	}
+}
+
+// The same defect one file over, and the reason R56 moved the emptiness test
+// into internal/mdtext rather than fixing docsFresh alone. bodyIsEmpty read
+// every front-matter line as content, so a runbook that was front matter and
+// nothing else passed runbook-present.
+func TestRunbookPresentRejectsAFrontMatterOnlyRunbook(t *testing.T) {
+	e := svc("api")
+	e.Spec.Runbook = "services/api/runbook.md"
+	stub := "---\ntitle: \"Runbook\"\ndraft: true\n---\n"
+	en := env(fstest.MapFS{"services/api/runbook.md": {Data: []byte(stub)}})
+
+	got := run(t, "runbook-present", e, en)
+
+	if got.Status != StatusFail {
+		t.Errorf("Status = %q, want fail — front matter is not a runbook", got.Status)
 	}
 }
