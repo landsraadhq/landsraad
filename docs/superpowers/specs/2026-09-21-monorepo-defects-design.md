@@ -610,8 +610,11 @@ visible. Redundancy caught it.
 **Why Class A was breakable.** Every setup in rows 4 to 7 was inherited from
 an earlier question rather than built for the current one, because building
 one is expensive and the last one was to hand. And nothing in the loop reports
-its own provenance: a binary does not say which commit built it, a generated
-file does not say what wrote it, and a `not-reported` does not say whether
+its provenance where the result is read: a binary says which commit built it
+only when asked — `landsraad version`, or the portal's footer — and none of
+`validate`, `gen` or `score` prints it beside the output that was misread; a
+generated file says landsraad wrote it but not which build; and a
+`not-reported` does not say whether
 `LastEdit` was asked and had nothing or was never asked. A stale harness and a
 fresh one are byte-identical at the moment of reading.
 
@@ -647,10 +650,12 @@ proves nothing about the next instance.
 **This ruling is not enforced, and cannot be.** Every rule in `CLAUDE.md`'s
 non-negotiables table is a property of source code, so a hook can read the
 edit and refuse it. A positive control is a property of an investigation, and
-there is nothing in the diff to read. The one mechanical piece nearby, a
-`landsraad version` reporting the `vcs.revision` Go already embeds, would make
-a stale binary visible without making anyone look, and its output lands in a
-user's terminal; it is deferred below as its own decision. So this ruling is
+there is nothing in the diff to read. The one mechanical piece nearby already
+exists: `landsraad version` prints the `vcs.revision` Go embeds, and every
+portal page carries it in its footer. Row 5 — an old binary run against a new
+`standards.yaml` — happened anyway, one command from being visible. That is
+this paragraph's argument observed rather than predicted: making a stale
+binary visible does not make anyone look. So this ruling is
 exactly the kind of writing-down that `CLAUDE.md` says is not the same as
 following, and it says so in order to be falsifiable: **(b) is cheap enough to
 hold, and (a) will be skipped on the step that looks too simple to need it.**
@@ -663,6 +668,107 @@ earlier, in the measurement the claim came from. R49 is an instance from
 before this work — R46's verification "followed the read to `assemble`'s
 parameter and never followed the parameter to its use" — so the pattern is
 older than the seven.
+
+**An eighth, in this ruling's own first draft.** It said nothing in landsraad
+exposes the build revision, and a deferred item proposed adding a `version`
+command. `landsraad version` existed. The check that was run, `go version -m`
+on a built binary, proved the revision was embedded — a different claim from
+"landsraad does not expose it", and the search that would have shown it,
+`landsraad --help`, was not run. Class B, and exactly what check (b) exists
+for, written into the ruling that states check (b). It was found by R58's
+before-and-after comparison of two portals, whose only difference was that
+footer.
+
+### R58: a generator's errors are the pull request's errors
+
+R50 made a path collision an error, and ruling on the case exposed that
+`validate` could not see it. Varying the input showed that collisions were only
+the case that happened to be noticed. Four `SevError` diagnostics are emitted
+by the generators alone, each decidable from the catalog and `teams.yaml` —
+the two inputs `validate` already loads — and `validate` reported none of
+them. Measured on `3729ae6`, one fixture per condition, `gen` as the positive
+control for each:
+
+```
+                                   before                after
+team with no members    validate   exit 0, silent        exit 2, codeowners-no-members
+                        gen        exit 2, same          exit 2, same
+two teams on one path   validate   exit 0, silent        exit 2, codeowners-duplicate-path
+no pagerduty key        validate   exit 0, silent        exit 2, routing-no-pagerduty
+no slack channel        validate   exit 0, silent        exit 2, routing-no-slack
+unknown owner           gen        unknown-owner         unknown-owner
+                                   + codeowners-unknown-owner
+teams.yaml unparseable  gen        teams-parse           teams-parse
+                                   + 3x codeowners-unknown-owner
+```
+
+After R58, `validate` and `gen` report identical errors on all six.
+
+**What the gap cost, measured rather than assumed.** The deferred item this
+ruling replaces said a collision "ships, and the first team loses its review
+rights as silently as it did before R50". That was false: `gen` writes nothing
+when it has reported an error — on a clean copy it wrote `CODEOWNERS`, on each
+of the four probes nothing — so no voided file can be produced. The real cost
+is that the error surfaces at whoever runs `gen` next, not on the pull request
+that introduced it, and until someone fixes it, regeneration of all three
+artifacts is blocked for the whole repository.
+
+**Why it was breakable.** The generators emit these errors as a side effect of
+rendering, and only `gen` rendered. `validate` is deliberately its own
+composition — the comment on `loadCatalogScoped` says a fix there "reaches two
+of the three commands and ruling R43 is what keeps the third in agreement, by
+hand", and names R46 and R49 as the cost. This is that hand slipping again. So
+the fix is not a fourth check copied into `validate`. There is one list of
+generators, `generateAll` in `cmd/landsraad/gen.go`; `gen` writes what it
+returns, and `validate` runs it for the diagnostics and discards the files. A
+generator added to that list reaches both commands.
+
+**Running the generators from `validate` would have spread two defects `gen`
+already had.** An unknown owner was reported twice on one line — `unknown-owner`
+from `ValidateOwners`, then `codeowners-unknown-owner` from the generator, with
+a different message and a worse hint. And when `teams.yaml` did not parse,
+`ValidateOwners` correctly skipped, saying so with `owners-skipped`, while the
+generator went on to call every owner unknown — three invented errors for three
+entities, contradicting that note in the same output. The generator's guard was
+not a leftover: its test said "two diagnostics for one cause is noise, but a
+silently wrong artifact is worse, and the checks run in different commands".
+The second premise was never true — `gen` has called `ValidateOwners` since its
+first commit, `6efef8b` — and both guards were sound alone.
+
+**The ruling: a generator takes owners that were checked, as a type.**
+`config.Owners` is `teams.yaml` after `ValidateOwners` has checked every
+entity's owner against it, and `ValidateOwners` is the only thing that makes
+one. The generators take `*config.Owners` instead of `*config.Teams`, so
+"check the owners first" is now a compile error rather than a convention.
+`Owners.Of` returning false means there is nothing to render and the reason
+has already been reported, so `codeowners-unknown-owner` is deleted and
+the invented errors cannot occur. Go cannot stop anyone writing
+`config.Owners{}`, and one that `ValidateOwners` did not make would silently
+resolve nothing, so `Of` panics on it instead.
+
+`Of` briefly also refused to resolve anything when `teams.yaml` had not
+loaded. It was removed: reverting it left its test passing, because `loaded`
+is false only when decoding failed, and then no team was ever added. A guard
+that cannot change an outcome was code without a test, and the test that pins
+the behaviour stays.
+
+**`build` is untouched, and that was checked, not assumed.** It writes none of
+these files and runs no generator; `validate` is the gate in the repository
+they describe. Built before and after on a clean fixture and on the colliding
+one, every page of both portals was byte-identical except the version stamp in
+the footer.
+
+**Known cost.** A repository whose `teams.yaml` is missing a `slack` channel
+or a `pagerduty` key, or has a member-less team owning an entity with a
+`spec.path`, goes red in `validate` on upgrade, having never been told —
+documented in `README.md` under `teams.yaml`. Three of this repository's own
+tests hit exactly that: fixtures in `cmd/landsraad/validate_test.go` whose
+team was `name: team-a` and nothing else, testing cross-repository refs, an
+in-memory run and a root-level service. They were given a complete team, since
+none of them is about teams. `codeowners-unknown-owner` no longer exists as a
+check id; `unknown-owner` still fires on the same line. `--satellite` skips
+these errors along with every other owner check, since a satellite has no
+`teams.yaml` to check them against.
 
 ## The BOM defect: R55's delimiter match re-opened R56
 
@@ -802,6 +908,11 @@ unexported behind its existing accessor.
 
 ### Deferred, and needing a decision
 
+Each item here needs a decision before code. Two items that were filed here
+needed only doing and have left: `validate` not seeing the generators' errors
+is R58, and the build-revision item turned out to describe something that
+already exists (R57, "an eighth").
+
 **The portal describes the standard in one place and `appliesTo` is not in
 it.** `internal/render/scorecard.go` builds each row from `Checks()`,
 `IsExternal` and `Severity`, and nothing under `internal/render` calls
@@ -823,27 +934,6 @@ section, added in `8be7171`, now covers the matrix, the severities,
 so a team reading its own `standards.yaml` learns nothing about `appliesTo`
 from it. Commenting it changes bytes landing in a user's repository, a one-way
 door in its own right, so it stays a decision.
-
-**`validate` and `build` never see R50's diagnostic.** Measured on `3729ae6`
-against a copy of `testdata/monorepo-ok` with a second team added and
-`payments-worker` moved onto `ledger-api`'s path under it:
-
-```
-validate   exit 0   codeowners-duplicate-path: 0
-gen        exit 2   codeowners-duplicate-path: 1
-build      exit 0   codeowners-duplicate-path: 0
-```
-
-The `gen` row is the positive control R57 requires: same catalog, same
-binary, and the diagnostic fires, so the other two nulls are real.
-`generate.CODEOWNERS` has one non-test caller, `cmd/landsraad/gen.go:33`, and
-`build.go` references nothing in `generate`. A team that runs `validate` on
-pull requests and `build` on main has no path to R50's error at all — the
-collision ships, and the first team loses its review rights as silently as it
-did before R50. This is one decision, not two deferrals: whether a path
-collision is a property of the catalog, which `validate` should report — it
-already reads `teams.yaml`, in `checkOwners`, so both inputs are in hand — or a property
-of one generated file, which only the command writing it can know.
 
 **`score` puts its report on stderr; `validate` puts its problems on stdout.**
 Measured from both sessions, on `3729ae6`:
@@ -898,15 +988,6 @@ and R2's rationale — an `info` check "silently drags every score down" — was
 written about checks a team chose to demote, not about the tier moving
 `required` checks out of the number wholesale. Whether R2 is still what is
 wanted, or whether tier should weight a check rather than remove it, is the
-decision.
-
-**A binary does not say which commit built it.** The information is already
-there: Go embeds `vcs.revision` and `vcs.modified` in every binary built from
-this repository, and `go version -m` on one built during this work printed the
-HEAD it came from. Nothing in landsraad exposes it. R57 row 5 — an old binary
-run against a new `standards.yaml` — is the failure this would have made
-visible, though not checked. A `version` command, or a revision in some
-existing output, is a new surface in users' terminals, so it is its own
 decision.
 
 ## Hygiene: no decision needed
