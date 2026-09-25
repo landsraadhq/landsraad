@@ -365,10 +365,13 @@ func TestIntegrationIngestedCheckResultOverridesNotReported(t *testing.T) {
 		t.Fatalf("baseline dashboard-resolves detail = %q", detail)
 	}
 
+	// The binary scores against the real clock, so a result has to be recent
+	// to count as a pass rather than stale. A fixed date here held for 14
+	// days and then failed on its own, on 2026-09-23.
 	writeCheckResults(t, dir, "ci.yaml", `apiVersion: landsraad/v1
 kind: CheckResults
 producer: ci/smoke-test
-generatedAt: 2026-09-09T22:02:00Z
+generatedAt: `+time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)+`
 results:
   - entity: service:api
     check: dashboard-resolves
@@ -411,12 +414,15 @@ func TestIntegrationInForceExemptionRemovesCheckFromDenominator(t *testing.T) {
 	baseline := scoreJSONOf(t, run(t, materialize(t, integrationFixture()), "score", "--format", "json"))
 	baseApplicable := applicableFor(t, baseline, "service:api")
 
-	exempt := scoreJSONOf(t, run(t, materialize(t, serviceWithExemption("2027-01-01")), "score", "--format", "json"))
+	// In force against the real clock, so relative to it: a fixed date would
+	// turn this into an expired-exemption test on the day it passed.
+	until := time.Now().UTC().AddDate(1, 0, 0).Format("2006-01-02")
+	exempt := scoreJSONOf(t, run(t, materialize(t, serviceWithExemption(until)), "score", "--format", "json"))
 	status, detail := findResult(t, exempt, "service:api", "slo-defined")
 	if status != "exempt" {
 		t.Fatalf("slo-defined status = %q, want exempt", status)
 	}
-	if want := "exempt until 2027-01-01: SLO tracked externally, migrating in Q1"; detail != want {
+	if want := "exempt until " + until + ": SLO tracked externally, migrating in Q1"; detail != want {
 		t.Errorf("slo-defined detail = %q, want %q", detail, want)
 	}
 	if got, want := applicableFor(t, exempt, "service:api"), baseApplicable-1; got != want {
