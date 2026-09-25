@@ -7,6 +7,8 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/google/go-cmp/cmp"
+
 	"github.com/landsraadhq/landsraad/internal/diag"
 )
 
@@ -332,3 +334,60 @@ func TestGenReportsOwnersSkippedWhenTheDefaultPatternsMatchNothing(t *testing.T)
 type diagCollectorForTest struct{ c diag.Collector }
 
 func (d *diagCollectorForTest) collector() *diag.Collector { return &d.c }
+
+// genErrors runs gen with the JSON formatter and returns the error-severity
+// diagnostics as (check, message, hint) — everything a reader acts on.
+func genErrors(t *testing.T, fsys fstest.MapFS) [][3]string {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	if code := Gen(fsys, "", &out, &errOut, diag.JSON{}, false); code != exitValidation {
+		t.Fatalf("exit = %d, want %d", code, exitValidation)
+	}
+	var ds []diag.Diagnostic
+	if err := json.Unmarshal(out.Bytes(), &ds); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, out.String())
+	}
+	var got [][3]string
+	for _, d := range ds {
+		if d.Severity == diag.SevError {
+			got = append(got, [3]string{d.Check, d.Message, d.Hint})
+		}
+	}
+	return got
+}
+
+// Ruling R58. gen used to report an unknown owner twice on the same line:
+// once from ValidateOwners, and again from the CODEOWNERS generator, with a
+// different message and a worse hint.
+func TestGenReportsAnUnknownOwnerOnce(t *testing.T) {
+	fsys := genFS()
+	fsys["services/api/service.yaml"] = &fstest.MapFile{Data: []byte(
+		strings.Replace(string(fsys["services/api/service.yaml"].Data), "owner: team-payments", "owner: team-does-not-exist", 1))}
+
+	got := genErrors(t, fsys)
+
+	want := [][3]string{{"unknown-owner",
+		`owner "team-does-not-exist" is not defined in teams.yaml`,
+		"known teams: [team-payments]"}}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("errors (-want +got):\n%s", diff)
+	}
+}
+
+// When teams.yaml does not parse, owners-skipped says no owner was checked.
+// gen used to go on and call every owner unknown, once per entity,
+// contradicting that note in the same output. The parse error is the only
+// error now.
+func TestGenInventsNoOwnerErrorsWhenTeamsDidNotParse(t *testing.T) {
+	fsys := genFS()
+	fsys["teams.yaml"] = &fstest.MapFile{Data: []byte("teams:\n  - name: team-payments\n    members: [alice\n")}
+
+	var checks []string
+	for _, e := range genErrors(t, fsys) {
+		checks = append(checks, e[0])
+	}
+
+	if diff := cmp.Diff([]string{"teams-parse"}, checks); diff != "" {
+		t.Errorf("error checks (-want +got):\n%s", diff)
+	}
+}

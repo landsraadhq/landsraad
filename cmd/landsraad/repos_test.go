@@ -331,8 +331,8 @@ func writeFile(t *testing.T, root, path, data string) {
 func TestParseRepoThenAssembleMatchesTheOldPipeline(t *testing.T) {
 	fsys := genFS() // the fixture gen_test.go uses for a valid in-memory repository
 	var c diag.Collector
-	cat, g, teams := loadCatalogScoped(fsys, catalog.FullCatalog, &c)
-	if cat == nil || g == nil || teams == nil {
+	cat, g, owners := loadCatalogScoped(fsys, catalog.FullCatalog, &c)
+	if cat == nil || g == nil || owners == nil {
 		t.Fatalf("loadCatalogScoped returned nils; diagnostics: %+v", c.Diagnostics())
 	}
 	if ds := c.Diagnostics(); len(ds) != 0 {
@@ -446,13 +446,13 @@ func TestAssembleWithNilTeamsReturnsAllNil(t *testing.T) {
 	}
 
 	var c diag.Collector
-	cat, g, teams := assemble(parseResult{entities: entities, found: 1},
+	cat, g, owners := assemble(parseResult{entities: entities, found: 1},
 		catalog.SingleSource("monorepo", fstest.MapFS{}), catalog.FullCatalog, nil, &c)
 
-	if cat != nil || g != nil || teams != nil {
+	if cat != nil || g != nil || owners != nil {
 		t.Fatalf("assemble(..., nil, ...) = (%v, %v, %v), want all nil: a nil teams means "+
 			"loadTeamsFor already reported why there is none, so stage 5 must stop rather than "+
-			"resolve owners against nothing", cat, g, teams)
+			"resolve owners against nothing", cat, g, owners)
 	}
 }
 
@@ -461,9 +461,9 @@ func TestAssembleWithNilTeamsReturnsAllNil(t *testing.T) {
 // assemble must add nothing more — not even a thinner echo of it.
 func TestAssembleZeroEntitiesSoloAddsNoDiagnostic(t *testing.T) {
 	var c diag.Collector
-	cat, g, teams := assemble(parseResult{}, catalog.SingleSource("monorepo", fstest.MapFS{}), catalog.FullCatalog, loadTeamsFor(teamsOnly(), &c), &c)
-	if cat != nil || g != nil || teams != nil {
-		t.Fatalf("assemble = (%v, %v, %v), want all nil", cat, g, teams)
+	cat, g, owners := assemble(parseResult{}, catalog.SingleSource("monorepo", fstest.MapFS{}), catalog.FullCatalog, loadTeamsFor(teamsOnly(), &c), &c)
+	if cat != nil || g != nil || owners != nil {
+		t.Fatalf("assemble = (%v, %v, %v), want all nil", cat, g, owners)
 	}
 	if ds := c.Diagnostics(); len(ds) != 0 {
 		t.Fatalf("assemble added %d diagnostics for a solo empty catalog, want 0: %+v", len(ds), ds)
@@ -476,9 +476,9 @@ func TestAssembleZeroEntitiesSoloAddsNoDiagnostic(t *testing.T) {
 func TestAssembleZeroEntitiesMultiExactMessage(t *testing.T) {
 	src := catalog.Sources{"repo-a": fstest.MapFS{}, "repo-b": fstest.MapFS{}}
 	var c diag.Collector
-	cat, g, teams := assemble(parseResult{}, src, catalog.FullCatalog, loadTeamsFor(teamsOnly(), &c), &c)
-	if cat != nil || g != nil || teams != nil {
-		t.Fatalf("assemble = (%v, %v, %v), want all nil", cat, g, teams)
+	cat, g, owners := assemble(parseResult{}, src, catalog.FullCatalog, loadTeamsFor(teamsOnly(), &c), &c)
+	if cat != nil || g != nil || owners != nil {
+		t.Fatalf("assemble = (%v, %v, %v), want all nil", cat, g, owners)
 	}
 	ds := c.Diagnostics()
 	if len(ds) != 1 {
@@ -522,9 +522,9 @@ func TestWorkspaceParseAllThenAssembleMultiRepoZeroMatchKeepsBothDiagnostics(t *
 	if len(p.entities) != 0 || p.found != 0 {
 		t.Fatalf("ParseAll = %+v, want no entities and nothing found", p)
 	}
-	cat, g, teams := assemble(p, w.Sources(), catalog.FullCatalog, loadTeamsFor(teamsOnly(), &c), &c)
-	if cat != nil || g != nil || teams != nil {
-		t.Fatalf("assemble = (%v, %v, %v), want all nil", cat, g, teams)
+	cat, g, owners := assemble(p, w.Sources(), catalog.FullCatalog, loadTeamsFor(teamsOnly(), &c), &c)
+	if cat != nil || g != nil || owners != nil {
+		t.Fatalf("assemble = (%v, %v, %v), want all nil", cat, g, owners)
 	}
 
 	ds := c.Diagnostics()
@@ -604,10 +604,10 @@ func TestAssembleDoesNotSayNothingWasFoundWhenFilesFailedToParse(t *testing.T) {
 	src := catalog.Sources{"repo-a": fstest.MapFS{}, "repo-b": fstest.MapFS{}}
 	var c diag.Collector
 
-	cat, g, teams := assemble(parseResult{found: 2}, src, catalog.FullCatalog, loadTeamsFor(teamsOnly(), &c), &c)
+	cat, g, owners := assemble(parseResult{found: 2}, src, catalog.FullCatalog, loadTeamsFor(teamsOnly(), &c), &c)
 
-	if cat != nil || g != nil || teams != nil {
-		t.Fatalf("assemble = (%v, %v, %v), want all nil for an empty catalog", cat, g, teams)
+	if cat != nil || g != nil || owners != nil {
+		t.Fatalf("assemble = (%v, %v, %v), want all nil for an empty catalog", cat, g, owners)
 	}
 	if ds := c.Diagnostics(); len(ds) != 0 {
 		t.Errorf("assemble added %+v; the parse errors that emptied the catalog have already said why", ds)

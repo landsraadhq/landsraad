@@ -16,6 +16,11 @@ import (
 	"github.com/landsraadhq/landsraad/internal/diag"
 )
 
+// teamA is a team gen would accept. Since ruling R58 validate reports the
+// generators' errors too, so a fixture whose team lacks members, a slack
+// channel or a pagerduty key fails for that reason, not the one under test.
+const teamA = "teams:\n  - name: team-a\n    members: [alice]\n    slack: \"#a\"\n    pagerduty: A\n"
+
 // validate is the shared harness. out carries only the format payload;
 // errOut carries the human lines. Keeping them separate in the tests is what
 // stops the two being conflated in the implementation.
@@ -73,7 +78,7 @@ func TestValidateRendersTheCycleMessage(t *testing.T) {
 func TestValidateToleratesCrossRepoRefs(t *testing.T) {
 	repo := fstest.MapFS{
 		"repos.yaml": {Data: []byte("repos:\n  - url: https://github.com/org/monorepo\n    paths: [services/*]\n")},
-		"teams.yaml": {Data: []byte("teams:\n  - name: team-a\n")},
+		"teams.yaml": {Data: []byte(teamA)},
 		"services/api/service.yaml": {Data: []byte(
 			"apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: api\n" +
 				"  owner: team-a\n  tier: 1\n  lifecycle: production\nspec:\n" +
@@ -91,7 +96,7 @@ func TestValidateToleratesCrossRepoRefs(t *testing.T) {
 // The whole pipeline runs against an in-memory filesystem with no disk at all.
 func TestValidateRunsEntirelyInMemory(t *testing.T) {
 	repo := fstest.MapFS{
-		"teams.yaml": {Data: []byte("teams:\n  - name: team-a\n    members: [alice]\n")},
+		"teams.yaml": {Data: []byte(teamA)},
 		"services/api/service.yaml": {Data: []byte(
 			"apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: api\n" +
 				"  owner: team-a\n  tier: 1\n  lifecycle: production\nspec:\n  language: go\n")},
@@ -138,7 +143,7 @@ func TestValidateFailsWhenNothingMatches(t *testing.T) {
 // A single-service repo with service.yaml at the root must be discovered.
 func TestValidateFindsARootLevelService(t *testing.T) {
 	repo := fstest.MapFS{
-		"teams.yaml": {Data: []byte("teams:\n  - name: team-a\n")},
+		"teams.yaml": {Data: []byte(teamA)},
 		"service.yaml": {Data: []byte(
 			"apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: edge-gateway\n" +
 				"  owner: team-a\n  tier: 1\n  lifecycle: production\n")},
@@ -1102,5 +1107,111 @@ func TestValidateIsSilentOnAnUnambiguousBareName(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "checks-bare-name") {
 		t.Errorf("resolving a bare name is scope-dependent advice and belongs to score:\n%s", out.String())
+	}
+}
+
+// generatorRepo is a repository gen would accept: two services, each on its
+// own path, owned by teams with members, a slack channel and a pagerduty key.
+// Each case in TestValidateReportsWhatGenWouldRefuse breaks exactly one of
+// those, and the complete one is the control that says the others fail for
+// that reason and no other.
+func generatorRepo(teams, workerOwner, workerPath string) fstest.MapFS {
+	svc := func(name, owner, path string) *fstest.MapFile {
+		return &fstest.MapFile{Data: []byte(
+			"apiVersion: landsraad/v1\nkind: Service\nmetadata:\n  name: " + name +
+				"\n  owner: " + owner + "\n  tier: 1\n  lifecycle: production\nspec:\n  path: " + path + "\n")}
+	}
+	return fstest.MapFS{
+		"teams.yaml":                   {Data: []byte(teams)},
+		"services/api/service.yaml":    svc("api", "team-a", "services/api"),
+		"services/worker/service.yaml": svc("worker", workerOwner, workerPath),
+		"services/api/main.go":         {Data: []byte("package main\n")},
+		"services/worker/main.go":      {Data: []byte("package main\n")},
+	}
+}
+
+const completeTeams = "teams:\n" +
+	"  - name: team-a\n    members: [alice]\n    slack: \"#a\"\n    pagerduty: A\n" +
+	"  - name: team-b\n    members: [bob]\n    slack: \"#b\"\n    pagerduty: B\n"
+
+// Ruling R58. validate is what runs on a pull request, and until R58 it
+// passed every one of these while gen, on the same directory, refused to
+// write anything. The error then surfaced at whoever ran gen next.
+func TestValidateReportsWhatGenWouldRefuse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		repo fstest.MapFS
+		want *diag.Diagnostic // nil: the control, which must pass
+	}{
+		{name: "complete", repo: generatorRepo(completeTeams, "team-b", "services/worker")},
+		{
+			name: "team with no members",
+			repo: generatorRepo(completeTeams+"  - name: team-empty\n    members: []\n    slack: \"#e\"\n    pagerduty: E\n",
+				"team-empty", "services/worker"),
+			want: &diag.Diagnostic{
+				Severity: diag.SevError, File: "services/worker/service.yaml", Line: 4, Entity: "worker",
+				Check:   "codeowners-no-members",
+				Message: `team "team-empty" owns service:worker but lists no members, so CODEOWNERS would leave it unowned`,
+				Hint:    "add members to team-empty in teams.yaml",
+			},
+		},
+		{
+			name: "two teams on one path",
+			repo: generatorRepo(completeTeams, "team-b", "services/api"),
+			want: &diag.Diagnostic{
+				Severity: diag.SevError, File: "services/worker/service.yaml", Line: 4, Entity: "worker",
+				Check: "codeowners-duplicate-path",
+				Message: "services/api is claimed by both service:api (team-a, services/api/service.yaml line 4) " +
+					"and service:worker (team-b), whose teams differ, so CODEOWNERS would silently give one of them no review rights",
+				Hint: "CODEOWNERS is last-match-wins; give them distinct spec.path values, or one owner",
+			},
+		},
+		{
+			name: "team with no pagerduty key",
+			repo: generatorRepo("teams:\n  - name: team-a\n    members: [alice]\n    slack: \"#a\"\n", "team-a", "services/worker"),
+			want: &diag.Diagnostic{
+				Severity: diag.SevError, File: "teams.yaml", Line: 1,
+				Check:   "routing-no-pagerduty",
+				Message: `team "team-a" owns 2 entities but has no pagerduty key, so its alerts would page nobody`,
+				Hint:    "add `pagerduty: <service key>` to team-a in teams.yaml",
+			},
+		},
+		{
+			name: "team with no slack channel",
+			repo: generatorRepo("teams:\n  - name: team-a\n    members: [alice]\n    pagerduty: A\n", "team-a", "services/worker"),
+			want: &diag.Diagnostic{
+				Severity: diag.SevError, File: "teams.yaml", Line: 1,
+				Check:   "routing-no-slack",
+				Message: `team "team-a" owns 2 entities but has no slack channel, so its deploy notifications would go nowhere`,
+				Hint:    "add `slack: \"#channel\"` to team-a in teams.yaml",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			code := Validate(tc.repo, &out, &errOut, diag.JSON{}, false)
+			var ds []diag.Diagnostic
+			if err := json.Unmarshal(out.Bytes(), &ds); err != nil {
+				t.Fatalf("stdout is not JSON: %v\n%s", err, out.String())
+			}
+			var errs []diag.Diagnostic
+			for _, d := range ds {
+				if d.Severity == diag.SevError {
+					errs = append(errs, d)
+				}
+			}
+			if tc.want == nil {
+				if code != exitOK || len(errs) != 0 {
+					t.Fatalf("the control must pass: exit %d, errors %+v", code, errs)
+				}
+				return
+			}
+			if code != exitValidation {
+				t.Errorf("exit = %d, want %d", code, exitValidation)
+			}
+			if diff := cmp.Diff([]diag.Diagnostic{*tc.want}, errs); diff != "" {
+				t.Errorf("errors (-want +got):\n%s", diff)
+			}
+		})
 	}
 }

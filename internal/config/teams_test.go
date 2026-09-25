@@ -301,3 +301,61 @@ func TestLoadTeamsReportsAScalarWhereTheTeamListBelongs(t *testing.T) {
 		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
 	}
 }
+
+func ownedBy(owner string) *catalog.Entity {
+	e := &catalog.Entity{Kind: catalog.KindService}
+	e.Metadata.Name = "api"
+	e.Metadata.Owner = owner
+	e.SourcePath = "services/api/service.yaml"
+	e.NameLine = 4
+	return e
+}
+
+// Ruling R58. Owners is what ValidateOwners hands on: a known owner resolves,
+// and an unknown one does not — because it has already been reported, not
+// because nobody looked.
+func TestOwnersResolvesOnlyCheckedOwners(t *testing.T) {
+	var c diag.Collector
+	teams := LoadTeams("teams.yaml", []byte(teamsYAML), &c)
+	known, unknown := ownedBy("team-sre"), ownedBy("team-ghost")
+	cat := catalog.NewCatalog([]*catalog.Entity{known, unknown}, &c)
+
+	owners := teams.ValidateOwners(cat, &c)
+
+	team, ok := owners.Of(known)
+	if !ok || team.Name != "team-sre" {
+		t.Errorf("Of(known) = %v, %v; want team-sre, true", team, ok)
+	}
+	if team, ok := owners.Of(unknown); ok {
+		t.Errorf("Of(unknown) = %v, true; want false — its owner was reported, not resolved", team)
+	}
+}
+
+// When teams.yaml did not parse, no owner was looked up, so none resolves —
+// even one the broken file does name. Anything downstream then has nothing to
+// render and nothing to invent an error about.
+func TestOwnersResolvesNothingWhenTeamsDidNotParse(t *testing.T) {
+	var c diag.Collector
+	teams := LoadTeams("teams.yaml", []byte("teams:\n  - name: team-sre\n    members: [carol\n"), &c)
+	e := ownedBy("team-sre")
+	cat := catalog.NewCatalog([]*catalog.Entity{e}, &c)
+
+	owners := teams.ValidateOwners(cat, &c)
+
+	if team, ok := owners.Of(e); ok {
+		t.Errorf("Of = %v, true; want false — teams.yaml did not parse, so no owner was checked", team)
+	}
+}
+
+// Go cannot stop anyone writing config.Owners{}. One that ValidateOwners did
+// not make would silently resolve nothing, so it crashes instead.
+func TestOwnersPanicsWithoutValidateOwners(t *testing.T) {
+	defer func() {
+		want := "config: Owners used without ValidateOwners, so no owner in it was checked"
+		if got := recover(); got != want {
+			t.Errorf("panic = %v\nwant: %s", got, want)
+		}
+	}()
+	var o Owners
+	o.Of(ownedBy("team-sre"))
+}

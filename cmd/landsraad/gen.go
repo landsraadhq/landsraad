@@ -25,22 +25,31 @@ import (
 // Exported artifacts are ordered as CODEOWNERS, routing, Slack map — the order
 // spec §11 lists them, which is also the order of decreasing blast radius.
 func artifacts(fsys fs.FS, c *diag.Collector) []emit.File {
-	cat, teams := loadCatalog(fsys, c)
+	cat, owners := loadCatalog(fsys, c)
 	if cat == nil {
 		return nil
 	}
+	return generateAll(cat, owners, c)
+}
+
+// generateAll is the one list of generators. gen writes what it returns;
+// validate runs it for the diagnostics alone and discards the files, so a
+// generator's errors reach the pull request instead of whoever runs gen next
+// (ruling R58). A generator added here reaches both commands — which is the
+// point of there being one list and not two kept in step by hand.
+func generateAll(cat *catalog.Catalog, owners *config.Owners, c *diag.Collector) []emit.File {
 	return []emit.File{
-		generate.CODEOWNERS(cat, teams, c),
-		generate.AlertRoutes(cat, teams, c),
-		generate.SlackMap(cat, teams, c),
+		generate.CODEOWNERS(cat, owners, c),
+		generate.AlertRoutes(cat, owners, c),
+		generate.SlackMap(cat, owners, c),
 	}
 }
 
 // loadCatalog runs stages 1, 3, 4 and 5 at LocalOnly scope — what gen and
 // score need, and what validate uses.
-func loadCatalog(fsys fs.FS, c *diag.Collector) (*catalog.Catalog, *config.Teams) {
-	cat, _, teams := loadCatalogScoped(fsys, catalog.LocalOnly, c)
-	return cat, teams
+func loadCatalog(fsys fs.FS, c *diag.Collector) (*catalog.Catalog, *config.Owners) {
+	cat, _, owners := loadCatalogScoped(fsys, catalog.LocalOnly, c)
+	return cat, owners
 }
 
 // loadCatalogScoped is the single-repository composition: stages 1, 3, 4
@@ -51,7 +60,7 @@ func loadCatalog(fsys fs.FS, c *diag.Collector) (*catalog.Catalog, *config.Teams
 // and R49 are both what that costs. Ruling R30 is a different claim — that
 // all three stay local, hermetic and offline — and does not put them in one
 // composition.
-func loadCatalogScoped(fsys fs.FS, scope catalog.Scope, c *diag.Collector) (*catalog.Catalog, *catalog.Graph, *config.Teams) {
+func loadCatalogScoped(fsys fs.FS, scope catalog.Scope, c *diag.Collector) (*catalog.Catalog, *catalog.Graph, *config.Owners) {
 	// R46: before the one give-up path below. A schema that will not compile
 	// is a landsraad bug, and that is no reason to hide what is wrong with
 	// teams.yaml.
@@ -228,8 +237,9 @@ func loadTeamsFor(cfg fs.FS, c *diag.Collector) *config.Teams {
 // against the configuration the command is standing in (ruling R34). teams is
 // loadTeamsFor's result, taken as a value rather than read here, so no caller
 // can reach stage 4 without teams.yaml's own diagnostics already collected
-// (ruling R46).
-func assemble(p parseResult, src catalog.Sources, scope catalog.Scope, teams *config.Teams, c *diag.Collector) (*catalog.Catalog, *catalog.Graph, *config.Teams) {
+// (ruling R46). It returns the owners as ValidateOwners checked them, which is
+// the only kind of config.Owners a generator can take (ruling R58).
+func assemble(p parseResult, src catalog.Sources, scope catalog.Scope, teams *config.Teams, c *diag.Collector) (*catalog.Catalog, *catalog.Graph, *config.Owners) {
 	if len(p.entities) == 0 {
 		// len(src) > 1 mirrors parseRepo's solo flag exactly, from the same
 		// source of truth every caller already has (SingleSource for a
@@ -272,8 +282,7 @@ func assemble(p parseResult, src catalog.Sources, scope catalog.Scope, teams *co
 	if teams == nil {
 		return nil, nil, nil
 	}
-	teams.ValidateOwners(cat, c)
-	return cat, g, teams
+	return cat, g, teams.ValidateOwners(cat, c)
 }
 
 // repoLabel names a repository in a message, or says "this repository" when

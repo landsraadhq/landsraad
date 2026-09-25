@@ -31,13 +31,16 @@ const routingSource = "the owner field of each service.yaml, resolved through te
 // the same run, and three diagnostics for one typo is noise. The asymmetry with
 // CODEOWNERS is deliberate — one artifact reports the problem, the rest stay
 // quiet about it.
-func owningTeams(cat *catalog.Catalog, teams *config.Teams) ([]*config.Team, map[string]int) {
+func owningTeams(cat *catalog.Catalog, owners *config.Owners) ([]*config.Team, map[string]int) {
 	counts := map[string]int{}
+	byName := map[string]*config.Team{}
 	for _, e := range cat.Entities() {
-		if _, ok := teams.Get(e.Metadata.Owner); !ok {
+		team, ok := owners.Of(e)
+		if !ok {
 			continue
 		}
-		counts[e.Metadata.Owner]++
+		counts[team.Name]++
+		byName[team.Name] = team
 	}
 	names := make([]string, 0, len(counts))
 	for n := range counts {
@@ -47,8 +50,7 @@ func owningTeams(cat *catalog.Catalog, teams *config.Teams) ([]*config.Team, map
 
 	out := make([]*config.Team, 0, len(names))
 	for _, n := range names {
-		team, _ := teams.Get(n)
-		out = append(out, team)
+		out = append(out, byName[n])
 	}
 	return out, counts
 }
@@ -60,8 +62,8 @@ func owningTeams(cat *catalog.Catalog, teams *config.Teams) ([]*config.Team, map
 // keeps this file stable as services are added: a new service owned by an
 // existing team changes nothing here. It is the alerting rules' job to attach
 // that label, and spec.alerts is where those rules live.
-func AlertRoutes(cat *catalog.Catalog, teams *config.Teams, c *diag.Collector) emit.File {
-	owners, counts := owningTeams(cat, teams)
+func AlertRoutes(cat *catalog.Catalog, owners *config.Owners, c *diag.Collector) emit.File {
+	owning, counts := owningTeams(cat, owners)
 
 	var b strings.Builder
 	b.WriteString(Banner(routingSource))
@@ -70,7 +72,7 @@ func AlertRoutes(cat *catalog.Catalog, teams *config.Teams, c *diag.Collector) e
 	b.WriteString("spec:\n")
 
 	b.WriteString("  routes:\n")
-	for _, team := range owners {
+	for _, team := range owning {
 		if team.PagerDuty == "" {
 			// A receiver with an empty service_key loads without complaint and
 			// pages nobody. That is the failure this product exists to
@@ -90,7 +92,7 @@ func AlertRoutes(cat *catalog.Catalog, teams *config.Teams, c *diag.Collector) e
 	}
 
 	b.WriteString("  receivers:\n")
-	for _, team := range owners {
+	for _, team := range owning {
 		if team.PagerDuty == "" {
 			continue
 		}
@@ -106,15 +108,15 @@ func AlertRoutes(cat *catalog.Catalog, teams *config.Teams, c *diag.Collector) e
 // Keyed on the ref, never the bare name (spec §12): service:orders and
 // topic:orders are distinct entities that may coexist, and a deploy pipeline
 // looking up "orders" would get one team's channel for the other's deploy.
-func SlackMap(cat *catalog.Catalog, teams *config.Teams, c *diag.Collector) emit.File {
-	_, counts := owningTeams(cat, teams)
+func SlackMap(cat *catalog.Catalog, owners *config.Owners, c *diag.Collector) emit.File {
+	_, counts := owningTeams(cat, owners)
 
 	type line struct{ ref, channel string }
 	var lines []line
 	reported := map[string]bool{}
 
 	for _, e := range cat.Entities() {
-		team, ok := teams.Get(e.Metadata.Owner)
+		team, ok := owners.Of(e)
 		if !ok {
 			continue
 		}

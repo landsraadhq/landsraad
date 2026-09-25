@@ -106,7 +106,9 @@ func Build(root fs.FS, w *workspace, errOut io.Writer, opts BuildOptions) ([]emi
 
 	// FullCatalog, not LocalOnly: build claims to render the whole catalog,
 	// so a dangling reference is a hard failure (spec §7.1).
-	cat, g, teams := assemble(w.ParseAll(v, &c), w.Sources(), catalog.FullCatalog, teams, &c)
+	// assemble's owners are for generators, and build runs none (ruling R58).
+	// The portal renders the teams loaded above.
+	cat, g, _ := assemble(w.ParseAll(v, &c), w.Sources(), catalog.FullCatalog, teams, &c)
 	if cat == nil || c.HasErrors() {
 		reportDiagnostics(errOut, c.Diagnostics(), len(w.Sources()) > 1)
 		fmt.Fprintf(errOut, "refusing to build a portal from a catalog with errors; it would publish the broken state as if it were the truth\n")

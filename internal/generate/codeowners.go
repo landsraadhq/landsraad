@@ -48,7 +48,7 @@ func Banner(source string) string {
 // Owners come from the team's members (spec §11 routes owner through
 // teams.yaml). config.Team carries no host team handle, so members it is; a
 // handle already written with a leading @ is left alone.
-func CODEOWNERS(cat *catalog.Catalog, teams *config.Teams, c *diag.Collector) emit.File {
+func CODEOWNERS(cat *catalog.Catalog, owners *config.Owners, c *diag.Collector) emit.File {
 	type entry struct{ path, owners string }
 	var entries []entry
 
@@ -71,23 +71,17 @@ func CODEOWNERS(cat *catalog.Catalog, teams *config.Teams, c *diag.Collector) em
 		if e.Spec.Path == "" {
 			continue
 		}
-		team, ok := teams.Get(e.Metadata.Owner)
+		team, ok := owners.Of(e)
 		if !ok {
-			c.Add(diag.Diagnostic{
-				Severity: diag.SevError,
-				Repo:     e.SourceRepo,
-				File:     e.SourcePath,
-				Line:     e.NameLine,
-				Entity:   e.Metadata.Name,
-				Check:    "codeowners-unknown-owner",
-				Message: fmt.Sprintf("owner %q of %s is not defined in teams.yaml",
-					e.Metadata.Owner, e.Ref()),
-				Hint: "every owner must be a team in teams.yaml",
-			})
+			// Ruling R58: the owner is not in teams.yaml, or teams.yaml did not
+			// parse, and ValidateOwners has already said which — an Owners
+			// cannot exist until it has. A line naming a team that does not
+			// exist would be a broken rule; saying so again would be one
+			// problem reported twice.
 			continue
 		}
-		owners := handles(team.Members)
-		if len(owners) == 0 {
+		hs := handles(team.Members)
+		if len(hs) == 0 {
 			// A CODEOWNERS line with a path and no owner means "nobody owns
 			// this" to git, which silently removes the review requirement the
 			// file exists to create.
@@ -105,7 +99,7 @@ func CODEOWNERS(cat *catalog.Catalog, teams *config.Teams, c *diag.Collector) em
 			continue
 		}
 		p := ownedPath(e)
-		joined := strings.Join(owners, " ")
+		joined := strings.Join(hs, " ")
 		if prev, exists := claimed[p]; exists {
 			if prev.owners == joined {
 				// A byte-for-byte repeat of a line already emitted. git

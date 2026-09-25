@@ -55,6 +55,26 @@ Unknown keys are rejected: a silently ignored `pagerDuty:` typo would make
 alert routing rot invisibly, and that's the exact failure this tool exists to
 prevent.
 
+`validate` checks this file against what `gen` would generate from it, and
+reports the same errors `gen` refuses to write on — on the pull request that
+introduces them, not first to whoever runs `gen` next. (`--satellite` skips
+them, along with every other owner check: a satellite has no `teams.yaml` to
+check them against.)
+
+- a team that owns anything but has no `slack` channel, or no `pagerduty`
+  key — its deploy notifications would go nowhere, its alerts would page
+  nobody;
+- a team with no `members` that owns an entity with a `spec.path` —
+  CODEOWNERS would leave that path unowned;
+- two entities on the same `spec.path` whose teams have different members —
+  CODEOWNERS is last-match-wins, so one team would silently get no review
+  rights.
+
+**Upgrading can turn a passing `validate` red.** Older versions reported these
+from `gen` alone, so a repository that runs only `validate` in CI may have a
+team missing one of those fields and never have been told. Fill them in
+before upgrading, or expect the first run to fail.
+
 ### `repos.yaml`
 
 Which repos and paths make up the catalog:

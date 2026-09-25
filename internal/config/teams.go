@@ -133,9 +133,33 @@ func (t *Teams) Names() []string {
 	return out
 }
 
+// Owners is teams.yaml once every entity's owner has been checked against it
+// (ruling R58). Only ValidateOwners makes one, so code that takes an Owners
+// cannot run before the owners were checked, and never sees an owner nobody
+// looked up: by the time an Owners exists, an unknown owner — or every owner,
+// when teams.yaml did not parse — has already been reported.
+type Owners struct {
+	teams   *Teams
+	checked bool
+}
+
+// Of returns the team that owns e. false means there is nothing to render
+// for e and the reason has already been said: its owner is not in teams.yaml
+// (unknown-owner), or teams.yaml did not parse (owners-skipped). A caller
+// that gets false reports nothing, because reporting it again is the
+// duplicate this type exists to remove.
+func (o *Owners) Of(e *catalog.Entity) (*Team, bool) {
+	if o == nil || !o.checked {
+		panic("config: Owners used without ValidateOwners, so no owner in it was checked")
+	}
+	return o.teams.Get(e.Metadata.Owner)
+}
+
 // ValidateOwners checks that every entity's owner exists, suggesting the
-// closest real team when the owner looks like a typo.
-func (t *Teams) ValidateOwners(cat *catalog.Catalog, c *diag.Collector) {
+// closest real team when the owner looks like a typo, and returns the result
+// as the only kind of Owners there is.
+func (t *Teams) ValidateOwners(cat *catalog.Catalog, c *diag.Collector) *Owners {
+	owners := &Owners{teams: t, checked: true}
 	// If teams.yaml did not parse, skip owner validation: it must not invent
 	// "owner not defined" errors for owners it never got to look up. Say so
 	// rather than falling silent — a run that checked half of what it claims
@@ -154,7 +178,7 @@ func (t *Teams) ValidateOwners(cat *catalog.Catalog, c *diag.Collector) {
 			// this one sorts before the parse error it refers to.
 			Hint: fmt.Sprintf("no owner in this repository has been checked; fix the parse error in %s and rerun", t.path),
 		})
-		return
+		return owners
 	}
 
 	for _, e := range cat.Entities() {
@@ -183,6 +207,7 @@ func (t *Teams) ValidateOwners(cat *catalog.Catalog, c *diag.Collector) {
 		}
 		c.Add(d)
 	}
+	return owners
 }
 
 // closest returns the nearest candidate within an edit distance of 3, which

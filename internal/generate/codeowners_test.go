@@ -1,6 +1,7 @@
 package generate
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/landsraadhq/landsraad/internal/catalog"
@@ -20,14 +21,18 @@ func ent(name string, kind catalog.Kind, owner, path string) *catalog.Entity {
 	return e
 }
 
-func teamsFrom(t *testing.T, yaml string) *config.Teams {
+// ownersFrom is what every command hands a generator: teams.yaml, with the
+// catalog's owners already checked against it (ruling R58). Those checks
+// report into their own collector, so a test sees only what the generator
+// adds.
+func ownersFrom(t *testing.T, yaml string, cat *catalog.Catalog) *config.Owners {
 	t.Helper()
 	var c diag.Collector
 	teams := config.LoadTeams("teams.yaml", []byte(yaml), &c)
 	if c.HasErrors() {
 		t.Fatalf("fixture teams.yaml must load: %+v", c.Diagnostics())
 	}
-	return teams
+	return teams.ValidateOwners(cat, &diag.Collector{})
 }
 
 const twoTeams = `teams:
@@ -48,7 +53,7 @@ func TestCODEOWNERSRendersOneLinePerEntity(t *testing.T) {
 		ent("worker", catalog.KindWorker, "team-sre", "workers/worker"),
 	}, &c)
 
-	f := CODEOWNERS(cat, teamsFrom(t, twoTeams), &c)
+	f := CODEOWNERS(cat, ownersFrom(t, twoTeams, cat), &c)
 
 	if c.HasErrors() {
 		t.Fatalf("a complete catalog must generate cleanly: %+v", c.Diagnostics())
@@ -79,7 +84,7 @@ func TestCODEOWNERSIsSortedByPath(t *testing.T) {
 		ent("a", catalog.KindService, "team-payments", "services/a"),
 	}, &c)
 
-	f := CODEOWNERS(cat, teamsFrom(t, twoTeams), &c)
+	f := CODEOWNERS(cat, ownersFrom(t, twoTeams, cat), &c)
 
 	want := "services/a/ @alice @bob\nservices/z/ @carol\n"
 	got := string(f.Data)
@@ -99,7 +104,7 @@ func TestCODEOWNERSSkipsEntitiesWithNoPath(t *testing.T) {
 		ent("rds", catalog.KindDatabase, "team-sre", ""),
 	}, &c)
 
-	f := CODEOWNERS(cat, teamsFrom(t, twoTeams), &c)
+	f := CODEOWNERS(cat, ownersFrom(t, twoTeams, cat), &c)
 
 	want := "services/api/ @alice @bob\n"
 	got := string(f.Data)
@@ -119,7 +124,7 @@ func TestCODEOWNERSReportsATeamWithNoMembers(t *testing.T) {
 	cat := catalog.NewCatalog([]*catalog.Entity{
 		ent("api", catalog.KindService, "team-empty", "services/api"),
 	}, &c)
-	teams := teamsFrom(t, "teams:\n  - name: team-empty\n    slack: \"#e\"\n")
+	teams := ownersFrom(t, "teams:\n  - name: team-empty\n    slack: \"#e\"\n", cat)
 
 	CODEOWNERS(cat, teams, &c)
 
@@ -143,29 +148,46 @@ func TestCODEOWNERSReportsATeamWithNoMembers(t *testing.T) {
 	}
 }
 
-// An owner that is not in teams.yaml is already an error from validate's
-// unknown-owner check. Generating a line naming a team that does not exist
-// would put a broken rule in the repository, so it is skipped and reported —
-// two diagnostics for one cause is noise, but a silently wrong artifact is
-// worse, and the checks run in different commands.
-func TestCODEOWNERSReportsAnUnknownOwner(t *testing.T) {
+// Ruling R58. An owner that is not in teams.yaml is reported once, by
+// ValidateOwners, which every command runs before a generator can have an
+// Owners to take. The generator renders no line for it and says nothing:
+// saying it again is how gen came to print one problem twice.
+func TestCODEOWNERSLeavesAnUnknownOwnerToValidateOwners(t *testing.T) {
 	var c diag.Collector
 	cat := catalog.NewCatalog([]*catalog.Entity{
 		ent("api", catalog.KindService, "team-nope", "services/api"),
 	}, &c)
 
-	CODEOWNERS(cat, teamsFrom(t, twoTeams), &c)
+	f := CODEOWNERS(cat, ownersFrom(t, twoTeams, cat), &c)
 
-	if !c.HasErrors() {
-		t.Fatal("an owner missing from teams.yaml must be an error")
+	if ds := c.Diagnostics(); len(ds) != 0 {
+		t.Errorf("CODEOWNERS reported %+v; want nothing — unknown-owner already has", ds)
 	}
-	d := c.Diagnostics()[0]
-	if d.Check != "codeowners-unknown-owner" {
-		t.Errorf("Check = %q, want %q", d.Check, "codeowners-unknown-owner")
+	if strings.Contains(string(f.Data), "services/api") {
+		t.Errorf("an entity with no resolvable owner must get no line:\n%s", f.Data)
 	}
-	want := `owner "team-nope" of service:api is not defined in teams.yaml`
-	if d.Message != want {
-		t.Errorf("Message\n got: %s\nwant: %s", d.Message, want)
+}
+
+// When teams.yaml did not parse, no owner was looked up. owners-skipped says
+// so; a generator that went on to call every owner unknown would contradict
+// it in the same output, once per entity.
+func TestGeneratorsInventNoOwnerErrorsWhenTeamsDidNotParse(t *testing.T) {
+	var cc diag.Collector
+	cat := catalog.NewCatalog([]*catalog.Entity{
+		ent("api", catalog.KindService, "team-payments", "services/api"),
+		ent("worker", catalog.KindWorker, "team-payments", "workers/worker"),
+	}, &cc)
+	var tc diag.Collector
+	owners := config.LoadTeams("teams.yaml", []byte("teams:\n  - name: team-payments\n    members: [alice\n"), &tc).
+		ValidateOwners(cat, &tc)
+
+	var c diag.Collector
+	CODEOWNERS(cat, owners, &c)
+	AlertRoutes(cat, owners, &c)
+	SlackMap(cat, owners, &c)
+
+	if ds := c.Diagnostics(); len(ds) != 0 {
+		t.Errorf("generators reported %+v; want nothing — no owner was checked, so none can be called unknown", ds)
 	}
 }
 
@@ -209,7 +231,7 @@ func TestCODEOWNERSReportsTwoEntitiesClaimingOnePath(t *testing.T) {
 		entIn("api", catalog.KindWorker, "team-sre", "services/api", "workers/api/service.yaml"),
 	}, &c)
 
-	f := CODEOWNERS(cat, teamsFrom(t, twoTeams), &c)
+	f := CODEOWNERS(cat, ownersFrom(t, twoTeams, cat), &c)
 
 	diags := c.Diagnostics()
 	if len(diags) != 1 {
@@ -274,7 +296,7 @@ func TestCODEOWNERSDedupsOnePathWhenTheOwnersRenderIdentically(t *testing.T) {
     pagerduty: TWO
 `
 
-	f := CODEOWNERS(cat, teamsFrom(t, sameMembers), &c)
+	f := CODEOWNERS(cat, ownersFrom(t, sameMembers, cat), &c)
 
 	if diags := c.Diagnostics(); len(diags) != 0 {
 		t.Fatalf("identical owners lose nothing, so there is nothing to report; got %+v", diags)

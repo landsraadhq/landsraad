@@ -110,8 +110,13 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter, satellite boo
 			Check:   "owners-deferred",
 			Message: "owners are not checked in a satellite repository; the platform build resolves them against its teams.yaml",
 		})
-	} else {
-		checkOwners(fsys, cat, &c)
+	} else if owners := checkOwners(fsys, cat, &c); owners != nil {
+		// Ruling R58: the generators' own errors — a team with no members, no
+		// pagerduty key or no slack channel, two teams on one path — are
+		// decidable from exactly what was just loaded, so they are reported
+		// here, on the pull request, and not first to whoever runs gen next.
+		// The files are discarded; writing them is gen's job.
+		generateAll(cat, owners, &c)
 	}
 	catalog.CheckFiles(catalog.SingleSource(repo, fsys), cat, &c)
 	reportAmbiguousCheckEntities(repo, checkRefs, cat, &c)
@@ -328,7 +333,9 @@ func defaultPatternsNote(reason string) diag.Diagnostic {
 	}
 }
 
-func checkOwners(fsys fs.FS, cat *catalog.Catalog, c *diag.Collector) {
+// checkOwners returns the checked owners, or nil when there is no teams.yaml
+// to check them against — reported here as missing-teams.
+func checkOwners(fsys fs.FS, cat *catalog.Catalog, c *diag.Collector) *config.Owners {
 	data, err := fs.ReadFile(fsys, "teams.yaml")
 	if err != nil {
 		c.Add(diag.Diagnostic{
@@ -339,9 +346,9 @@ func checkOwners(fsys fs.FS, cat *catalog.Catalog, c *diag.Collector) {
 			// and --satellite is its remedy (ruling R43).
 			Hint: "run `landsraad init` to create one, or pass --satellite if this repository's owners are defined in the platform repository's teams.yaml",
 		})
-		return
+		return nil
 	}
-	config.LoadTeams("teams.yaml", data, c).ValidateOwners(cat, c)
+	return config.LoadTeams("teams.yaml", data, c).ValidateOwners(cat, c)
 }
 
 func reportCycles(cat *catalog.Catalog, g *catalog.Graph, c *diag.Collector) {
