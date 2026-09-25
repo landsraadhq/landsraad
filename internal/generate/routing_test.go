@@ -15,7 +15,7 @@ func TestAlertRoutesEmitsOneReceiverPerOwningTeam(t *testing.T) {
 		ent("worker", catalog.KindWorker, "team-sre", "workers/worker"),
 	}, &c)
 
-	f := AlertRoutes(cat, ownersFrom(t, twoTeams, cat), &c)
+	f := AlertRoutes(ownersFrom(t, twoTeams, cat), &c)
 
 	if f.Path != AlertRoutesPath {
 		t.Errorf("Path = %q, want %q", f.Path, AlertRoutesPath)
@@ -51,7 +51,7 @@ func TestAlertRoutesOmitsTeamsThatOwnNothing(t *testing.T) {
 		ent("api", catalog.KindService, "team-payments", "services/api"),
 	}, &c)
 
-	f := AlertRoutes(cat, ownersFrom(t, twoTeams, cat), &c)
+	f := AlertRoutes(ownersFrom(t, twoTeams, cat), &c)
 
 	for _, line := range []string{"team-sre", "SRE"} {
 		if contains(string(f.Data), line) {
@@ -71,7 +71,7 @@ func TestAlertRoutesReportsATeamWithNoPagerDuty(t *testing.T) {
 	}, &c)
 	teams := ownersFrom(t, "teams:\n  - name: team-nopd\n    members: [a]\n    slack: \"#x\"\n", cat)
 
-	AlertRoutes(cat, teams, &c)
+	AlertRoutes(teams, &c)
 
 	if !c.HasErrors() {
 		t.Fatal("a team that owns something but has no pagerduty key must be an error")
@@ -100,7 +100,7 @@ func TestSlackMapIsKeyedOnTheRef(t *testing.T) {
 		ent("orders", catalog.KindTopic, "team-sre", "topics/orders"),
 	}, &c)
 
-	f := SlackMap(cat, ownersFrom(t, twoTeams, cat), &c)
+	f := SlackMap(ownersFrom(t, twoTeams, cat), &c)
 
 	if f.Path != SlackMapPath {
 		t.Errorf("Path = %q, want %q", f.Path, SlackMapPath)
@@ -126,7 +126,7 @@ func TestSlackMapDoesNotCollapseEntitiesSharingAName(t *testing.T) {
 		ent("orders", catalog.KindTopic, "team-sre", "topics/orders"),
 	}, &c)
 
-	f := SlackMap(cat, ownersFrom(t, twoTeams, cat), &c)
+	f := SlackMap(ownersFrom(t, twoTeams, cat), &c)
 
 	if !contains(string(f.Data), "service:orders") || !contains(string(f.Data), "topic:orders") {
 		t.Errorf("both refs must appear:\n%s", f.Data)
@@ -140,7 +140,7 @@ func TestSlackMapReportsATeamWithNoChannel(t *testing.T) {
 	}, &c)
 	teams := ownersFrom(t, "teams:\n  - name: team-noslack\n    members: [a]\n    pagerduty: X\n", cat)
 
-	SlackMap(cat, teams, &c)
+	SlackMap(teams, &c)
 
 	if !c.HasErrors() {
 		t.Fatal("a team that owns something but has no slack channel must be an error")

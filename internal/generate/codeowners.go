@@ -48,7 +48,7 @@ func Banner(source string) string {
 // Owners come from the team's members (spec §11 routes owner through
 // teams.yaml). config.Team carries no host team handle, so members it is; a
 // handle already written with a leading @ is left alone.
-func CODEOWNERS(cat *catalog.Catalog, owners *config.Owners, c *diag.Collector) emit.File {
+func CODEOWNERS(owners *config.Owners, c *diag.Collector) emit.File {
 	type entry struct{ path, owners string }
 	var entries []entry
 
@@ -59,12 +59,12 @@ func CODEOWNERS(cat *catalog.Catalog, owners *config.Owners, c *diag.Collector) 
 	// differently-owned entities on one path silently strip the first team of
 	// the review rights this file exists to grant.
 	type claim struct {
-		owners string
+		owners string // sorted: the set git reads, not the order it was written in
 		by     *catalog.Entity
 	}
 	claimed := make(map[string]claim)
 
-	for _, e := range cat.Entities() {
+	for _, e := range owners.Catalog().Entities() {
 		// An entity that describes something outside this repository omits
 		// spec.path (spec §5). A CODEOWNERS rule for a path that does not
 		// exist is one git silently ignores.
@@ -100,14 +100,17 @@ func CODEOWNERS(cat *catalog.Catalog, owners *config.Owners, c *diag.Collector) 
 		}
 		p := ownedPath(e)
 		joined := strings.Join(hs, " ")
+		set := sortedJoin(hs)
 		if prev, exists := claimed[p]; exists {
-			if prev.owners == joined {
+			if prev.owners == set {
 				// A byte-for-byte repeat of a line already emitted. git
 				// resolves it to the same owner either way, so there is
 				// nothing to report and nothing lost by emitting it once.
 				// Keying on the rendered owners rather than the team name is
 				// deliberate: two teams with identical members produce the
-				// same file, and the file is what git reads.
+				// same file, and the file is what git reads. Sorted, because
+				// git reads a line's owners as a set: the same members in
+				// another order are not a collision either.
 				continue
 			}
 			// Mirrors duplicate-name (internal/catalog/merge.go): anchor on the
@@ -130,7 +133,7 @@ func CODEOWNERS(cat *catalog.Catalog, owners *config.Owners, c *diag.Collector) 
 			})
 			continue
 		}
-		claimed[p] = claim{owners: joined, by: e}
+		claimed[p] = claim{owners: set, by: e}
 		entries = append(entries, entry{path: p, owners: joined})
 	}
 
@@ -168,6 +171,15 @@ func lastSegment(p string) string {
 		return p[i+1:]
 	}
 	return p
+}
+
+// sortedJoin is the owners of a line as the set git evaluates, for comparing
+// two lines. It is never what is written: the file keeps the order teams.yaml
+// gave, so a CODEOWNERS already committed does not go stale.
+func sortedJoin(hs []string) string {
+	s := append([]string(nil), hs...)
+	sort.Strings(s)
+	return strings.Join(s, " ")
 }
 
 // handles renders team members as host handles, adding the leading @ that

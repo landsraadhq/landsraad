@@ -116,7 +116,7 @@ func Validate(fsys fs.FS, out, errOut io.Writer, f diag.Formatter, satellite boo
 		// decidable from exactly what was just loaded, so they are reported
 		// here, on the pull request, and not first to whoever runs gen next.
 		// The files are discarded; writing them is gen's job.
-		generateAll(cat, owners, &c)
+		generateAll(owners, &c)
 	}
 	catalog.CheckFiles(catalog.SingleSource(repo, fsys), cat, &c)
 	reportAmbiguousCheckEntities(repo, checkRefs, cat, &c)

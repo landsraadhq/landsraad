@@ -29,7 +29,7 @@ func artifacts(fsys fs.FS, c *diag.Collector) []emit.File {
 	if cat == nil {
 		return nil
 	}
-	return generateAll(cat, owners, c)
+	return generateAll(owners, c)
 }
 
 // generateAll is the one list of generators. gen writes what it returns;
@@ -37,16 +37,16 @@ func artifacts(fsys fs.FS, c *diag.Collector) []emit.File {
 // generator's errors reach the pull request instead of whoever runs gen next
 // (ruling R58). A generator added here reaches both commands — which is the
 // point of there being one list and not two kept in step by hand.
-func generateAll(cat *catalog.Catalog, owners *config.Owners, c *diag.Collector) []emit.File {
+func generateAll(owners *config.Owners, c *diag.Collector) []emit.File {
 	return []emit.File{
-		generate.CODEOWNERS(cat, owners, c),
-		generate.AlertRoutes(cat, owners, c),
-		generate.SlackMap(cat, owners, c),
+		generate.CODEOWNERS(owners, c),
+		generate.AlertRoutes(owners, c),
+		generate.SlackMap(owners, c),
 	}
 }
 
 // loadCatalog runs stages 1, 3, 4 and 5 at LocalOnly scope — what gen and
-// score need, and what validate uses.
+// score need. validate does not call it; loadCatalogScoped says why.
 func loadCatalog(fsys fs.FS, c *diag.Collector) (*catalog.Catalog, *config.Owners) {
 	cat, _, owners := loadCatalogScoped(fsys, catalog.LocalOnly, c)
 	return cat, owners

@@ -322,6 +322,11 @@ func TestOwnersResolvesOnlyCheckedOwners(t *testing.T) {
 
 	owners := teams.ValidateOwners(cat, &c)
 
+	// The catalog travels with its checked owners, so nothing can pair these
+	// owners with a catalog they were not checked against.
+	if owners.Catalog() != cat {
+		t.Error("Catalog() must be the catalog ValidateOwners checked")
+	}
 	team, ok := owners.Of(known)
 	if !ok || team.Name != "team-sre" {
 		t.Errorf("Of(known) = %v, %v; want team-sre, true", team, ok)

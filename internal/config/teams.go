@@ -133,20 +133,29 @@ func (t *Teams) Names() []string {
 	return out
 }
 
-// Owners is teams.yaml once every entity's owner has been checked against it
-// (ruling R58). Only ValidateOwners makes one, so code that takes an Owners
-// cannot run before the owners were checked, and never sees an owner nobody
-// looked up: by the time an Owners exists, an unknown owner — or every owner,
-// when teams.yaml did not parse — has already been reported.
+// Owners is a catalog together with teams.yaml, once every entity's owner in
+// that catalog has been checked against it (ruling R58). Only ValidateOwners
+// makes one, and it keeps the catalog it checked, so code that takes an Owners
+// can neither run before the check nor pair these owners with a different
+// catalog: for every entity in Catalog(), an owner that does not resolve has
+// already been accounted for — reported as unknown-owner, covered by the one
+// owners-skipped note when teams.yaml did not parse, or left to the schema
+// when the owner field is empty.
 type Owners struct {
+	cat     *catalog.Catalog
 	teams   *Teams
 	checked bool
 }
 
-// Of returns the team that owns e. false means there is nothing to render
-// for e and the reason has already been said: its owner is not in teams.yaml
-// (unknown-owner), or teams.yaml did not parse (owners-skipped). A caller
-// that gets false reports nothing, because reporting it again is the
+// Catalog is the catalog whose owners were checked. Anything rendered from an
+// Owners iterates this, never a catalog passed alongside it.
+func (o *Owners) Catalog() *catalog.Catalog { return o.cat }
+
+// Of returns the team that owns e, an entity of Catalog(). false means there
+// is nothing to render for e and the reason has already been said: its owner
+// is not in teams.yaml (unknown-owner), teams.yaml did not parse
+// (owners-skipped), or the owner field is empty (the schema's error). A
+// caller that gets false reports nothing, because reporting it again is the
 // duplicate this type exists to remove.
 func (o *Owners) Of(e *catalog.Entity) (*Team, bool) {
 	if o == nil || !o.checked {
@@ -159,7 +168,7 @@ func (o *Owners) Of(e *catalog.Entity) (*Team, bool) {
 // closest real team when the owner looks like a typo, and returns the result
 // as the only kind of Owners there is.
 func (t *Teams) ValidateOwners(cat *catalog.Catalog, c *diag.Collector) *Owners {
-	owners := &Owners{teams: t, checked: true}
+	owners := &Owners{cat: cat, teams: t, checked: true}
 	// If teams.yaml did not parse, skip owner validation: it must not invent
 	// "owner not defined" errors for owners it never got to look up. Say so
 	// rather than falling silent — a run that checked half of what it claims

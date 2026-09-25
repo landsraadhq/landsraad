@@ -736,10 +736,20 @@ The second premise was never true — `gen` has called `ValidateOwners` since it
 first commit, `6efef8b` — and both guards were sound alone.
 
 **The ruling: a generator takes owners that were checked, as a type.**
-`config.Owners` is `teams.yaml` after `ValidateOwners` has checked every
-entity's owner against it, and `ValidateOwners` is the only thing that makes
-one. The generators take `*config.Owners` instead of `*config.Teams`, so
-"check the owners first" is now a compile error rather than a convention.
+`config.Owners` is a catalog together with `teams.yaml`, after
+`ValidateOwners` has checked every entity's owner in that catalog, and
+`ValidateOwners` is the only thing that makes one. The generators take
+`*config.Owners` and nothing else — no `*config.Teams`, and no catalog of
+their own — so "check the owners first" is a compile error rather than a
+convention, and so is "check them against the catalog you render".
+
+The second half was added after the composition audit. The first version
+passed the catalog and the owners as two values, which enforced the order but
+not the pairing: the auditor checked an empty catalog's owners, handed them to
+`CODEOWNERS` with a full one, and got no diagnostics and a `CODEOWNERS` that
+was only the banner. No command did that, but the type let it compile, which
+is exactly what the ruling said it would not do. `Owners` now keeps the
+catalog it checked, and generators range over `Owners.Catalog()`.
 `Owners.Of` returning false means there is nothing to render and the reason
 has already been reported, so `codeowners-unknown-owner` is deleted and
 the invented errors cannot occur. Go cannot stop anyone writing
@@ -763,12 +773,23 @@ or a `pagerduty` key, or has a member-less team owning an entity with a
 `spec.path`, goes red in `validate` on upgrade, having never been told —
 documented in `README.md` under `teams.yaml`. Three of this repository's own
 tests hit exactly that: fixtures in `cmd/landsraad/validate_test.go` whose
-team was `name: team-a` and nothing else, testing cross-repository refs, an
+team had no `slack` and no `pagerduty` — two of them `name: team-a` and
+nothing else, the third with `members` too — testing cross-repository refs, an
 in-memory run and a root-level service. They were given a complete team, since
 none of them is about teams. `codeowners-unknown-owner` no longer exists as a
 check id; `unknown-owner` still fires on the same line. `--satellite` skips
 these errors along with every other owner check, since a satellite has no
 `teams.yaml` to check them against.
+
+**R50 compared owners as written, and R58 moved that onto pull requests.**
+Found by the same audit: two teams listing the same members in a different
+order — `[alice, bob]` and `[bob, alice]` — on one path were reported as
+`codeowners-duplicate-path`, "whose teams differ", though git reads a line's
+owners as a set and both lines grant identical review rights. That predates
+this ruling, but until R58 it could only stop `gen`; now it would fail a pull
+request over the order of a YAML list. The comparison is now on the sorted
+set. The line written is still the first team's, in its own order, so a
+`CODEOWNERS` already committed does not go stale.
 
 ## The BOM defect: R55's delimiter match re-opened R56
 

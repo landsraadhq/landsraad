@@ -5,7 +5,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/landsraadhq/landsraad/internal/catalog"
 	"github.com/landsraadhq/landsraad/internal/config"
 	"github.com/landsraadhq/landsraad/internal/diag"
 	"github.com/landsraadhq/landsraad/internal/emit"
@@ -26,15 +25,13 @@ const routingSource = "the owner field of each service.yaml, resolved through te
 // owningTeams returns the teams that own at least one entity, sorted by name,
 // with the number of entities each owns.
 //
-// An entity whose owner is not in teams.yaml is skipped without a diagnostic:
-// CODEOWNERS already reported codeowners-unknown-owner for that same entity in
-// the same run, and three diagnostics for one typo is noise. The asymmetry with
-// CODEOWNERS is deliberate — one artifact reports the problem, the rest stay
-// quiet about it.
-func owningTeams(cat *catalog.Catalog, owners *config.Owners) ([]*config.Team, map[string]int) {
+// An entity whose owner does not resolve is skipped without a diagnostic:
+// ValidateOwners has already accounted for it before an Owners could exist
+// (ruling R58), and no generator repeats it.
+func owningTeams(owners *config.Owners) ([]*config.Team, map[string]int) {
 	counts := map[string]int{}
 	byName := map[string]*config.Team{}
-	for _, e := range cat.Entities() {
+	for _, e := range owners.Catalog().Entities() {
 		team, ok := owners.Of(e)
 		if !ok {
 			continue
@@ -62,8 +59,8 @@ func owningTeams(cat *catalog.Catalog, owners *config.Owners) ([]*config.Team, m
 // keeps this file stable as services are added: a new service owned by an
 // existing team changes nothing here. It is the alerting rules' job to attach
 // that label, and spec.alerts is where those rules live.
-func AlertRoutes(cat *catalog.Catalog, owners *config.Owners, c *diag.Collector) emit.File {
-	owning, counts := owningTeams(cat, owners)
+func AlertRoutes(owners *config.Owners, c *diag.Collector) emit.File {
+	owning, counts := owningTeams(owners)
 
 	var b strings.Builder
 	b.WriteString(Banner(routingSource))
@@ -108,14 +105,14 @@ func AlertRoutes(cat *catalog.Catalog, owners *config.Owners, c *diag.Collector)
 // Keyed on the ref, never the bare name (spec §12): service:orders and
 // topic:orders are distinct entities that may coexist, and a deploy pipeline
 // looking up "orders" would get one team's channel for the other's deploy.
-func SlackMap(cat *catalog.Catalog, owners *config.Owners, c *diag.Collector) emit.File {
-	_, counts := owningTeams(cat, owners)
+func SlackMap(owners *config.Owners, c *diag.Collector) emit.File {
+	_, counts := owningTeams(owners)
 
 	type line struct{ ref, channel string }
 	var lines []line
 	reported := map[string]bool{}
 
-	for _, e := range cat.Entities() {
+	for _, e := range owners.Catalog().Entities() {
 		team, ok := owners.Of(e)
 		if !ok {
 			continue
